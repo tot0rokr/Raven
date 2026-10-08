@@ -5,6 +5,7 @@ import XMonad.Hooks.EwmhDesktops (ewmh, ewmhFullscreen)
 import XMonad.Hooks.ManageDocks (avoidStruts, docks)
 import XMonad.Hooks.ManageHelpers (doCenterFloat, isDialog)
 import XMonad.Layout.NoBorders (smartBorders)
+import XMonad.Layout.Spacing (Border (..), spacingRaw, toggleScreenSpacingEnabled, toggleWindowSpacingEnabled)
 import XMonad.Util.EZConfig (additionalKeysP)
 import XMonad.Util.SpawnOnce (spawnOnce)
 
@@ -18,7 +19,11 @@ vdeskConfig = def
     , borderWidth        = 2
     , normalBorderColor  = "#2b2b2b"
     , focusedBorderColor = "#8aa0c0"
-    , layoutHook         = avoidStruts . smartBorders $ layoutHook def
+    -- 3px around the screen and every window: 6px between windows and at the screen edge,
+    -- also with a single window, so the wallpaper shows through
+    , layoutHook         = avoidStruts . smartBorders
+                         . spacingRaw False (Border 3 3 3 3) True (Border 3 3 3 3) True
+                         $ layoutHook def
     , manageHook         = vdeskManage <+> manageHook def
     , startupHook        = do
         spawn "vdesk-panel"
@@ -30,6 +35,7 @@ vdeskConfig = def
     , ("M-q", restart "xmonad-x86_64-linux" True)
     -- Alt+Space may be taken by Windows for the viewer's system menu
     , ("M-\\", sendMessage NextLayout)
+    , ("M-g", toggleScreenSpacingEnabled >> toggleWindowSpacingEnabled)
     ]
 
 vdeskManage :: ManageHook

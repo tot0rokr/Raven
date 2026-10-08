@@ -38,6 +38,8 @@ RUN userdel -r ubuntu 2>/dev/null || true \
  && chown -R vdesk:vdesk /home/vdesk
 
 COPY --from=xmonad-build /src/xmonad-x86_64-linux /usr/local/bin/xmonad-x86_64-linux
+# vdesk checks this before writing wallpaper settings into a session
+LABEL vdesk.features="wallpaper"
 COPY rootfs/ /
 
 USER vdesk

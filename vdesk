@@ -125,7 +125,13 @@ push_menu() {
 
 # Wallpaper settings: wallpaper.{conf,img} in $confdir apply to every session and are
 # copied into session homes; wallpaper.local.{conf,img} in a session home win there.
-has_wallpaper() { docker exec "$(cname "$1")" test -x /usr/local/bin/vdesk-wallpaper 2>/dev/null; }
+# The image label works for stopped sessions too and costs no docker exec.
+has_wallpaper() {
+    case " $(label_of "$(cname "$1")" vdesk.features) " in
+        *" wallpaper "*) return 0 ;;
+    esac
+    return 1
+}
 
 apply_wallpaper() {
     docker exec -d -e DISPLAY=":$(field "$1" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \

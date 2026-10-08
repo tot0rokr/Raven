@@ -7,38 +7,41 @@
 ```
 [규칙 파일의 항목, 파일 순서대로]
 ──────────
-[호스트 앱, host-apps.conf 순서대로]
-──────────
 [.desktop 앱, 이름순]
 ```
 
 - 규칙 파일: 아래 순서대로 읽고, 같은 라벨은 나중 규칙이 이긴다.
   1. `/etc/vdesk/menu.d/*.conf` (이미지 기본값. core는 `00-core.conf`, addon은 `50-<name>.conf`)
   2. 세션 안의 `~/.config/vdesk/menu.conf` (호스트의 `~/.config/vdesk/menu.conf`를 복사한 것)
-- 호스트 앱: 호스트의 `~/.config/vdesk/host-apps.conf`에 적힌 이름마다 항목이 하나씩 생긴다. 라벨은 이름 그대로다. 세션에는 이름만 복사되고, 누르면 호스트 중계(`vdesk-hostd`)가 호스트에서 실행한다 ([README](../README.md#호스트-앱)).
 - .desktop 앱: `/usr/share/applications`, `/usr/local/share/applications`, 세션 홈의 `~/.local/share/applications` 순서로 읽는다. 같은 파일 이름이면 뒤쪽이 이긴다.
   - `Type=Application`이 아니거나 `NoDisplay=true`, `Hidden=true`인 항목은 뺀다.
   - `Exec`의 `%U` 같은 field code는 지운다. `Terminal=true`면 `xterm -e`로 실행한다.
 
 ## 규칙 문법
 
-| 형식              | 의미                                                      |
-| ----------------- | --------------------------------------------------------- |
-| `LABEL = COMMAND` | 위쪽 영역에 항목 추가. 같은 LABEL의 호스트 앱, .desktop 항목은 이 항목으로 대체된다 |
-| `LABEL = @NAME`   | 호스트 앱 NAME(`host-apps.conf`)을 실행하는 항목          |
-| `!LABEL`          | LABEL 항목을 숨긴다. 규칙, 호스트 앱, .desktop 항목 모두에 적용된다 |
-| `---`             | 구분선                                                    |
-| `# ...`, 빈 줄    | 무시                                                      |
+| 형식               | 의미                                                        |
+| ------------------ | ----------------------------------------------------------- |
+| `LABEL = COMMAND`  | 위쪽 영역에 항목 추가. 같은 LABEL의 .desktop 항목은 이 항목으로 대체된다 |
+| `LABEL = @COMMAND` | 위와 같지만 COMMAND를 호스트에서 실행한다                   |
+| `!LABEL`           | LABEL 항목을 숨긴다. 규칙 항목과 .desktop 항목 모두에 적용된다 |
+| `---`              | 구분선                                                      |
+| `# ...`, 빈 줄     | 무시                                                        |
 
 - LABEL은 첫 `=` 앞부분이다. 앞뒤 공백은 지운다. LABEL에 `=`를 쓸 수 없다.
 - COMMAND는 openbox가 shell 없이 인자로 나눠 실행한다. 파이프, `&&`, 환경 변수 확장이 필요하면 `sh -c '...'`로 감싼다.
 - 같은 LABEL을 다시 정의하면 위치는 처음 정의한 자리를 유지하고 COMMAND만 바뀐다.
-- 호스트 앱 항목의 라벨을 바꾸려면 새 라벨로 `@NAME` 항목을 만들고 자동 항목은 숨긴다.
 
-  ```
-  Host shell = @term
-  !term
-  ```
+## 호스트 항목 (`@COMMAND`)
+
+```
+term = @wezterm start --always-new-process
+```
+
+- 메뉴에서 누르면 세션이 호스트 중계(`vdesk-hostd`)에 라벨(`term`)만 보낸다. 중계는 호스트의 `~/.config/vdesk/menu.conf`에서 그 라벨의 마지막 규칙을 찾아, `@`로 시작하면 호스트에서 실행한다. 세션이 보낸 명령을 실행하는 일은 없다.
+- 그래서 `@` 항목은 사용자의 `menu.conf`에서만 동작한다. 이미지 기본 규칙이나 addon의 `menu.conf`에 넣으면 메뉴에는 나오지만 누르면 오류 창이 뜬다.
+- 명령줄에서는 `vdesk run -t TARGET @LABEL`로 같은 항목을 실행한다.
+- 라벨이 곧 호스트 항목의 이름이다. 라벨을 바꾸면 `vdesk run @라벨`도 함께 바뀐다.
+- 중계 프로세스와 문제 해결은 [README](../README.md#호스트-앱).
 
 ## 호스트에서 편집
 

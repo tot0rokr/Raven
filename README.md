@@ -52,28 +52,27 @@ vdesk kill sim                         # 세션과 홈 volume 삭제
 
 ```bash
 vdesk run -t edge --host wezterm start --always-new-process   # 명령을 직접 지정
-vdesk run -t edge @term                                       # host-apps.conf의 이름으로
+vdesk run -t edge @term                                       # menu.conf의 호스트 항목 라벨로
 ```
 
 - 호스트 프로세스라 격리되지 않는다. 호스트의 홈, 설정, 셸 환경을 그대로 쓴다.
 - SSH가 끊겨도 세션 화면에 남는다. 세션을 `kill`하거나 `recreate`하면 화면이 사라지면서 함께 종료된다.
 - 출력과 오류는 `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.log`에 쌓인다.
 
-### 이름 붙이기와 메뉴
+### 메뉴에 넣기
 
-`~/.config/vdesk/host-apps.conf`에 `NAME = COMMAND`로 적어 둔다.
+`vdesk menu edit`으로 `menu.conf`를 열고, 명령 앞에 `@`를 붙인 항목을 적는다.
 
 ```
-# ~/.config/vdesk/host-apps.conf
-term = wezterm start --always-new-process
+term = @wezterm start --always-new-process
 ```
 
-- `vdesk run -t TARGET @NAME`으로 실행한다.
-- 세션의 우클릭 메뉴에 `NAME` 항목이 자동으로 생긴다. 라벨을 바꾸려면 `menu.conf`에 `Host shell = @term`처럼 적고 `!term`으로 자동 항목을 숨긴다 ([docs/menu.md](./docs/menu.md)).
-- 메뉴 항목은 컨테이너 안에서 실행되므로, 호스트 중계 프로세스 `vdesk-hostd`에 요청을 보내 호스트에서 실행한다. 세션은 이름만 보내고, 명령은 호스트의 `host-apps.conf`에서만 찾는다. 같은 사용자의 요청만 받는다.
+- 세션의 우클릭 메뉴에 `term`이 생기고, 누르면 호스트에서 실행된다. 명령줄에서는 `vdesk run -t TARGET @term`(라벨에 공백이 있으면 `@"Host shell"`).
+- 메뉴 항목은 컨테이너 안에서 실행되므로, 호스트 중계 프로세스 `vdesk-hostd`에 요청을 보내 호스트에서 실행한다. 세션은 라벨만 보내고, 명령은 호스트의 `~/.config/vdesk/menu.conf`에서만 찾는다. 같은 사용자의 요청만 받는다.
+- 그래서 `@` 항목은 사용자의 `menu.conf`에서만 동작한다. 이미지 기본 규칙(`/etc/vdesk/menu.d`)에 넣으면 메뉴에는 나오지만 실행되지 않는다.
 - 중계 프로세스는 세션을 다루는 명령(`new`, `attach`, `run`, `shell`, `recreate`)이 실행될 때 없으면 뜬다. VM 재부팅 뒤 메뉴에서 호스트 앱이 안 뜨면 `vdesk hostd start`를 실행한다. 실패하면 세션 화면에 오류 창이 뜬다.
 - `vdesk hostd status | start | stop`으로 관리한다. 로그는 `$XDG_RUNTIME_DIR/vdesk-<uid>/hostd.log`.
-- 이 기능 이후 이미지로 만든 세션에서만 메뉴에 나온다.
+- 이 기능 이후 이미지로 만든 세션에서만 메뉴에서 실행된다.
 
 ### wezterm
 
@@ -147,7 +146,6 @@ Edge (work) = microsoft-edge --profile-directory=Work
 | 세션 이름              | `~/.local/state/vdesk/<hostname>/<id>.name`           |
 | addon 설정             | `~/.config/vdesk/addons.enabled`, `addons/<name>/`    |
 | 메뉴 규칙              | `~/.config/vdesk/menu.conf`                           |
-| 호스트 앱 이름 표      | `~/.config/vdesk/host-apps.conf`                      |
 | `run --host` 인증/로그 | `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.xauth`, `<id>.log` |
 | 호스트 중계 로그       | `$XDG_RUNTIME_DIR/vdesk-<uid>/hostd.log`              |
 

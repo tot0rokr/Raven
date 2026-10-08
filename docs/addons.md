@@ -124,7 +124,7 @@ PACKAGES="fonts-nanum"
 
 ### 호스트 앱을 쓰는 경우
 
-호스트에 이미 설치된 앱은 addon 없이 `vdesk run -t TARGET --host CMD`로 세션 화면에 띄운다. 격리되지 않으므로, 호스트에 설치된 대형 도구를 그대로 써야 할 때만 쓴다.
+호스트에 이미 설치된 앱은 addon 없이 `vdesk run -t TARGET --host CMD`로 세션 화면에 띄운다. 메뉴에 넣으려면 `menu.conf`에 `LABEL = @COMMAND`로 적는다 ([menu.md](./menu.md)). 격리되지 않으므로, 호스트에 설치된 대형 도구를 그대로 써야 할 때만 쓴다.
 
 ## 문제 해결
 

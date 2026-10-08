@@ -138,27 +138,41 @@ apply_wallpaper() {
         "$(cname "$1")" vdesk-wallpaper
 }
 
-# Copy the host-wide wallpaper into session $1 when it changed; older images are skipped
+# Write NAME.img (or remove it when IMG is empty) and then NAME.conf with text CONF into the
+# session home, each through a temp file. The old conf goes first, so an interrupted copy
+# leaves no conf and is redone on the next push instead of pairing a conf with a wrong image.
+put_wallpaper() {
+    local c=$1 n=$2 conf=$3 img=$4 d=/home/vdesk/.config/vdesk
+    docker exec "$c" sh -c "mkdir -p $d && rm -f $d/$n.conf" || return 1
+    if [ -n "$img" ]; then
+        docker exec -i "$c" sh -c "cat > $d/$n.img.tmp && mv -f $d/$n.img.tmp $d/$n.img" < "$img" || return 1
+    else
+        docker exec "$c" rm -f "$d/$n.img" || return 1
+    fi
+    printf '%s\n' "$conf" | docker exec -i "$c" sh -c "cat > $d/$n.conf.tmp && mv -f $d/$n.conf.tmp $d/$n.conf" \
+        || return 1
+}
+
+# Copy the host-wide wallpaper into session $1 when it changed.
+# Returns 0 when up to date or applied, 1 on failure, 2 when the session's image has no support.
 push_wallpaper() {
     local c cur
     c=$(cname "$1")
-    has_wallpaper "$1" || return 0
-    cur=$(docker exec "$c" cat /home/vdesk/.config/vdesk/wallpaper.conf 2>/dev/null || true)
+    has_wallpaper "$1" || return 2
+    cur=$(docker exec "$c" cat /home/vdesk/.config/vdesk/wallpaper.conf 2>/dev/null) || cur=
     if [ -f "$confdir/wallpaper.conf" ]; then
         [ "$cur" != "$(cat "$confdir/wallpaper.conf")" ] || return 0
         if [ -f "$confdir/wallpaper.img" ]; then
-            docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.img' \
-                < "$confdir/wallpaper.img"
+            put_wallpaper "$c" wallpaper "$(cat "$confdir/wallpaper.conf")" "$confdir/wallpaper.img" || return 1
         else
-            docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.img
+            put_wallpaper "$c" wallpaper "$(cat "$confdir/wallpaper.conf")" "" || return 1
         fi
-        docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.conf' \
-            < "$confdir/wallpaper.conf"
     else
         [ -n "$cur" ] || return 0
-        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.conf /home/vdesk/.config/vdesk/wallpaper.img
+        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.conf /home/vdesk/.config/vdesk/wallpaper.img \
+            || return 1
     fi
-    apply_wallpaper "$1"
+    apply_wallpaper "$1" || return 1
 }
 
 hostd_pid() {
@@ -190,7 +204,8 @@ ensure_up() {
         sleep 0.25
     done
     push_menu "$1"
-    push_wallpaper "$1"
+    # The wallpaper is cosmetic; never let it stop attach, run or new
+    push_wallpaper "$1" || [ $? -eq 2 ] || echo "vdesk: session $1: wallpaper not updated" >&2
     ensure_hostd || true
 }
 
@@ -673,44 +688,54 @@ wallpaper_summary() {
 # Store CONF (and IMG) for every session when TARGET is empty, else for that session only.
 # An empty CONF clears the setting.
 save_wallpaper() {
-    local target=$1 conf=$2 img=$3 id c n=0 skipped=0
+    local target=$1 conf=$2 img=$3 ids id n=0 skipped=0 failed=0 rc
     if [ -z "$target" ]; then
+        ids=$(sessions) || die "cannot list sessions"
         mkdir -p "$confdir"
+        # Same order as in sessions: drop the conf, replace the image, then write the conf
+        rm -f "$confdir/wallpaper.conf"
         if [ -z "$conf" ]; then
-            rm -f "$confdir/wallpaper.conf" "$confdir/wallpaper.img"
+            rm -f "$confdir/wallpaper.img"
         else
-            if [ -n "$img" ]; then cp "$img" "$confdir/wallpaper.img"; else rm -f "$confdir/wallpaper.img"; fi
-            printf '%s\n' "$conf" > "$confdir/wallpaper.conf"
+            if [ -n "$img" ]; then
+                cp -- "$img" "$confdir/wallpaper.img.tmp" && mv -f "$confdir/wallpaper.img.tmp" "$confdir/wallpaper.img" \
+                    || die "cannot store $img"
+            else
+                rm -f "$confdir/wallpaper.img"
+            fi
+            printf '%s\n' "$conf" > "$confdir/wallpaper.conf.tmp" \
+                && mv -f "$confdir/wallpaper.conf.tmp" "$confdir/wallpaper.conf" || die "cannot store the setting"
         fi
-        for id in $(sessions | awk '$4 == "running" { print $1 }'); do
-            if has_wallpaper "$id"; then
-                push_wallpaper "$id"
+        for id in $(echo "$ids" | awk '$4 == "running" { print $1 }'); do
+            if push_wallpaper "$id"; then
                 n=$((n + 1))
             else
-                skipped=$((skipped + 1))
+                rc=$?
+                if [ "$rc" -eq 2 ]; then
+                    skipped=$((skipped + 1))
+                else
+                    failed=$((failed + 1))
+                    echo "vdesk: session $id: wallpaper not updated" >&2
+                fi
             fi
         done
-        if [ "$skipped" -gt 0 ]; then
-            echo "vdesk: applied to $n running session(s); $skipped older session(s) get it after recreate" >&2
-        else
-            echo "vdesk: applied to $n running session(s)" >&2
-        fi
-        return 0
+        printf 'vdesk: applied to %s running session(s)' "$n" >&2
+        [ "$skipped" -eq 0 ] || printf '; %s older session(s) get it after recreate' "$skipped" >&2
+        [ "$failed" -eq 0 ] || printf '; %s failed' "$failed" >&2
+        printf '\n' >&2
+        [ "$failed" -eq 0 ]
+        return
     fi
 
     id=$(resolve "$target")
-    ensure_up "$id"
     has_wallpaper "$id" || die "session $id runs an image without wallpaper support; recreate it first"
+    ensure_up "$id"
     c=$(cname "$id")
     if [ -z "$conf" ]; then
-        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.conf /home/vdesk/.config/vdesk/wallpaper.local.img
+        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.conf /home/vdesk/.config/vdesk/wallpaper.local.img \
+            || die "session $id: cannot clear its wallpaper"
     else
-        if [ -n "$img" ]; then
-            docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.local.img' < "$img"
-        else
-            docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.img
-        fi
-        printf '%s\n' "$conf" | docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.local.conf'
+        put_wallpaper "$c" wallpaper.local "$conf" "$img" || die "session $id: cannot store its wallpaper"
     fi
     apply_wallpaper "$id"
 }

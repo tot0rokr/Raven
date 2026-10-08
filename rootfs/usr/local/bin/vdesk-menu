@@ -1,0 +1,91 @@
+#!/bin/sh
+# Openbox pipe menu: menu rules first, then .desktop applications.
+# usage: vdesk-menu [--list]
+set -u
+
+mode=xml
+[ "${1:-}" != --list ] || mode=list
+
+rules=$(cat /etc/vdesk/menu.d/*.conf "$HOME/.config/vdesk/menu.conf" 2>/dev/null)
+
+# Same file name in a later directory overrides an earlier one
+files=$(for d in /usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications"; do
+    for f in "$d"/*.desktop; do
+        [ -f "$f" ] && printf '%s\t%s\n' "${f##*/}" "$f"
+    done
+done | awk -F '\t' '{ path[$1] = $2 } END { for (k in path) print path[k] }')
+
+apps=
+if [ -n "$files" ]; then
+    apps=$(IFS='
+'
+    # shellcheck disable=SC2086
+    awk '
+    function flush() {
+        if (name != "" && cmd != "" && !hidden && type == "Application") {
+            gsub(/%[fFuUdDnNickvm]/, "", cmd)
+            gsub(/%%/, "%", cmd)
+            sub(/[ \t]+$/, "", cmd)
+            if (term) cmd = "xterm -e " cmd
+            print name "\t" cmd
+        }
+        name = cmd = type = ""; hidden = term = 0; sect = 0
+    }
+    FNR == 1 { flush() }
+    /^\[/ { sect = ($0 == "[Desktop Entry]"); next }
+    !sect { next }
+    /^Name=/ { name = substr($0, 6) }
+    /^Exec=/ { cmd = substr($0, 6) }
+    /^Type=/ { type = substr($0, 6) }
+    /^(NoDisplay|Hidden)=true/ { hidden = 1 }
+    /^Terminal=true/ { term = 1 }
+    END { flush() }
+    ' $files | sort -f)
+fi
+
+{
+    printf '%s\n' "$rules" | sed 's/^/R\t/'
+    [ -z "$apps" ] || printf '%s\n' "$apps" | sed 's/^/A\t/'
+} | awk -v mode="$mode" '
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function esc(s) {
+    gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s)
+    gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s)
+    return s
+}
+function sep() { if (printed) pending = 1 }
+function item(label, cmd) {
+    if (pending) print (mode == "list" ? "---" : "  <separator />")
+    pending = 0; printed = 1
+    if (mode == "list") { print label "\t" cmd; return }
+    label = esc(label); gsub(/_/, "__", label)
+    printf "  <item label=\"%s\"><action name=\"Execute\"><command>%s</command></action></item>\n", label, esc(cmd)
+}
+BEGIN { if (mode == "xml") print "<openbox_pipe_menu>" }
+/^R\t/ {
+    line = trim(substr($0, 3))
+    if (line == "" || line ~ /^#/) next
+    if (line == "---") { n++; kind[n] = "sep"; next }
+    if (line ~ /^!/) { hide[trim(substr(line, 2))] = 1; next }
+    eq = index(line, "=")
+    if (!eq) next
+    label = trim(substr(line, 1, eq - 1)); cmd = trim(substr(line, eq + 1))
+    if (label in pos) { mcmd[pos[label]] = cmd; next }
+    n++; kind[n] = "item"; mlabel[n] = label; mcmd[n] = cmd; pos[label] = n
+    next
+}
+/^A\t/ {
+    split(substr($0, 3), f, "\t")
+    if (f[1] in seen) next
+    seen[f[1]] = 1; na++; alabel[na] = f[1]; acmd[na] = f[2]
+}
+END {
+    for (i = 1; i <= n; i++) {
+        if (kind[i] == "sep") sep()
+        else if (!(mlabel[i] in hide)) item(mlabel[i], mcmd[i])
+    }
+    sep()
+    for (i = 1; i <= na; i++)
+        if (!(alabel[i] in hide) && !(alabel[i] in pos)) item(alabel[i], acmd[i])
+    if (mode == "xml") print "</openbox_pipe_menu>"
+}'

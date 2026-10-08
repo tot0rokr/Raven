@@ -48,18 +48,34 @@ vdesk kill sim                         # 세션과 홈 volume 삭제
 
 ## 호스트 앱
 
-`vdesk run -t TARGET --host CMD`는 호스트에 설치된 GUI 앱을 세션 화면에 띄운다.
+호스트에 설치된 GUI 앱을 세션 화면에 띄울 수 있다.
+
+```bash
+vdesk run -t edge --host wezterm start --always-new-process   # 명령을 직접 지정
+vdesk run -t edge @term                                       # host-apps.conf의 이름으로
+```
 
 - 호스트 프로세스라 격리되지 않는다. 호스트의 홈, 설정, 셸 환경을 그대로 쓴다.
 - SSH가 끊겨도 세션 화면에 남는다. 세션을 `kill`하거나 `recreate`하면 화면이 사라지면서 함께 종료된다.
 - 출력과 오류는 `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.log`에 쌓인다.
-- 우클릭 메뉴는 컨테이너 안에서 실행되므로 호스트 앱을 띄우지 못한다.
 
-호스트 터미널로 wezterm을 쓰는 예:
+### 이름 붙이기와 메뉴
 
-```bash
-vdesk run -t edge --host wezterm start --always-new-process
+`~/.config/vdesk/host-apps.conf`에 `NAME = COMMAND`로 적어 둔다.
+
 ```
+# ~/.config/vdesk/host-apps.conf
+term = wezterm start --always-new-process
+```
+
+- `vdesk run -t TARGET @NAME`으로 실행한다.
+- 세션의 우클릭 메뉴에 `NAME` 항목이 자동으로 생긴다. 라벨을 바꾸려면 `menu.conf`에 `Host shell = @term`처럼 적고 `!term`으로 자동 항목을 숨긴다 ([docs/menu.md](./docs/menu.md)).
+- 메뉴 항목은 컨테이너 안에서 실행되므로, 호스트 중계 프로세스 `vdesk-hostd`에 요청을 보내 호스트에서 실행한다. 세션은 이름만 보내고, 명령은 호스트의 `host-apps.conf`에서만 찾는다. 같은 사용자의 요청만 받는다.
+- 중계 프로세스는 세션을 다루는 명령(`new`, `attach`, `run`, `shell`, `recreate`)이 실행될 때 없으면 뜬다. VM 재부팅 뒤 메뉴에서 호스트 앱이 안 뜨면 `vdesk hostd start`를 실행한다. 실패하면 세션 화면에 오류 창이 뜬다.
+- `vdesk hostd status | start | stop`으로 관리한다. 로그는 `$XDG_RUNTIME_DIR/vdesk-<uid>/hostd.log`.
+- 이 기능 이후 이미지로 만든 세션에서만 메뉴에 나온다.
+
+### wezterm
 
 - 호스트의 `~/.wezterm.lua`를 그대로 쓴다. GPU 없이 Mesa llvmpipe로 그리므로 호스트에 `libegl1`, `libegl-mesa0`이 있어야 한다.
 - `--always-new-process`: 다른 화면에서 이미 실행 중인 wezterm이 있으면, 그 프로세스에 새 창이 열려 엉뚱한 화면에 뜨는 것을 막는다.
@@ -131,7 +147,9 @@ Edge (work) = microsoft-edge --profile-directory=Work
 | 세션 이름              | `~/.local/state/vdesk/<hostname>/<id>.name`           |
 | addon 설정             | `~/.config/vdesk/addons.enabled`, `addons/<name>/`    |
 | 메뉴 규칙              | `~/.config/vdesk/menu.conf`                           |
+| 호스트 앱 이름 표      | `~/.config/vdesk/host-apps.conf`                      |
 | `run --host` 인증/로그 | `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.xauth`, `<id>.log` |
+| 호스트 중계 로그       | `$XDG_RUNTIME_DIR/vdesk-<uid>/hostd.log`              |
 
 - 홈이 NFS라서 세션 홈은 로컬 디스크의 volume에 둔다. Chromium 계열 프로필의 SQLite 잠금 문제를 피하기 위해서다.
 - 세션 이름은 호스트별 디렉터리에 둔다. NFS 홈을 공유하는 다른 호스트와 섞이지 않게 하기 위해서다.

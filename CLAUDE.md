@@ -12,6 +12,8 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
   - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 tint2를 띄운다 (이미 떠 있으면 건너뜀).
   - `rootfs/etc/xdg/tint2/tint2rc`: 작업표시줄 기본 설정 (창 목록 + 시계). tint2는 `-c`로 실행해서 세션 홈에 복사본을 만들지 않게 한다.
+- `vdesk-hostd`: 호스트 중계 (python3). abstract socket `@vdesk-host-<uid>`로 세션의 호스트 앱 요청을 받아 `vdesk run -t ID @NAME`으로 넘긴다. 시작한 `vdesk`의 경로와 환경 변수를 물려받는다.
+  - `rootfs/usr/local/bin/vdesk-host`: 세션 쪽 요청 프로그램 (python3). 실패하면 `xmessage`로 알린다.
 - `addons/<name>/`: 기본 제공 addon. 지금은 `edge`만 있다.
 - `docs/`: 사용자 매뉴얼.
 
@@ -24,12 +26,14 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 호스트에 패키지를 설치하지 않는다.
 - `--no-sandbox`를 쓰지 않는다.
 - Xvnc의 MIT-SHM은 끈 채로 둔다. 켜면 `run --host`로 띄운 Mesa 앱(wezterm 등)이 검은 창이 된다. `--ipc host`로 바꾸지 않는다.
+- 세션과 호스트 사이에는 호스트 앱의 이름만 오간다. 명령은 호스트의 `host-apps.conf`에서만 찾고, 세션이 보낸 문자열을 명령으로 실행하지 않는다. 중계는 SO_PEERCRED로 같은 uid만 받는다.
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 README와 `docs/`를 같이 고친다.
 
 ## 검증
 
-- 사용자의 X 서버에 창을 띄우지 않는다. 화면 확인은 세션 화면을 직접 캡처하거나, 다른 세션 화면에 attach해서 본다.
+- 사용자의 X 서버에 창을 띄우지 않는다. 화면 확인은 세션 화면을 직접 캡처하거나, 다른 세션 화면에 attach해서 본다. 시험 셸에서는 먼저 `unset DISPLAY`를 하고, 인자 없는 `vdesk`(새 세션 + attach)를 실행하거나 `source`하지 않는다.
+- 중계(`vdesk-hostd`)는 처음 띄운 `vdesk`의 경로와 `XDG_CONFIG_HOME`을 계속 쓴다. 시험용 설정이나 worktree로 시험한 뒤에는 `vdesk hostd stop`으로 내려 둔다.
 - 사용자의 `~/.config/vdesk`와 사용자가 만든 세션을 건드리지 않는다. 시험할 때는 `XDG_CONFIG_HOME`을 임시 디렉터리로 돌리고, 이름 붙인 시험 세션을 만든 뒤 `kill`한다. `vdesk menu sync`와 `recreate -a`는 모든 세션에 영향을 준다.
 - 순서:
   - `sh -n`으로 스크립트 문법 확인.

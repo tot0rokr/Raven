@@ -4,21 +4,48 @@
 # Settings files are "key=value" lines: type=image|color, mode=<xwallpaper mode>, color=<X color>.
 set -u
 dir=$HOME/.config/vdesk
+mkdir -p "$dir"
 
-# A previous image daemon would repaint over the new setting on the next resize
-pkill -u "$(id -u)" -x xwallpaper 2>/dev/null
+# The entrypoint and vdesk can run this at the same moment; whoever runs last reads the newest files
+exec 9>"$dir/.wallpaper.lock"
+flock 9
+
+get() { sed -n "s/^$2=//p" "$1" | head -n 1; }
+
+usable() {
+    [ -f "$1" ] || return 1
+    case "$(get "$1" type)" in
+        color) [ -n "$(get "$1" color)" ] ;;
+        image)
+            case "$(get "$1" mode)" in
+                zoom | maximize | center | tile | stretch | focus) [ -s "${1%.conf}.img" ] ;;
+                *) return 1 ;;
+            esac ;;
+        *) return 1 ;;
+    esac
+}
 
 conf=
 for c in "$dir/wallpaper.local.conf" "$dir/wallpaper.conf"; do
-    [ -f "$c" ] && { conf=$c; break; }
+    usable "$c" && { conf=$c; break; }
 done
-[ -n "$conf" ] || exec xsetroot -solid black
 
-get() { sed -n "s/^$1=//p" "$conf" | head -n 1; }
-case "$(get type)" in
-    color)
-        exec xsetroot -solid "$(get color)" ;;
-    image)
-        # --daemon repaints when the screen size changes (viewer resize)
-        exec xwallpaper --daemon "--$(get mode)" "${conf%.conf}.img" ;;
-esac
+# Skip repainting when this exact setting is already on screen; the root property
+# disappears with the X server, so a restarted session always paints
+if [ -n "$conf" ]; then key="$conf $(cksum < "$conf")"; else key=none; fi
+current=$(xprop -root -notype _VDESK_WALLPAPER 2>/dev/null | sed -n 's/^_VDESK_WALLPAPER = "\(.*\)"$/\1/p')
+if [ "$key" = "$current" ]; then
+    [ -n "$conf" ] && [ "$(get "$conf" type)" = image ] || exit 0
+    pgrep -u "$(id -u)" -x xwallpaper >/dev/null && exit 0
+fi
+
+pkill -u "$(id -u)" -x xwallpaper 2>/dev/null
+if [ -z "$conf" ]; then
+    xsetroot -solid black
+elif [ "$(get "$conf" type)" = color ]; then
+    xsetroot -solid "$(get "$conf" color)"
+else
+    # --daemon repaints when the screen size changes (viewer resize); it must not keep the lock
+    xwallpaper --daemon "--$(get "$conf" mode)" "${conf%.conf}.img" 9>&-
+fi
+xprop -root -f _VDESK_WALLPAPER 8s -set _VDESK_WALLPAPER "$key"

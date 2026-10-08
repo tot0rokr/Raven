@@ -150,11 +150,12 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+t`                                 | 떠 있는 창을 다시 타일로                          |
 | `Alt+왼쪽 드래그` / `Alt+오른쪽 드래그` | 창을 띄워서 이동 / 크기 조절                      |
 | `Alt+Shift+c`                           | 포커스된 창 닫기                                  |
+| `Alt+g`                                 | 창 사이 간격 끄기 / 켜기                          |
 | `Alt+q`                                 | xmonad 재시작 (창은 유지)                         |
 
 - `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`도 Windows가 가로챌 수 있어서 레이아웃 전환은 `Alt+\`를 쓴다.
 - `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm start --always-new-process` (호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
-- 창이 하나라도 있으면 화면을 빈틈없이 채운다. 배경화면은 빈 작업 공간과 떠 있는 창 주변에서만 보인다.
+- 창 사이와 화면 가장자리에 6px 간격을 둔다. 창이 하나여도 둔다. 배경화면은 이 간격과 빈 작업 공간에서 보인다. `Alt+g`로 끄면 창이 화면을 빈틈없이 채운다. 세션이 다시 뜨면 켜진 상태로 돌아간다.
 
 ### openbox
 
@@ -350,5 +351,5 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 - 호스트 wezterm 창이 검게 나온다: MIT-SHM을 끄기 전에 만든 세션이다. `vdesk recreate`로 옮긴다.
 - addon을 켰는데 세션에 앱이 없다: `vdesk addon ls`에서 `BUILT`를 확인하고 `vdesk recreate`로 새 이미지로 옮긴다.
 - Edge가 `Zygote process exited`로 죽는다: 이미지 label `vdesk.seccomp`가 비어 있다. `edge` addon을 켜고 빌드했는지 확인한다.
-- 배경화면이 안 보인다: 배경화면 기능 이전 이미지의 세션이면 `vdesk recreate`. xmonad 세션은 창이 화면을 덮으므로 빈 작업 공간에서 확인한다.
+- 배경화면이 안 보인다: 배경화면 기능 이전 이미지의 세션이면 `vdesk recreate`. xmonad 세션은 창 사이 6px 간격과 빈 작업 공간에서 보인다. 간격 기능 이전 이미지의 xmonad 세션은 창이 화면을 덮는다.
 - `Alt+Tab`이 세션으로 가지 않는다: Windows가 가로챈다. xmonad에서는 `Alt+j`/`Alt+k`를 쓴다.

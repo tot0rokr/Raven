@@ -16,7 +16,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
   - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 `vdesk-panel`을 부른다.
   - `rootfs/etc/xdg/tint2/tint2rc` (openbox), `rootfs/etc/vdesk/tint2/xmonad.tint2rc` (xmonad): 작업표시줄 기본 설정. tint2는 `-c`로 실행해서 세션 홈에 복사본을 만들지 않게 한다.
-- `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다.
+- `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다. `XMonad.Layout.Spacing`으로 창 사이와 화면 가장자리에 6px 간격(각 3px)을 두고 `Alt+g`로 끈다.
 - `vdesk-hostd`: 호스트 중계 (python3). abstract socket `@vdesk-host-<uid>`로 세션의 요청(세션 id + 라벨)을 받아 `vdesk run -t ID @LABEL`로 넘긴다. 시작한 `vdesk`의 경로와 환경 변수를 물려받는다.
   - `rootfs/usr/local/bin/vdesk-host`: 세션 쪽 요청 프로그램 (python3). 실패하면 `xmessage`로 알린다.
 - `addons/<name>/`: 기본 제공 addon. 지금은 `edge`만 있다.

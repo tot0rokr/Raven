@@ -1,0 +1,98 @@
+# vdesk taskbar for xmonad: menu button, one group per workspace, clock.
+# A session's ~/.config/tint2/tint2rc overrides this file.
+
+# Background 1: panel
+rounded = 0
+border_width = 0
+background_color = #2b2b2b 100
+border_color = #000000 0
+
+# Background 2: task, button
+rounded = 2
+border_width = 0
+background_color = #444444 100
+border_color = #000000 0
+background_color_hover = #555555 100
+background_color_pressed = #333333 100
+
+# Background 3: active task, current workspace name
+rounded = 2
+border_width = 1
+background_color = #4a5d7a 100
+border_color = #8aa0c0 100
+
+# Background 4: current workspace group
+rounded = 0
+border_width = 0
+background_color = #363636 100
+border_color = #000000 0
+
+# Panel
+panel_items = PTC
+panel_size = 100% 28
+panel_margin = 0 0
+panel_padding = 2 2 4
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+panel_dock = 0
+panel_window_name = tint2
+wm_menu = 0
+autohide = 0
+strut_policy = follow_size
+disable_transparency = 1
+font_shadow = 0
+mouse_effects = 1
+
+# Button: vdesk menu (same as Alt+p)
+button = new
+button_text = menu
+button_lclick_command = vdesk-launcher
+button_font = Noto Sans KR Bold 9
+button_font_color = #dddddd 100
+button_padding = 10 2
+button_background_id = 2
+button_centered = 1
+
+# Taskbar: one group per xmonad workspace, named 1..9
+taskbar_mode = multi_desktop
+taskbar_padding = 2 0 2
+taskbar_background_id = 0
+taskbar_active_background_id = 4
+taskbar_name = 1
+taskbar_name_padding = 6 0
+taskbar_name_background_id = 0
+taskbar_name_active_background_id = 3
+taskbar_name_font = Noto Sans KR 9
+taskbar_name_font_color = #999999 100
+taskbar_name_active_font_color = #ffffff 100
+taskbar_hide_if_empty = 0
+# Width follows the number of windows, so empty workspaces stay narrow
+taskbar_distribute_size = 1
+taskbar_sort_order = none
+
+# Task
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 200 24
+task_padding = 6 2 4
+task_font = Noto Sans KR 9
+task_font_color = #dddddd 100
+task_active_font_color = #ffffff 100
+task_background_id = 2
+task_active_background_id = 3
+mouse_left = toggle
+mouse_middle = close
+mouse_right = none
+mouse_scroll_up = none
+mouse_scroll_down = none
+
+# Clock
+time1_format = %m/%d %a %H:%M
+time1_font = Noto Sans KR 9
+clock_font_color = #dddddd 100
+clock_padding = 8 0
+clock_background_id = 0
+clock_tooltip = %Y-%m-%d %A

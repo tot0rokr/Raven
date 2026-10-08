@@ -1,0 +1,12 @@
+#!/bin/sh
+# Start the tint2 taskbar once per session. A session's own ~/.config/tint2/tint2rc
+# wins; otherwise read the image default for this window manager with -c, so tint2
+# does not copy it into the session home and image updates apply.
+rc=${XDG_CONFIG_HOME:-$HOME/.config}/tint2/tint2rc
+if [ ! -f "$rc" ]; then
+    case "${VDESK_WM:-openbox}" in
+        xmonad) rc=/etc/vdesk/tint2/xmonad.tint2rc ;;
+        *) rc=/etc/xdg/tint2/tint2rc ;;
+    esac
+fi
+pgrep -u "$(id -u)" -x tint2 >/dev/null || exec tint2 -c "$rc"

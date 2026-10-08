@@ -1,0 +1,10 @@
+#!/bin/sh
+# Menu for window managers without a desktop menu (xmonad): pick an entry of
+# vdesk-menu with rofi and run it.
+set -u
+menu=$(vdesk-menu --list | grep -v '^---$')
+[ -n "$menu" ] || exit 0
+i=$(printf '%s\n' "$menu" | cut -f 1 | rofi -dmenu -i -p vdesk -format i -font 'Noto Sans KR 11') || exit 0
+[ -n "$i" ] || exit 0
+cmd=$(printf '%s\n' "$menu" | sed -n "$((i + 1))p" | cut -f 2-)
+exec setsid sh -c "$cmd" >/dev/null 2>&1 </dev/null

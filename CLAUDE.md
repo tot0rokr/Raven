@@ -10,6 +10,8 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
   - `rootfs/usr/local/bin/vdesk-menu`: openbox pipe menu 생성기 (규칙 + .desktop).
   - `rootfs/usr/local/bin/vdesk-apply-addon`: 빌드 중 addon 하나를 적용.
   - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
+  - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 tint2를 띄운다 (이미 떠 있으면 건너뜀).
+  - `rootfs/etc/xdg/tint2/tint2rc`: 작업표시줄 기본 설정 (창 목록 + 시계). tint2는 `-c`로 실행해서 세션 홈에 복사본을 만들지 않게 한다.
 - `addons/<name>/`: 기본 제공 addon. 지금은 `edge`만 있다.
 - `docs/`: 사용자 매뉴얼.
 

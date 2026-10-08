@@ -91,5 +91,5 @@ EOF
 
 ## 기본값
 
-- core (`00-core.conf`): `Terminal = xterm`을 넣고, 중복되는 `XTerm`, `UXTerm`, 세션 안에서 쓸 일이 없는 `TigerVNC Viewer`를 숨긴다.
+- core (`00-core.conf`): `Terminal = xterm`을 넣고, 중복되는 `XTerm`, `UXTerm`, 세션 안에서 쓸 일이 없는 `TigerVNC Viewer`, 이미 떠 있는 작업표시줄을 하나 더 띄우는 `Tint2`를 숨긴다. 작업표시줄 설정 도구인 `Tint2 Settings`는 남긴다.
 - addon이 기본 규칙을 넣으려면 addon 디렉터리에 `menu.conf`를 둔다 ([addons.md](./addons.md)).

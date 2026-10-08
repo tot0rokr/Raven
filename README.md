@@ -3,7 +3,7 @@
 tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 openbox를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행된다. 앱은 addon으로 이미지에 추가하고, 호스트에는 Docker 외 패키지를 설치하지 않는다.
 
 ```
-image vdesk:latest = vdesk-core (Xvnc, openbox, viewers, xterm) + enabled addons (edge, ...)
+image vdesk:latest = vdesk-core (Xvnc, openbox, tint2, viewers, xterm) + enabled addons (edge, ...)
 
 ┌─ session 0 (:100, 15900) ──────┐   ┌─ session 1 (:101, 15901) ──────┐
 │ Xvnc + openbox                 │   │ Xvnc + openbox                 │
@@ -76,6 +76,15 @@ Edge (work) = microsoft-edge --profile-directory=Work
 ```
 
 규칙 문법과 우선순위는 [docs/menu.md](./docs/menu.md).
+
+## 작업표시줄
+
+세션 화면 아래쪽에 [tint2](https://gitlab.com/o9000/tint2) 작업표시줄이 있다. 왼쪽은 열린 창 목록, 오른쪽은 날짜와 시각이다.
+
+- 창 버튼을 누르면 최소화와 복원이 바뀐다. 최소화한 창은 여기서 되살린다.
+- 최대화한 창은 작업표시줄 위까지만 커진다.
+- 기본 설정은 이미지의 `/etc/xdg/tint2/tint2rc`다. 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 그 파일을 쓴다. `vdesk shell`에서 `mkdir -p ~/.config/tint2 && cp /etc/xdg/tint2/tint2rc ~/.config/tint2/`로 복사한 뒤 고친다. 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md).
+- 세션 홈의 설정을 바꾼 뒤에는 `vdesk shell`에서 `pkill -x tint2; pkill -x openbox`로 다시 띄운다. openbox는 entrypoint가 다시 띄우고, 이때 tint2도 함께 뜬다.
 
 ## 이미지 갱신
 

@@ -12,7 +12,8 @@ main :: IO ()
 main = xmonad . ewmhFullscreen . ewmh . docks $ vdeskConfig
 
 vdeskConfig = def
-    { terminal           = "xterm"
+    -- Alt+Shift+Enter runs the "Terminal" menu entry (core: xterm; menu.conf may override)
+    { terminal           = "vdesk-launcher Terminal"
     , modMask            = mod1Mask
     , borderWidth        = 2
     , normalBorderColor  = "#2b2b2b"

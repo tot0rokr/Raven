@@ -4,8 +4,9 @@ set -eu
 
 self=$(readlink -f "$0")
 srcdir=$(dirname "$self")
-image=vdesk:latest
-core_image=vdesk-core:latest
+# Separate tags let a worktree build and run its own image beside the main one
+image=${VDESK_IMAGE:-vdesk:latest}
+core_image=${VDESK_CORE_IMAGE:-vdesk-core:latest}
 user=$(id -un | tr -c 'A-Za-z0-9_.\n-' '_')
 confdir=${XDG_CONFIG_HOME:-$HOME/.config}/vdesk
 statedir=${XDG_STATE_HOME:-$HOME/.local/state}/vdesk/$(hostname)
@@ -15,10 +16,11 @@ port_base=15900
 default_cmd=xterm
 default_geometry=1600x900
 default_addons=edge
+default_wm=${VDESK_WM:-xmonad}
 
 usage() {
     cat <<'EOF'
-usage: vdesk [new] [-d] [-s NAME] [-g WxH] [CMD...]   create a session and attach (default)
+usage: vdesk [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session and attach (default)
        vdesk attach|a [-d] [-g WxH] [TARGET]           attach to a session
        vdesk ls                                        list sessions
        vdesk rename [-t] TARGET NAME                   rename a session
@@ -33,7 +35,7 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [CMD...]   create a session and attac
        vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
 
 TARGET is a session id or name; the newest session when omitted.
-new: CMD defaults to xterm, -d skips attaching.
+new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or openbox.
 attach: -d detaches other viewers of the session.
 EOF
 }
@@ -175,7 +177,7 @@ free_display() {
 
 # Create the container for session $1; runtime needs come from the image's addon labels
 run_container() {
-    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 seccomp shm
+    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm
     seccomp=$(docker image inspect -f '{{index .Config.Labels "vdesk.seccomp"}}' "$image")
     shm=$(docker image inspect -f '{{index .Config.Labels "vdesk.shm-size"}}' "$image")
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
@@ -184,8 +186,8 @@ run_container() {
     docker run -d "$@" \
         --label vdesk.user="$user" --label vdesk.id="$id" \
         --label vdesk.display="$d" --label vdesk.port="$p" \
-        --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" \
-        -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" \
+        --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" --label vdesk.wm="$wm" \
+        -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" -e VDESK_WM="$wm" \
         -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" \
         -v "$(vname "$id"):/home/vdesk" \
         -v "$HOME/Downloads:/home/vdesk/Downloads" \
@@ -214,19 +216,28 @@ view() {
         "$@" -passwd /home/vdesk/.vnc/passwd "localhost::$port"
 }
 
+check_wm() {
+    case "$1" in
+        xmonad | openbox) ;;
+        *) die "window manager must be xmonad or openbox: '$1'" ;;
+    esac
+}
+
 cmd_new() {
-    local detach=0 name= geometry=$default_geometry opt cmd id d p
+    local detach=0 name= geometry=$default_geometry wm=$default_wm opt cmd id d p
     OPTIND=1
-    while getopts ds:g: opt; do
+    while getopts ds:g:w: opt; do
         case "$opt" in
             d) detach=1 ;;
             s) name=$OPTARG ;;
             g) geometry=$OPTARG ;;
+            w) wm=$OPTARG ;;
             *) usage >&2; exit 2 ;;
         esac
     done
     shift $((OPTIND - 1))
     cmd=${*:-$default_cmd}
+    check_wm "$wm"
     check_geometry "$geometry"
     [ -z "$name" ] || check_name "$name"
     [ "$detach" = 1 ] || need_display
@@ -238,9 +249,9 @@ cmd_new() {
     mkdir -p "$HOME/Downloads" "$statedir"
     rm -f "$statedir/$id.name"
     [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
-    run_container "$id" "$d" "$p" "$cmd" "$geometry"
+    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
     ensure_up "$id"
-    echo "vdesk: created session $id${name:+ ($name)}" >&2
+    echo "vdesk: created session $id${name:+ ($name)} with $wm" >&2
     [ "$detach" = 1 ] || view "$id" "" 0
 }
 
@@ -266,18 +277,20 @@ cmd_attach() {
 }
 
 cmd_ls() {
-    local out id display port state cmd clients name
+    local out id display port state cmd clients name wm
     out=$(sessions | sort -n)
     [ -n "$out" ] || { echo "no sessions"; return 0; }
-    printf '%-4s %-16s %-8s %-8s %-6s %-8s %s\n' ID NAME STATE DISPLAY PORT VIEWERS CMD
+    printf '%-4s %-16s %-8s %-8s %-8s %-6s %-8s %s\n' ID NAME STATE WM DISPLAY PORT VIEWERS CMD
     echo "$out" | while read -r id display port state cmd; do
         clients=-
         if [ "$state" = running ]; then
             clients=$(docker top "$(cname "$id")" -eo pid,args | grep -cE 'x(tiger|tight)vncviewer' || true)
         fi
         name=$(name_of "$id")
-        printf '%-4s %-16s %-8s %-8s %-6s %-8s %s\n' \
-            "$id" "${name:--}" "$state" ":$display" "$port" "$clients" "$cmd"
+        # Sessions made before window managers were selectable run openbox
+        wm=$(label_of "$(cname "$id")" vdesk.wm)
+        printf '%-4s %-16s %-8s %-8s %-8s %-6s %-8s %s\n' \
+            "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$clients" "$cmd"
     done
 }
 
@@ -397,7 +410,7 @@ cmd_kill() {
 }
 
 cmd_recreate() {
-    local all=0 target= opt id targets c cmd geometry
+    local all=0 target= opt id targets c cmd geometry wm
     OPTIND=1
     while getopts at: opt; do
         case "$opt" in
@@ -419,10 +432,12 @@ cmd_recreate() {
         c=$(cname "$id")
         cmd=$(label_of "$c" vdesk.cmd)
         geometry=$(label_of "$c" vdesk.geometry)
+        wm=$(label_of "$c" vdesk.wm)
         set -- "$(field "$id" 2)" "$(field "$id" 3)"
         docker stop "$c" >/dev/null
         docker rm "$c" >/dev/null
-        run_container "$id" "$1" "$2" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}"
+        # Sessions made before window managers were selectable run openbox
+        run_container "$id" "$1" "$2" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}" "${wm:-openbox}"
         ensure_up "$id"
         echo "vdesk: recreated session $id" >&2
     done

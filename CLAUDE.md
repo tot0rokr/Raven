@@ -35,7 +35,9 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.
 - GHC는 빌드 단계에만 둔다. xmonad 실행 파일 이름은 `xmonad-x86_64-linux`로 둔다. 다른 이름이면 xmonad가 시작할 때마다 GHC로 다시 컴파일하려 한다. 재시작 키도 `restart "xmonad-x86_64-linux"`로 GHC 없이 재시작한다.
 - 창 관리자 label(`vdesk.wm`)이 없는 세션은 openbox로 다룬다.
-- 배경화면 설정은 `vdesk-wallpaper`가 있는 이미지의 세션에만 복사한다. 이전 이미지 세션의 홈에는 파일을 쓰지 않는다.
+- 배경화면 설정은 이미지 label `vdesk.features`에 `wallpaper`가 있는 세션에만 복사한다(core `Dockerfile`이 붙이고 addon 이미지가 물려받는다). 이전 이미지 세션의 홈에는 파일을 쓰지 않는다.
+- 배경화면 파일은 conf를 먼저 지우고, 이미지와 conf를 임시 파일을 거쳐 `mv`로 바꾼다. 중간에 끊겨도 conf와 다른 이미지가 짝지어지지 않고, 다음 복사 때 다시 한다.
+- `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 README와 `docs/`를 같이 고친다.
 
 ## 검증
@@ -44,7 +46,8 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 중계(`vdesk-hostd`)는 처음 띄운 `vdesk`의 경로와 `XDG_CONFIG_HOME`을 계속 쓴다. 시험용 설정이나 worktree로 시험한 뒤에는 `vdesk hostd stop`으로 내려 둔다.
 - worktree에서 빌드할 때는 `VDESK_IMAGE`, `VDESK_CORE_IMAGE`로 다른 태그를 써서 main이 쓰는 `vdesk:latest`를 덮어쓰지 않는다.
 - 화면 크기 변경은 `xrandr --fb`로 줄이지 않는다. 출력보다 작게 주면 실패하면서 VNC-0 출력이 꺼지고, 그 세션은 배경 등 출력 기반 동작이 깨진다. 실제와 같은 크기 변경은 다른 시험 세션 화면에 뷰어를 attach해서(RemoteResize) 만든다.
-- 사용자의 `~/.config/vdesk`와 사용자가 만든 세션을 건드리지 않는다. 시험할 때는 `XDG_CONFIG_HOME`을 임시 디렉터리로 돌리고, 이름 붙인 시험 세션을 만든 뒤 `kill`한다. `vdesk menu sync`와 `recreate -a`는 모든 세션에 영향을 준다.
+- 사용자의 `~/.config/vdesk`와 사용자가 만든 세션을 건드리지 않는다. 시험할 때는 `XDG_CONFIG_HOME`을 임시 디렉터리로 돌리고, 이름 붙인 시험 세션을 만든 뒤 `kill`한다. `vdesk menu sync`, `recreate -a`, `-t` 없는 `wallpaper set/color/clear`는 모든 세션에 영향을 준다. 시험용 설정으로 사용자 세션에 `attach`, `run`을 해도 그 설정의 메뉴와 배경이 사용자 세션에 복사된다.
+- 뷰어를 `timeout`으로 끝내도 세션 안의 `xtigervncviewer`는 남는다(`docker exec` 클라이언트만 끝남). 남은 뷰어는 RemoteResize로 화면 크기를 되돌리므로 크기 시험 전에 `docker exec <컨테이너> pkill -x xtigervncviewer`로 내린다.
 - 순서:
   - `sh -n`으로 스크립트 문법 확인.
   - `vdesk build` → `vdesk addon ls`에서 BUILT 확인 → `docker image inspect`로 label 확인.

@@ -1,0 +1,6 @@
+# vdesk: runs on every openbox start; the entrypoint restarts openbox if it dies.
+# A session's own ~/.config/tint2/tint2rc wins. Otherwise read the image default
+# with -c, so tint2 does not copy it into the session home and image updates apply.
+rc=${XDG_CONFIG_HOME:-$HOME/.config}/tint2/tint2rc
+[ -f "$rc" ] || rc=/etc/xdg/tint2/tint2rc
+pgrep -u "$(id -u)" -x tint2 >/dev/null || tint2 -c "$rc" &

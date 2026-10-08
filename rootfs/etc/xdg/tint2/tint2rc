@@ -1,0 +1,81 @@
+# vdesk taskbar: window list + clock. A session's ~/.config/tint2/tint2rc overrides this file.
+
+# Background 1: panel
+rounded = 0
+border_width = 0
+background_color = #2b2b2b 100
+border_color = #000000 0
+
+# Background 2: task
+rounded = 2
+border_width = 0
+background_color = #444444 100
+border_color = #000000 0
+background_color_hover = #555555 100
+background_color_pressed = #333333 100
+
+# Background 3: active task
+rounded = 2
+border_width = 1
+background_color = #4a5d7a 100
+border_color = #8aa0c0 100
+
+# Background 4: minimized task
+rounded = 2
+border_width = 0
+background_color = #2f2f2f 100
+border_color = #000000 0
+
+# Panel
+panel_items = TC
+panel_size = 100% 28
+panel_margin = 0 0
+panel_padding = 2 2 4
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+panel_dock = 0
+panel_window_name = tint2
+wm_menu = 1
+autohide = 0
+strut_policy = follow_size
+disable_transparency = 1
+font_shadow = 0
+mouse_effects = 1
+
+# Taskbar
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 4
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 0
+taskbar_distribute_size = 0
+taskbar_sort_order = none
+
+# Task
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 24
+task_padding = 6 2 4
+task_font = Noto Sans KR 9
+task_font_color = #dddddd 100
+task_active_font_color = #ffffff 100
+task_iconified_font_color = #999999 100
+task_background_id = 2
+task_active_background_id = 3
+task_iconified_background_id = 4
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = none
+mouse_scroll_up = none
+mouse_scroll_down = none
+
+# Clock
+time1_format = %m/%d %a %H:%M
+time1_font = Noto Sans KR 9
+clock_font_color = #dddddd 100
+clock_padding = 8 0
+clock_background_id = 0
+clock_tooltip = %Y-%m-%d %A

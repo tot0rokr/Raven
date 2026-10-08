@@ -23,14 +23,14 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [CMD...]   create a session and attac
        vdesk ls                                        list sessions
        vdesk rename [-t] TARGET NAME                   rename a session
        vdesk run [-t TARGET] [--host] CMD...           start an app in a session
-       vdesk run [-t TARGET] @NAME                     start a host app from host-apps.conf
+       vdesk run [-t TARGET] @LABEL                    start a host entry of menu.conf
        vdesk shell [-t TARGET]                         open a shell inside a session
        vdesk kill [-t] TARGET                          delete a session and its home
        vdesk recreate [-a | [-t] TARGET]               move sessions onto the current image
        vdesk build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
        vdesk menu edit | show [-t TARGET] | sync
-       vdesk hostd [status | start | stop]             host relay for @NAME menu entries
+       vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching.
@@ -110,7 +110,7 @@ xin() {
         -w /home/vdesk "$(cname "$id")" "$@"
 }
 
-# Copy the host menu rules, and the names (not commands) of host apps, into a running session
+# Copy the host menu rules into a running session
 push_menu() {
     if [ -f "$confdir/menu.conf" ]; then
         docker exec -i "$(cname "$1")" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/menu.conf' \
@@ -118,8 +118,6 @@ push_menu() {
     else
         docker exec "$(cname "$1")" rm -f /home/vdesk/.config/vdesk/menu.conf
     fi
-    { host_app || true; } | docker exec -i "$(cname "$1")" \
-        sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/host-apps'
 }
 
 hostd_pid() {
@@ -304,22 +302,25 @@ cmd_rename() {
     echo "$1" > "$statedir/$id.name"
 }
 
-# host-apps.conf: "NAME = COMMAND" per line. Prints the command of NAME, or every
-# NAME when called without an argument.
-host_app() {
-    [ -f "$confdir/host-apps.conf" ] || return 1
-    awk -v want="${1:-}" '
-        /^[[:space:]]*(#|$)/ { next }
+# Print the host command of LABEL: the last "LABEL = @COMMAND" rule in the host's
+# menu.conf. Only this file can define host entries; sessions send just a label.
+host_cmd() {
+    [ -f "$confdir/menu.conf" ] || return 1
+    awk -v want="$1" '
+        /^[[:space:]]*(#|!|---|$)/ { next }
         {
             i = index($0, "=")
             if (!i) next
             k = substr($0, 1, i - 1); v = substr($0, i + 1)
             gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
-            if (k == "" || v == "") next
-            if (want == "") { print k; found = 1 }
-            else if (k == want) { print v; found = 1; exit }
+            if (k == want) last = v
         }
-        END { exit !found }' "$confdir/host-apps.conf"
+        END {
+            if (last !~ /^@/) exit 1
+            last = substr(last, 2); sub(/^[ \t]+/, "", last)
+            if (last == "") exit 1
+            print last
+        }' "$confdir/menu.conf"
 }
 
 cmd_run() {
@@ -333,11 +334,12 @@ cmd_run() {
             *) break ;;
         esac
     done
-    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD... | @NAME"
+    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD... | @LABEL"
     case "$1" in
         @*)
-            [ $# -eq 1 ] || die "usage: vdesk run [-t TARGET] @NAME"
-            cmd=$(host_app "${1#@}") || die "no host app '${1#@}' in $confdir/host-apps.conf"
+            [ $# -eq 1 ] || die "usage: vdesk run [-t TARGET] @LABEL"
+            cmd=$(host_cmd "${1#@}") \
+                || die "no host entry '${1#@} = @COMMAND' in $confdir/menu.conf"
             set -- "$cmd"
             host=1 ;;
     esac
@@ -557,10 +559,12 @@ cmd_addon() {
 menu_template() {
     cat <<'EOF'
 # vdesk menu rules, applied after the image defaults (/etc/vdesk/menu.d/*.conf).
-#   LABEL = COMMAND   add an entry at the top, or change the command of LABEL
-#   !LABEL            hide an entry (also hides generated .desktop entries)
-#   ---               separator
+#   LABEL = COMMAND    add an entry at the top, or change the command of LABEL
+#   LABEL = @COMMAND   same, but COMMAND runs on the host (vdesk run @LABEL also works)
+#   !LABEL             hide an entry (also hides generated .desktop entries)
+#   ---                separator
 # Examples:
+#   term = @wezterm start --always-new-process
 #   Edge (work) = microsoft-edge --profile-directory=Work
 #   !Microsoft Edge
 EOF

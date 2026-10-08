@@ -1,5 +1,5 @@
 #!/bin/sh
-# Openbox pipe menu: menu rules, then host apps, then .desktop applications.
+# Openbox pipe menu: menu rules first, then .desktop applications.
 # usage: vdesk-menu [--list]
 set -u
 
@@ -7,8 +7,6 @@ mode=xml
 [ "${1:-}" != --list ] || mode=list
 
 rules=$(cat /etc/vdesk/menu.d/*.conf "$HOME/.config/vdesk/menu.conf" 2>/dev/null)
-# Names from the host's host-apps.conf, copied in by vdesk
-hosts=$(cat "$HOME/.config/vdesk/host-apps" 2>/dev/null)
 
 # Same file name in a later directory overrides an earlier one
 files=$(for d in /usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications"; do
@@ -47,14 +45,21 @@ fi
 
 {
     printf '%s\n' "$rules" | sed 's/^/R\t/'
-    [ -z "$hosts" ] || printf '%s\n' "$hosts" | sed 's/^/H\t/'
     [ -z "$apps" ] || printf '%s\n' "$apps" | sed 's/^/A\t/'
-} | awk -v mode="$mode" '
+} | awk -v mode="$mode" -v sq="'" '
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function esc(s) {
     gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s)
     gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s)
     return s
+}
+# Quote s for a shell-like command line; built by hand because awks differ on
+# backslashes in gsub replacements
+function shquote(s,    parts, k, i, out) {
+    k = split(s, parts, sq)
+    out = parts[1]
+    for (i = 2; i <= k; i++) out = out sq "\\" sq sq parts[i]
+    return sq out sq
 }
 function sep() { if (printed) pending = 1 }
 function item(label, cmd) {
@@ -73,14 +78,10 @@ BEGIN { if (mode == "xml") print "<openbox_pipe_menu>" }
     eq = index(line, "=")
     if (!eq) next
     label = trim(substr(line, 1, eq - 1)); cmd = trim(substr(line, eq + 1))
-    if (cmd ~ /^@/) cmd = "vdesk-host " substr(cmd, 2)
+    # Host entry: send only the label; the host looks the command up in its own menu.conf
+    if (cmd ~ /^@/) cmd = "vdesk-host " shquote(label)
     if (label in pos) { mcmd[pos[label]] = cmd; next }
     n++; kind[n] = "item"; mlabel[n] = label; mcmd[n] = cmd; pos[label] = n
-    next
-}
-/^H\t/ {
-    h = trim(substr($0, 3))
-    if (h != "" && !(h in hseen)) { hseen[h] = 1; nh++; hname[nh] = h }
     next
 }
 /^A\t/ {
@@ -93,9 +94,6 @@ END {
         if (kind[i] == "sep") sep()
         else if (!(mlabel[i] in hide)) item(mlabel[i], mcmd[i])
     }
-    sep()
-    for (i = 1; i <= nh; i++)
-        if (!(hname[i] in hide) && !(hname[i] in pos)) item(hname[i], "vdesk-host " hname[i])
     sep()
     for (i = 1; i <= na; i++)
         if (!(alabel[i] in hide) && !(alabel[i] in pos)) item(alabel[i], acmd[i])

@@ -156,6 +156,24 @@ Edge (work) = microsoft-edge --profile-directory=Work
 - 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 창 관리자와 상관없이 그 파일을 쓴다. `vdesk shell`에서 위 기본 설정을 `~/.config/tint2/tint2rc`로 복사한 뒤 고친다. 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md).
 - 설정을 바꾼 뒤에는 `vdesk shell`에서 `pkill -x tint2; sleep 1; setsid vdesk-panel >/dev/null 2>&1 &`로 다시 띄운다.
 
+## 배경화면
+
+```bash
+vdesk wallpaper set ~/Pictures/bg.jpg               # 모든 세션 (기본 채우기 방식 zoom)
+vdesk wallpaper set -m maximize ~/Pictures/bg.png   # 채우기 방식 지정
+vdesk wallpaper set -t xmonad ~/Pictures/b2.jpg     # 이 세션만
+vdesk wallpaper color -t edge '#24303c'             # 단색 (세션 구분용)
+vdesk wallpaper clear [-t TARGET]                   # 해제
+vdesk wallpaper                                     # 현재 설정 보기
+```
+
+- 이미지는 PNG와 JPEG만 받는다. 채우기 방식은 xwallpaper의 `zoom`(꽉 채우고 넘치는 부분 자름), `maximize`(비율 유지, 전체가 보이게), `center`, `tile`, `stretch`, `focus`.
+- `-t` 없이 지정하면 모든 세션에 적용된다. 호스트의 `~/.config/vdesk/wallpaper.conf`, `wallpaper.img`에 저장되고, 실행 중인 세션에는 바로, 다른 세션에는 다음에 다룰 때 복사된다.
+- `-t`로 지정하면 그 세션 홈에만 저장되고(`wallpaper.local.*`) 전체 배경보다 우선한다. `clear -t`로 지우면 전체 배경으로 돌아간다. 세션 홈에 있으므로 `recreate`해도 유지된다.
+- 뷰어 창 크기에 맞춰 화면 크기가 바뀌면 배경을 자동으로 다시 맞춘다(`xwallpaper --daemon`).
+- xmonad 세션은 창이 화면을 채우므로 빈 작업 공간이나 떠 있는 창 뒤에서 보인다.
+- 이 기능 이전 이미지로 만든 세션에는 복사하지 않는다. `vdesk recreate` 뒤부터 적용된다.
+
 ## 이미지 갱신
 
 - 이미지를 다시 빌드해도 실행 중인 세션은 이전 이미지를 계속 쓴다. `vdesk recreate TARGET` 또는 `vdesk recreate -a`로 옮긴다.
@@ -183,6 +201,8 @@ Edge (work) = microsoft-edge --profile-directory=Work
 | 세션 이름              | `~/.local/state/vdesk/<hostname>/<id>.name`           |
 | addon 설정             | `~/.config/vdesk/addons.enabled`, `addons/<name>/`    |
 | 메뉴 규칙              | `~/.config/vdesk/menu.conf`                           |
+| 전체 배경화면          | `~/.config/vdesk/wallpaper.conf`, `wallpaper.img`     |
+| 세션별 배경화면        | 세션 홈의 `~/.config/vdesk/wallpaper.local.*`         |
 | `run --host` 인증/로그 | `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.xauth`, `<id>.log` |
 | 호스트 중계 로그       | `$XDG_RUNTIME_DIR/vdesk-<uid>/hostd.log`              |
 

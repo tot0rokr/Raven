@@ -11,6 +11,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
   - `rootfs/usr/local/bin/vdesk-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/vdesk-launcher`: xmonad용 메뉴. `vdesk-menu --list`를 rofi로 고른다.
   - `rootfs/usr/local/bin/vdesk-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정을 고른다.
+  - `rootfs/usr/local/bin/vdesk-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
   - `rootfs/usr/local/bin/vdesk-apply-addon`: 빌드 중 addon 하나를 적용.
   - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 `vdesk-panel`을 부른다.
@@ -34,6 +35,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.
 - GHC는 빌드 단계에만 둔다. xmonad 실행 파일 이름은 `xmonad-x86_64-linux`로 둔다. 다른 이름이면 xmonad가 시작할 때마다 GHC로 다시 컴파일하려 한다. 재시작 키도 `restart "xmonad-x86_64-linux"`로 GHC 없이 재시작한다.
 - 창 관리자 label(`vdesk.wm`)이 없는 세션은 openbox로 다룬다.
+- 배경화면 설정은 `vdesk-wallpaper`가 있는 이미지의 세션에만 복사한다. 이전 이미지 세션의 홈에는 파일을 쓰지 않는다.
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 README와 `docs/`를 같이 고친다.
 
 ## 검증
@@ -41,6 +43,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 사용자의 X 서버에 창을 띄우지 않는다. 화면 확인은 세션 화면을 직접 캡처하거나, 다른 세션 화면에 attach해서 본다. 시험 셸에서는 먼저 `unset DISPLAY`를 하고, 인자 없는 `vdesk`(새 세션 + attach)를 실행하거나 `source`하지 않는다.
 - 중계(`vdesk-hostd`)는 처음 띄운 `vdesk`의 경로와 `XDG_CONFIG_HOME`을 계속 쓴다. 시험용 설정이나 worktree로 시험한 뒤에는 `vdesk hostd stop`으로 내려 둔다.
 - worktree에서 빌드할 때는 `VDESK_IMAGE`, `VDESK_CORE_IMAGE`로 다른 태그를 써서 main이 쓰는 `vdesk:latest`를 덮어쓰지 않는다.
+- 화면 크기 변경은 `xrandr --fb`로 줄이지 않는다. 출력보다 작게 주면 실패하면서 VNC-0 출력이 꺼지고, 그 세션은 배경 등 출력 기반 동작이 깨진다. 실제와 같은 크기 변경은 다른 시험 세션 화면에 뷰어를 attach해서(RemoteResize) 만든다.
 - 사용자의 `~/.config/vdesk`와 사용자가 만든 세션을 건드리지 않는다. 시험할 때는 `XDG_CONFIG_HOME`을 임시 디렉터리로 돌리고, 이름 붙인 시험 세션을 만든 뒤 `kill`한다. `vdesk menu sync`와 `recreate -a`는 모든 세션에 영향을 준다.
 - 순서:
   - `sh -n`으로 스크립트 문법 확인.

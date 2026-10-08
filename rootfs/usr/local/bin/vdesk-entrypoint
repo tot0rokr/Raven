@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+: "${VDESK_DISPLAY:?}"
+: "${VDESK_PORT:?}"
+: "${VDESK_GEOMETRY:=1600x900}"
+: "${VDESK_TITLE:=vdesk}"
+: "${VDESK_CMD:=}"
+
+mkdir -p "$HOME/.vnc"
+chmod 700 "$HOME/.vnc"
+head -c 32 /dev/urandom | base64 | head -c 8 | vncpasswd -f > "$HOME/.vnc/passwd"
+chmod 600 "$HOME/.vnc/passwd"
+
+# The X socket is reachable from the host netns, so require a cookie
+export XAUTHORITY="$HOME/.Xauthority"
+rm -f "$XAUTHORITY"
+xauth -q add ":$VDESK_DISPLAY" . "$(mcookie)"
+
+# The container filesystem survives restarts, so drop the previous run's lock
+rm -f "/tmp/.X$VDESK_DISPLAY-lock" "/tmp/.X11-unix/X$VDESK_DISPLAY"
+
+Xvnc ":$VDESK_DISPLAY" -auth "$XAUTHORITY" -geometry "$VDESK_GEOMETRY" -depth 24 \
+    -desktop "$VDESK_TITLE" -rfbport "$VDESK_PORT" -localhost -nolisten tcp \
+    -SecurityTypes VncAuth -PasswordFile "$HOME/.vnc/passwd" &
+xvnc=$!
+
+i=0
+until [ -S "/tmp/.X11-unix/X$VDESK_DISPLAY" ]; do
+    i=$((i + 1))
+    [ "$i" -le 50 ] || { echo "Xvnc did not start" >&2; exit 1; }
+    sleep 0.2
+done
+
+export DISPLAY=":$VDESK_DISPLAY"
+xrdb -merge /etc/vdesk/Xresources
+
+# Let apps exit cleanly before their display goes away
+stop() {
+    for p in /proc/[0-9]*; do
+        pid=${p#/proc/}
+        case "$pid" in
+            1 | $$ | "$xvnc") ;;
+            *) kill -TERM "$pid" 2>/dev/null || true ;;
+        esac
+    done
+    sleep 2
+    kill -TERM "$xvnc" 2>/dev/null || true
+    exit 0
+}
+trap stop TERM INT
+
+openbox-session &
+wm=$!
+
+[ -z "$VDESK_CMD" ] || sh -c "$VDESK_CMD" &
+
+# Keep a window manager for as long as the display lives
+while :; do
+    wait "$wm" || true
+    kill -0 "$xvnc" 2>/dev/null || exit 1
+    sleep 1
+    openbox-session &
+    wm=$!
+done

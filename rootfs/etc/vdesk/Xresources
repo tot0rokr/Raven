@@ -1,0 +1,6 @@
+XTerm*locale: true
+XTerm*faceName: Monospace
+XTerm*faceSize: 11
+XTerm*faceNameDoublesize: Noto Sans KR
+XTerm*selectToClipboard: true
+XTerm*saveLines: 10000

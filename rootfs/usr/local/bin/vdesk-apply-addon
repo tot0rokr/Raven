@@ -1,0 +1,20 @@
+#!/bin/sh
+# Apply one addon while building the image (runs as root).
+# usage: vdesk-apply-addon NAME DIR
+set -eu
+
+name=$1
+dir=$2
+PACKAGES=
+. "$dir/addon.conf"
+
+[ ! -f "$dir/pre-install" ] || sh -eu "$dir/pre-install"
+if [ -n "$PACKAGES" ]; then
+    apt-get update
+    # shellcheck disable=SC2086
+    apt-get install -y --no-install-recommends $PACKAGES
+fi
+[ ! -d "$dir/rootfs" ] || cp -R --preserve=mode "$dir/rootfs/." /
+[ ! -f "$dir/menu.conf" ] || cp "$dir/menu.conf" "/etc/vdesk/menu.d/50-$name.conf"
+[ ! -f "$dir/post-install" ] || sh -eu "$dir/post-install"
+rm -rf /var/lib/apt/lists/*

@@ -60,7 +60,7 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | 키                        | 동작                                                   |
 | ------------------------- | ------------------------------------------------------ |
 | `Alt+p`                   | 메뉴 (rofi, 작업표시줄의 `menu` 버튼과 같음)           |
-| `Alt+Shift+Enter`         | xterm                                                  |
+| `Alt+Shift+Enter`         | 메뉴의 `Terminal` 항목 (기본 xterm)                    |
 | `Alt+j` / `Alt+k`         | 다음 / 이전 창으로 포커스                              |
 | `Alt+Enter`               | 포커스된 창을 주 영역으로                              |
 | `Alt+h` / `Alt+l`         | 주 영역 줄이기 / 늘리기                                |
@@ -72,7 +72,8 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+Shift+c`             | 포커스된 창 닫기                                       |
 | `Alt+q`                   | xmonad 재시작 (창은 유지)                              |
 
-- `Alt+Tab`, `Alt+Space`, `Alt+F4`는 Windows가 먼저 가로챌 수 있다 (추정). 레이아웃 전환은 `Alt+\`를 쓴다.
+- `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm start --always-new-process`(호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
+- `Alt+Tab`은 Windows가 가로챈다 (사용자 확인). 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`, `Alt+F4`도 가로챌 수 있어서 (추정) 레이아웃 전환은 `Alt+\`를 쓴다.
 - 작업표시줄에는 작업 공간 1~9가 묶음으로 나오고, 현재 작업 공간이 강조된다. 창 버튼을 누르면 그 창으로 이동하고, 가운데 버튼은 창을 닫는다.
 - 메뉴 항목은 openbox 세션의 우클릭 메뉴와 같은 `menu.conf`와 `.desktop` 파일에서 나온다 ([docs/menu.md](./docs/menu.md)).
 

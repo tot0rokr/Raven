@@ -34,6 +34,14 @@
 - COMMAND는 openbox가 shell 없이 인자로 나눠 실행한다. 파이프, `&&`, 환경 변수 확장이 필요하면 `sh -c '...'`로 감싼다.
 - 같은 LABEL을 다시 정의하면 위치는 처음 정의한 자리를 유지하고 COMMAND만 바뀐다.
 
+## Terminal 항목
+
+라벨 `Terminal`은 xmonad 세션의 `Alt+Shift+Enter`가 실행하는 항목이다. core 기본 규칙은 `Terminal = xterm`이고, `menu.conf`에서 같은 라벨로 덮어쓰면 단축키와 메뉴가 함께 바뀐다. `!Terminal`로 숨기면 단축키는 xterm을 띄우지 못하고 오류 창을 띄운다.
+
+```
+Terminal = @wezterm start --always-new-process
+```
+
 ## 호스트 항목 (`@COMMAND`)
 
 ```

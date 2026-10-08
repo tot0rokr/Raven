@@ -20,8 +20,11 @@ xauth -q add ":$VDESK_DISPLAY" . "$(mcookie)"
 # The container filesystem survives restarts, so drop the previous run's lock
 rm -f "/tmp/.X$VDESK_DISPLAY-lock" "/tmp/.X11-unix/X$VDESK_DISPLAY"
 
+# MIT-SHM is off: host apps (run --host) live in another IPC namespace, and
+# Mesa draws nothing when its SysV segment cannot be attached by this server
 Xvnc ":$VDESK_DISPLAY" -auth "$XAUTHORITY" -geometry "$VDESK_GEOMETRY" -depth 24 \
     -desktop "$VDESK_TITLE" -rfbport "$VDESK_PORT" -localhost -nolisten tcp \
+    -extension MIT-SHM \
     -SecurityTypes VncAuth -PasswordFile "$HOME/.vnc/passwd" &
 xvnc=$!
 

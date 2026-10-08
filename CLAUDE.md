@@ -23,6 +23,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - 세션 홈은 named volume에 둔다. 홈 디렉터리는 NFS다.
 - 호스트에 패키지를 설치하지 않는다.
 - `--no-sandbox`를 쓰지 않는다.
+- Xvnc의 MIT-SHM은 끈 채로 둔다. 켜면 `run --host`로 띄운 Mesa 앱(wezterm 등)이 검은 창이 된다. `--ipc host`로 바꾸지 않는다.
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 README와 `docs/`를 같이 고친다.
 

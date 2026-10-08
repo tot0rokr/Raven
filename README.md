@@ -46,6 +46,25 @@ vdesk kill sim                         # 세션과 홈 volume 삭제
 - 뷰어 창을 닫으면 detach다. 세션은 VM 재부팅 뒤에도 다시 뜨고, 시작 명령(`new`의 CMD)도 다시 실행된다.
 - 재부팅 뒤 추가로 띄울 앱은 세션 홈의 `~/.config/openbox/autostart`에 `app &` 형식으로 적는다 (`vdesk shell`로 편집).
 
+## 호스트 앱
+
+`vdesk run -t TARGET --host CMD`는 호스트에 설치된 GUI 앱을 세션 화면에 띄운다.
+
+- 호스트 프로세스라 격리되지 않는다. 호스트의 홈, 설정, 셸 환경을 그대로 쓴다.
+- SSH가 끊겨도 세션 화면에 남는다. 세션을 `kill`하거나 `recreate`하면 화면이 사라지면서 함께 종료된다.
+- 출력과 오류는 `$XDG_RUNTIME_DIR/vdesk-<uid>/<id>.log`에 쌓인다.
+- 우클릭 메뉴는 컨테이너 안에서 실행되므로 호스트 앱을 띄우지 못한다.
+
+호스트 터미널로 wezterm을 쓰는 예:
+
+```bash
+vdesk run -t edge --host wezterm start --always-new-process
+```
+
+- 호스트의 `~/.wezterm.lua`를 그대로 쓴다. GPU 없이 Mesa llvmpipe로 그리므로 호스트에 `libegl1`, `libegl-mesa0`이 있어야 한다.
+- `--always-new-process`: 다른 화면에서 이미 실행 중인 wezterm이 있으면, 그 프로세스에 새 창이 열려 엉뚱한 화면에 뜨는 것을 막는다.
+- MIT-SHM을 끈 뒤(아래 보안 설계)에 만든 세션에서만 그려진다. 그 전 세션에서는 창이 검게 나온다. `vdesk recreate`로 옮기거나 새 세션에서 띄운다.
+
 ## 앱 추가 (addon)
 
 ```bash
@@ -122,4 +141,5 @@ Edge (work) = microsoft-edge --profile-directory=Work
 - `--network host`: 뷰어가 SSH X11 포워딩 포트(`127.0.0.1:60xx`)에 닿고, `run --host` 앱이 세션의 X socket(abstract socket)에 닿기 위해 쓴다.
 - 화면 번호는 100부터, VNC 포트는 15900부터 비어 있는 것을 고른다. VNC는 `127.0.0.1`에만 열리고, 비밀번호는 세션이 시작할 때마다 새로 만들어 컨테이너 밖으로 꺼내지 않는다.
 - X 화면은 host network namespace에 노출되므로 MIT-MAGIC-COOKIE 인증을 건다.
+- Xvnc의 MIT-SHM 확장을 끈다. `run --host` 앱은 컨테이너와 IPC namespace가 달라 X 서버와 SysV 공유 메모리를 나눌 수 없고, Mesa(OpenGL) 앱은 이때 아무것도 그리지 못한다. 대신 모든 앱이 공유 메모리 없이 socket으로 화면을 보낸다. 호스트 IPC를 공유(`--ipc host`)하면 해결되지만 컨테이너가 호스트 사용자의 공유 메모리에 접근할 수 있게 되므로 쓰지 않는다.
 - seccomp, `/dev/shm` 크기는 addon이 요구할 때만 바꾼다. 켜진 addon 중 하나라도 `SECCOMP=unconfined`면 모든 세션에 적용된다 (`edge`가 Chromium sandbox 때문에 요구).

@@ -1,12 +1,12 @@
 # vdesk
 
-tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 openbox를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행된다. 앱은 addon으로 이미지에 추가하고, 호스트에는 Docker 외 패키지를 설치하지 않는다.
+tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 창 관리자(xmonad 또는 openbox)를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행된다. 앱은 addon으로 이미지에 추가하고, 호스트에는 Docker 외 패키지를 설치하지 않는다.
 
 ```
-image vdesk:latest = vdesk-core (Xvnc, openbox, tint2, viewers, xterm) + enabled addons (edge, ...)
+image vdesk:latest = vdesk-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xterm) + enabled addons (edge, ...)
 
 ┌─ session 0 (:100, 15900) ──────┐   ┌─ session 1 (:101, 15901) ──────┐
-│ Xvnc + openbox                 │   │ Xvnc + openbox                 │
+│ Xvnc + xmonad                  │   │ Xvnc + openbox                 │
 │  ├ microsoft-edge (addon)      │   │  ├ xterm (core)                │
 │  └ xeyes (host, run --host)    │   │  └ gtkwave (addon)             │
 │ volume: vdesk-<user>-home-0    │   │ volume: vdesk-<user>-home-1    │
@@ -26,8 +26,9 @@ vdesk build
 ## 세션
 
 ```bash
-vdesk                                  # 새 세션(xterm) 생성 후 attach
+vdesk                                  # 새 세션(xmonad, xterm) 생성 후 attach
 vdesk new -s edge microsoft-edge       # 이름과 시작 명령 지정
+vdesk new -w openbox -s ob             # 창 관리자를 openbox로
 vdesk new -d -s sim xclock             # 만들기만 하고 attach하지 않음
 vdesk ls                               # 세션 목록
 vdesk a edge                           # 이름으로 attach
@@ -44,7 +45,40 @@ vdesk kill sim                         # 세션과 홈 volume 삭제
 - id는 0부터 비어 있는 가장 작은 번호를 쓴다. 이름은 영문자로 시작해야 하고 세션 간에 겹칠 수 없다.
 - 옵션은 TARGET 앞에 둔다 (`vdesk a -g 1920x1000 0`).
 - 뷰어 창을 닫으면 detach다. 세션은 VM 재부팅 뒤에도 다시 뜨고, 시작 명령(`new`의 CMD)도 다시 실행된다.
-- 재부팅 뒤 추가로 띄울 앱은 세션 홈의 `~/.config/openbox/autostart`에 `app &` 형식으로 적는다 (`vdesk shell`로 편집).
+- 재부팅 뒤 추가로 띄울 앱은 세션 홈에 적는다 (`vdesk shell`로 편집). xmonad 세션은 `~/.config/vdesk/autostart`, openbox 세션은 `~/.config/openbox/autostart`이고, 둘 다 `app &` 형식의 셸 스크립트다.
+
+## 창 관리자
+
+세션마다 `vdesk new -w xmonad|openbox`로 고른다. 기본은 xmonad이고, `VDESK_WM` 환경 변수로 기본값을 바꿀 수 있다. `vdesk ls`의 WM 열에 표시되고, `recreate`해도 유지된다. 창 관리자를 고를 수 있기 전에 만든 세션은 openbox다.
+
+### xmonad
+
+타일링 창 관리자다. 새 창이 화면을 나눠 갖고, 대화상자와 오류 창은 가운데에 떠 있는 창으로 뜬다. 설정(`xmonad/xmonad.hs`)은 이미지 빌드 단계에서 컴파일되어 들어가므로, 바꾸려면 파일을 고치고 `vdesk build` 후 새 세션을 만든다.
+
+Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
+
+| 키                        | 동작                                                   |
+| ------------------------- | ------------------------------------------------------ |
+| `Alt+p`                   | 메뉴 (rofi, 작업표시줄의 `menu` 버튼과 같음)           |
+| `Alt+Shift+Enter`         | xterm                                                  |
+| `Alt+j` / `Alt+k`         | 다음 / 이전 창으로 포커스                              |
+| `Alt+Enter`               | 포커스된 창을 주 영역으로                              |
+| `Alt+h` / `Alt+l`         | 주 영역 줄이기 / 늘리기                                |
+| `Alt+\`, `Alt+Space`      | 레이아웃 전환 (좌우 분할 → 상하 분할 → 전체 화면)      |
+| `Alt+1`..`9`              | 작업 공간 이동                                         |
+| `Alt+Shift+1`..`9`        | 포커스된 창을 작업 공간으로 보냄                       |
+| `Alt+t`                   | 떠 있는 창을 다시 타일로                               |
+| `Alt+왼쪽 드래그` / `Alt+오른쪽 드래그` | 창을 띄워서 이동 / 크기 조절             |
+| `Alt+Shift+c`             | 포커스된 창 닫기                                       |
+| `Alt+q`                   | xmonad 재시작 (창은 유지)                              |
+
+- `Alt+Tab`, `Alt+Space`, `Alt+F4`는 Windows가 먼저 가로챌 수 있다 (추정). 레이아웃 전환은 `Alt+\`를 쓴다.
+- 작업표시줄에는 작업 공간 1~9가 묶음으로 나오고, 현재 작업 공간이 강조된다. 창 버튼을 누르면 그 창으로 이동하고, 가운데 버튼은 창을 닫는다.
+- 메뉴 항목은 openbox 세션의 우클릭 메뉴와 같은 `menu.conf`와 `.desktop` 파일에서 나온다 ([docs/menu.md](./docs/menu.md)).
+
+### openbox
+
+바탕화면 우클릭 메뉴와 창 제목 표시줄이 있는 일반 데스크톱이다. 작업표시줄 버튼으로 최소화와 복원을 한다.
 
 ## 호스트 앱
 
@@ -96,7 +130,7 @@ vdesk recreate -a                      # 기존 세션을 새 이미지로 교�
 
 ## 메뉴
 
-세션 바탕화면을 우클릭하면 메뉴가 뜬다. 메뉴는 열 때마다 규칙 파일과 설치된 앱의 `.desktop` 파일로 새로 만들어진다.
+xmonad 세션은 `Alt+p`나 작업표시줄의 `menu` 버튼, openbox 세션은 바탕화면 우클릭으로 메뉴를 연다. 메뉴는 열 때마다 규칙 파일과 설치된 앱의 `.desktop` 파일로 새로 만들어진다.
 
 ```bash
 vdesk menu edit                        # ~/.config/vdesk/menu.conf 편집 후 모든 세션에 반영
@@ -113,18 +147,20 @@ Edge (work) = microsoft-edge --profile-directory=Work
 
 ## 작업표시줄
 
-세션 화면 아래쪽에 [tint2](https://gitlab.com/o9000/tint2) 작업표시줄이 있다. 왼쪽은 열린 창 목록, 오른쪽은 날짜와 시각이다.
+세션 화면 아래쪽에 [tint2](https://gitlab.com/o9000/tint2) 작업표시줄이 있다. 오른쪽은 날짜와 시각이다.
 
-- 창 버튼을 누르면 최소화와 복원이 바뀐다. 최소화한 창은 여기서 되살린다.
-- 최대화한 창은 작업표시줄 위까지만 커진다.
-- 기본 설정은 이미지의 `/etc/xdg/tint2/tint2rc`다. 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 그 파일을 쓴다. `vdesk shell`에서 `mkdir -p ~/.config/tint2 && cp /etc/xdg/tint2/tint2rc ~/.config/tint2/`로 복사한 뒤 고친다. 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md).
-- 세션 홈의 설정을 바꾼 뒤에는 `vdesk shell`에서 `pkill -x tint2; pkill -x openbox`로 다시 띄운다. openbox는 entrypoint가 다시 띄우고, 이때 tint2도 함께 뜬다.
+- xmonad 세션: 왼쪽부터 `menu` 버튼, 작업 공간별 창 목록이다. 기본 설정은 이미지의 `/etc/vdesk/tint2/xmonad.tint2rc`.
+- openbox 세션: 열린 창 목록이고, 창 버튼을 누르면 최소화와 복원이 바뀐다. 기본 설정은 이미지의 `/etc/xdg/tint2/tint2rc`.
+- 최대화하거나 타일로 배치한 창은 작업표시줄 위까지만 차지한다.
+- 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 창 관리자와 상관없이 그 파일을 쓴다. `vdesk shell`에서 위 기본 설정을 `~/.config/tint2/tint2rc`로 복사한 뒤 고친다. 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md).
+- 설정을 바꾼 뒤에는 `vdesk shell`에서 `pkill -x tint2; sleep 1; setsid vdesk-panel >/dev/null 2>&1 &`로 다시 띄운다.
 
 ## 이미지 갱신
 
 - 이미지를 다시 빌드해도 실행 중인 세션은 이전 이미지를 계속 쓴다. `vdesk recreate TARGET` 또는 `vdesk recreate -a`로 옮긴다.
 - `recreate`는 컨테이너만 교체하고 홈 volume, 이름, 시작 명령, 화면 번호, 포트는 유지한다. 세션 안의 앱은 다시 시작된다.
 - Edge 등 패키지 업데이트: `vdesk build --no-cache` 후 `vdesk recreate -a`. `--pull`은 core의 base 이미지에만 적용된다.
+- 이미지 이름은 `VDESK_IMAGE`(기본 `vdesk:latest`)와 `VDESK_CORE_IMAGE`(기본 `vdesk-core:latest`)로 바꿀 수 있다. 개발 중인 worktree를 기존 이미지와 나란히 시험할 때 쓴다: `VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk build`, 같은 변수로 `./vdesk new`.
 
 ## 뷰어 선택
 

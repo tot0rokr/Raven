@@ -254,7 +254,14 @@ view() {
     c=$(cname "$id")
     port=$(field "$id" 3)
     if [ -n "$geometry" ]; then
-        xin "$id" xrandr --fb "$geometry" >/dev/null 2>&1 || die "cannot resize session $id to $geometry"
+        # Set a mode on the output; "xrandr --fb" smaller than the output fails and turns the output off
+        xin "$id" sh -c '
+            m=$1 w=${1%x*} h=${1#*x}
+            out=$(xrandr --query | awk "/ (dis)?connected/ { print \$1; exit }")
+            xrandr --newmode "$m" 60 "$w" "$w" "$w" "$w" "$h" "$h" "$h" "$h" 2>/dev/null
+            xrandr --addmode "$out" "$m" 2>/dev/null
+            xrandr --output "$out" --mode "$m"' sh "$geometry" >/dev/null 2>&1 \
+            || die "cannot resize session $id to $geometry"
     fi
     docker exec "$c" sh -c ": > $xa"
     xauth nlist "$DISPLAY" 2>/dev/null | docker exec -i "$c" xauth -q -f "$xa" nmerge - 2>/dev/null || true

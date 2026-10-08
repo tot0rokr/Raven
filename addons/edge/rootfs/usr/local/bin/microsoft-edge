@@ -1,0 +1,4 @@
+#!/bin/sh
+# Defaults for a GPU-less virtual display without a desktop keyring
+exec /usr/bin/microsoft-edge --no-first-run --no-default-browser-check \
+    --password-store=basic --disable-gpu "$@"

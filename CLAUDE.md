@@ -11,7 +11,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
   - `rootfs/usr/local/bin/vdesk-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/vdesk-launcher`: xmonad용 메뉴. `vdesk-menu --list`를 rofi로 고른다.
   - `rootfs/usr/local/bin/vdesk-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정을 고른다.
-  - `rootfs/usr/local/bin/vdesk-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
+  - `rootfs/usr/local/bin/vdesk-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없거나 쓸 수 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
   - `rootfs/usr/local/bin/vdesk-apply-addon`: 빌드 중 addon 하나를 적용.
   - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 `vdesk-panel`을 부른다.
@@ -36,7 +36,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 사용법은 [README.md](./READM
 - GHC는 빌드 단계에만 둔다. xmonad 실행 파일 이름은 `xmonad-x86_64-linux`로 둔다. 다른 이름이면 xmonad가 시작할 때마다 GHC로 다시 컴파일하려 한다. 재시작 키도 `restart "xmonad-x86_64-linux"`로 GHC 없이 재시작한다.
 - 창 관리자 label(`vdesk.wm`)이 없는 세션은 openbox로 다룬다.
 - 배경화면 설정은 이미지 label `vdesk.features`에 `wallpaper`가 있는 세션에만 복사한다(core `Dockerfile`이 붙이고 addon 이미지가 물려받는다). 이전 이미지 세션의 홈에는 파일을 쓰지 않는다.
-- 배경화면 파일은 conf를 먼저 지우고, 이미지와 conf를 임시 파일을 거쳐 `mv`로 바꾼다. 중간에 끊겨도 conf와 다른 이미지가 짝지어지지 않고, 다음 복사 때 다시 한다.
+- 배경화면 파일은 conf를 먼저 지우고, 이미지와 conf를 임시 파일을 거쳐 `mv`로 바꾼다. 중간에 끊겨도 conf와 다른 이미지가 짝지어지지 않고, 다음 복사 때 다시 한다. 세션 사본은 이미지 sha가 conf의 `sha=`와 다르면(동시에 쓴 경우) 다시 복사한다. 호스트 쪽에 잠금을 두지 않는 이유는 홈이 NFS여서 잠금에서 멈출 수 있기 때문이다.
 - `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 README와 `docs/`를 같이 고친다.
 

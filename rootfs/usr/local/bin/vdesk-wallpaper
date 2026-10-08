@@ -30,9 +30,14 @@ for c in "$dir/wallpaper.local.conf" "$dir/wallpaper.conf"; do
     usable "$c" && { conf=$c; break; }
 done
 
-# Skip repainting when this exact setting is already on screen; the root property
+# Skip repainting when these exact files are already on screen; the root property
 # disappears with the X server, so a restarted session always paints
-if [ -n "$conf" ]; then key="$conf $(cksum < "$conf")"; else key=none; fi
+if [ -n "$conf" ]; then
+    key="$conf $(cksum < "$conf")"
+    [ "$(get "$conf" type)" != image ] || key="$key $(cksum < "${conf%.conf}.img")"
+else
+    key=none
+fi
 current=$(xprop -root -notype _VDESK_WALLPAPER 2>/dev/null | sed -n 's/^_VDESK_WALLPAPER = "\(.*\)"$/\1/p')
 if [ "$key" = "$current" ]; then
     [ -n "$conf" ] && [ "$(get "$conf" type)" = image ] || exit 0

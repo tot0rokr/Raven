@@ -525,7 +525,13 @@ cmd_menu() {
         edit)
             mkdir -p "$confdir"
             [ -f "$confdir/menu.conf" ] || menu_template > "$confdir/menu.conf"
-            ${VISUAL:-${EDITOR:-vi}} "$confdir/menu.conf"
+            # shellcheck disable=SC2086
+            set -- ${VISUAL:-${EDITOR:-vi}}
+            # Skip the user's vimrc and plugins
+            case "$(readlink -f "$(command -v "$1")" 2>/dev/null)" in
+                */vim | */vim.* | */nvim) set -- "$@" --clean ;;
+            esac
+            "$@" "$confdir/menu.conf"
             cmd_menu sync ;;
         show)
             [ "${1:-}" != -t ] || { target=${2:-}; shift 2; }

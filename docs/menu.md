@@ -38,6 +38,7 @@ vdesk menu sync          # 편집기를 거치지 않고 고친 경우 수동 �
 vdesk menu show -t 0     # 세션 0에서 실제로 만들어지는 메뉴를 "LABEL<TAB>COMMAND"로 출력
 ```
 
+- 편집기는 `$VISUAL`, `$EDITOR`, `vi` 순서로 고른다. vim이나 nvim이면 `--clean`으로 열어 개인 vimrc와 플러그인을 읽지 않는다.
 - 세션을 attach, run, shell, recreate할 때도 자동으로 복사한다.
 - 호스트 파일을 지우면 다음 sync 때 세션의 복사본도 지워진다.
 

@@ -33,6 +33,7 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
        vdesk menu edit | show [-t TARGET] | sync
        vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
+       vdesk wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or openbox.
@@ -122,6 +123,38 @@ push_menu() {
     fi
 }
 
+# Wallpaper settings: wallpaper.{conf,img} in $confdir apply to every session and are
+# copied into session homes; wallpaper.local.{conf,img} in a session home win there.
+has_wallpaper() { docker exec "$(cname "$1")" test -x /usr/local/bin/vdesk-wallpaper 2>/dev/null; }
+
+apply_wallpaper() {
+    docker exec -d -e DISPLAY=":$(field "$1" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
+        "$(cname "$1")" vdesk-wallpaper
+}
+
+# Copy the host-wide wallpaper into session $1 when it changed; older images are skipped
+push_wallpaper() {
+    local c cur
+    c=$(cname "$1")
+    has_wallpaper "$1" || return 0
+    cur=$(docker exec "$c" cat /home/vdesk/.config/vdesk/wallpaper.conf 2>/dev/null || true)
+    if [ -f "$confdir/wallpaper.conf" ]; then
+        [ "$cur" != "$(cat "$confdir/wallpaper.conf")" ] || return 0
+        if [ -f "$confdir/wallpaper.img" ]; then
+            docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.img' \
+                < "$confdir/wallpaper.img"
+        else
+            docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.img
+        fi
+        docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.conf' \
+            < "$confdir/wallpaper.conf"
+    else
+        [ -n "$cur" ] || return 0
+        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.conf /home/vdesk/.config/vdesk/wallpaper.img
+    fi
+    apply_wallpaper "$1"
+}
+
 hostd_pid() {
     ss -Hxlp | grep -F "@vdesk-host-$(id -u) " | grep -o 'pid=[0-9]*' | head -n 1 | cut -d = -f 2
 }
@@ -151,6 +184,7 @@ ensure_up() {
         sleep 0.25
     done
     push_menu "$1"
+    push_wallpaper "$1"
     ensure_hostd || true
 }
 
@@ -614,6 +648,116 @@ cmd_menu() {
     esac
 }
 
+check_image() {
+    [ -f "$1" ] && [ -r "$1" ] || die "cannot read image: $1"
+    case "$(od -An -tx1 -N4 "$1" | tr -d ' \n')" in
+        89504e47 | ffd8ff*) ;;
+        *) die "wallpaper must be a PNG or JPEG file: $1" ;;
+    esac
+}
+
+wallpaper_summary() {
+    case "$(echo "$1" | sed -n 's/^type=//p')" in
+        image) echo "image ($(echo "$1" | sed -n 's/^mode=//p'))" ;;
+        color) echo "color $(echo "$1" | sed -n 's/^color=//p')" ;;
+        *) echo "(none)" ;;
+    esac
+}
+
+# Store CONF (and IMG) for every session when TARGET is empty, else for that session only.
+# An empty CONF clears the setting.
+save_wallpaper() {
+    local target=$1 conf=$2 img=$3 id c n=0 skipped=0
+    if [ -z "$target" ]; then
+        mkdir -p "$confdir"
+        if [ -z "$conf" ]; then
+            rm -f "$confdir/wallpaper.conf" "$confdir/wallpaper.img"
+        else
+            if [ -n "$img" ]; then cp "$img" "$confdir/wallpaper.img"; else rm -f "$confdir/wallpaper.img"; fi
+            printf '%s\n' "$conf" > "$confdir/wallpaper.conf"
+        fi
+        for id in $(sessions | awk '$4 == "running" { print $1 }'); do
+            if has_wallpaper "$id"; then
+                push_wallpaper "$id"
+                n=$((n + 1))
+            else
+                skipped=$((skipped + 1))
+            fi
+        done
+        if [ "$skipped" -gt 0 ]; then
+            echo "vdesk: applied to $n running session(s); $skipped older session(s) get it after recreate" >&2
+        else
+            echo "vdesk: applied to $n running session(s)" >&2
+        fi
+        return 0
+    fi
+
+    id=$(resolve "$target")
+    ensure_up "$id"
+    has_wallpaper "$id" || die "session $id runs an image without wallpaper support; recreate it first"
+    c=$(cname "$id")
+    if [ -z "$conf" ]; then
+        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.conf /home/vdesk/.config/vdesk/wallpaper.local.img
+    else
+        if [ -n "$img" ]; then
+            docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.local.img' < "$img"
+        else
+            docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.img
+        fi
+        printf '%s\n' "$conf" | docker exec -i "$c" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/wallpaper.local.conf'
+    fi
+    apply_wallpaper "$id"
+}
+
+cmd_wallpaper() {
+    local sub=${1:-show} target= mode=zoom opt id own name
+    [ $# -eq 0 ] || shift
+    OPTIND=1
+    while getopts t:m: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            m) mode=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    case "$sub" in
+        set)
+            [ $# -eq 1 ] || die "usage: vdesk wallpaper set [-t TARGET] [-m MODE] FILE"
+            case "$mode" in
+                zoom | maximize | center | tile | stretch | focus) ;;
+                *) die "mode must be zoom, maximize, center, tile, stretch or focus: '$mode'" ;;
+            esac
+            check_image "$1"
+            save_wallpaper "$target" \
+                "$(printf 'type=image\nmode=%s\nsha=%s' "$mode" "$(sha256sum < "$1" | cut -d ' ' -f 1)")" "$1" ;;
+        color)
+            [ $# -eq 1 ] || die "usage: vdesk wallpaper color [-t TARGET] '#rrggbb'"
+            case "$1" in
+                \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+                *) die "color must look like '#24303c': '$1'" ;;
+            esac
+            save_wallpaper "$target" "$(printf 'type=color\ncolor=%s' "$1")" "" ;;
+        clear)
+            [ $# -eq 0 ] || die "usage: vdesk wallpaper clear [-t TARGET]"
+            save_wallpaper "$target" "" "" ;;
+        show)
+            if [ -f "$confdir/wallpaper.conf" ]; then
+                echo "all sessions: $(wallpaper_summary "$(cat "$confdir/wallpaper.conf")")"
+            else
+                echo "all sessions: (none)"
+            fi
+            for id in $(sessions | awk '$4 == "running" { print $1 }' | sort -n); do
+                has_wallpaper "$id" || continue
+                own=$(docker exec "$(cname "$id")" cat /home/vdesk/.config/vdesk/wallpaper.local.conf 2>/dev/null || true)
+                [ -n "$own" ] || continue
+                name=$(name_of "$id")
+                echo "session $id${name:+ ($name)}: $(wallpaper_summary "$own")"
+            done ;;
+        *) die "usage: vdesk wallpaper set|color|clear [-t TARGET] ... | show" ;;
+    esac
+}
+
 cmd_hostd() {
     local pid
     case "${1:-status}" in
@@ -649,5 +793,6 @@ case "$1" in
     addon) shift; cmd_addon "$@" ;;
     menu) shift; cmd_menu "$@" ;;
     hostd) shift; cmd_hostd "$@" ;;
+    wallpaper) shift; cmd_wallpaper "$@" ;;
     *) usage >&2; exit 2 ;;
 esac

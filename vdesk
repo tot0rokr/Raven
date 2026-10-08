@@ -23,12 +23,14 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [CMD...]   create a session and attac
        vdesk ls                                        list sessions
        vdesk rename [-t] TARGET NAME                   rename a session
        vdesk run [-t TARGET] [--host] CMD...           start an app in a session
+       vdesk run [-t TARGET] @NAME                     start a host app from host-apps.conf
        vdesk shell [-t TARGET]                         open a shell inside a session
        vdesk kill [-t] TARGET                          delete a session and its home
        vdesk recreate [-a | [-t] TARGET]               move sessions onto the current image
        vdesk build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
        vdesk menu edit | show [-t TARGET] | sync
+       vdesk hostd [status | start | stop]             host relay for @NAME menu entries
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching.
@@ -108,7 +110,7 @@ xin() {
         -w /home/vdesk "$(cname "$id")" "$@"
 }
 
-# Copy the host menu rules into a running session
+# Copy the host menu rules, and the names (not commands) of host apps, into a running session
 push_menu() {
     if [ -f "$confdir/menu.conf" ]; then
         docker exec -i "$(cname "$1")" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/menu.conf' \
@@ -116,6 +118,26 @@ push_menu() {
     else
         docker exec "$(cname "$1")" rm -f /home/vdesk/.config/vdesk/menu.conf
     fi
+    { host_app || true; } | docker exec -i "$(cname "$1")" \
+        sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/host-apps'
+}
+
+hostd_pid() {
+    ss -Hxlp | grep -F "@vdesk-host-$(id -u) " | grep -o 'pid=[0-9]*' | head -n 1 | cut -d = -f 2
+}
+
+# Start the host relay (vdesk-hostd) unless it is already listening
+ensure_hostd() {
+    local i=0
+    [ -z "$(hostd_pid)" ] || return 0
+    mkdir -p "$rundir"
+    chmod 700 "$rundir"
+    setsid python3 "$srcdir/vdesk-hostd" "$self" >>"$rundir/hostd.log" 2>&1 </dev/null &
+    until [ -n "$(hostd_pid)" ]; do
+        i=$((i + 1))
+        [ "$i" -le 20 ] || { echo "vdesk: host relay did not start; see $rundir/hostd.log" >&2; return 1; }
+        sleep 0.1
+    done
 }
 
 ensure_up() {
@@ -129,6 +151,7 @@ ensure_up() {
         sleep 0.25
     done
     push_menu "$1"
+    ensure_hostd || true
 }
 
 # Lowest id with neither a container nor a leftover home volume
@@ -165,7 +188,7 @@ run_container() {
         --label vdesk.display="$d" --label vdesk.port="$p" \
         --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" \
         -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" \
-        -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" \
+        -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" \
         -v "$(vname "$id"):/home/vdesk" \
         -v "$HOME/Downloads:/home/vdesk/Downloads" \
         "$image" >/dev/null
@@ -572,6 +595,25 @@ cmd_menu() {
     esac
 }
 
+cmd_hostd() {
+    local pid
+    case "${1:-status}" in
+        status)
+            pid=$(hostd_pid)
+            if [ -n "$pid" ]; then
+                echo "running (pid $pid), log: $rundir/hostd.log"
+            else
+                echo "not running"
+            fi ;;
+        start)
+            ensure_hostd && echo "running (pid $(hostd_pid))" ;;
+        stop)
+            pid=$(hostd_pid)
+            [ -z "$pid" ] || kill "$pid" ;;
+        *) die "usage: vdesk hostd [status | start | stop]" ;;
+    esac
+}
+
 [ $# -gt 0 ] || { cmd_new; exit; }
 case "$1" in
     -h | --help | help) usage ;;
@@ -587,5 +629,6 @@ case "$1" in
     build) shift; cmd_build "$@" ;;
     addon) shift; cmd_addon "$@" ;;
     menu) shift; cmd_menu "$@" ;;
+    hostd) shift; cmd_hostd "$@" ;;
     *) usage >&2; exit 2 ;;
 esac

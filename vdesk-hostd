@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Host relay: lets a vdesk session start host apps listed in host-apps.conf.
+
+A session connects to the abstract socket @vdesk-host-<uid> (containers share
+the host network namespace) and sends "<session id> <name>". Only processes
+of the same user are served, and only a name crosses the boundary: the
+command is looked up on the host by `vdesk run -t <id> @<name>`.
+
+usage: vdesk-hostd VDESK_CLI
+"""
+import os
+import re
+import socket
+import socketserver
+import struct
+import subprocess
+import sys
+
+VDESK = sys.argv[1]
+ADDRESS = "\0vdesk-host-%d" % os.getuid()
+UCRED = struct.Struct("3i")
+REQUEST = re.compile(r"(\d+) ([A-Za-z0-9_.-]+)")
+
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self):
+        cred = self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, UCRED.size)
+        _, uid, _ = UCRED.unpack(cred)
+        if uid != os.getuid():
+            return self.reply("error: permission denied")
+        m = REQUEST.fullmatch(self.rfile.readline(256).decode(errors="replace").strip())
+        if not m:
+            return self.reply("error: bad request")
+        r = subprocess.run([VDESK, "run", "-t", m.group(1), "@" + m.group(2)],
+                           capture_output=True, text=True)
+        err = r.stderr.strip().removeprefix("vdesk: ")
+        self.reply("ok" if r.returncode == 0 else "error: " + (err or "failed"))
+
+    def reply(self, msg):
+        self.wfile.write((msg + "\n").encode())
+
+
+def main():
+    try:
+        server = socketserver.UnixStreamServer(ADDRESS, Handler)
+    except OSError:
+        return  # another relay already owns the socket
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

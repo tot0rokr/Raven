@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Start a host app (named in the host's host-apps.conf) on this session's display.
+
+usage: vdesk-host NAME
+"""
+import os
+import socket
+import subprocess
+import sys
+
+
+def fail(msg):
+    msg = "vdesk-host: " + msg
+    print(msg, file=sys.stderr)
+    subprocess.run(["xmessage", "-center", "-timeout", "15", msg], stderr=subprocess.DEVNULL)
+    sys.exit(1)
+
+
+def main():
+    if len(sys.argv) != 2:
+        fail("usage: vdesk-host NAME")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(20)
+    try:
+        sock.connect("\0vdesk-host-%d" % os.getuid())
+    except OSError:
+        fail("host relay is not running. Run on the host: vdesk hostd start")
+    sock.sendall(("%s %s\n" % (os.environ.get("VDESK_ID", ""), sys.argv[1])).encode())
+    try:
+        reply = sock.makefile().readline().strip()
+    except OSError:
+        reply = ""
+    if reply != "ok":
+        fail(reply or "no reply from the host relay")
+
+
+if __name__ == "__main__":
+    main()

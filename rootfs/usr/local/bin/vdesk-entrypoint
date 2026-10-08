@@ -6,6 +6,14 @@ set -eu
 : "${VDESK_GEOMETRY:=1600x900}"
 : "${VDESK_TITLE:=vdesk}"
 : "${VDESK_CMD:=}"
+: "${VDESK_WM:=openbox}"
+
+case "$VDESK_WM" in
+    openbox) wm_cmd=openbox-session ;;
+    xmonad) wm_cmd=xmonad-x86_64-linux ;;
+    *) echo "unknown VDESK_WM: $VDESK_WM" >&2; exit 1 ;;
+esac
+export VDESK_WM
 
 mkdir -p "$HOME/.vnc"
 chmod 700 "$HOME/.vnc"
@@ -53,7 +61,7 @@ stop() {
 }
 trap stop TERM INT
 
-openbox-session &
+$wm_cmd &
 wm=$!
 
 [ -z "$VDESK_CMD" ] || sh -c "$VDESK_CMD" &
@@ -63,6 +71,6 @@ while :; do
     wait "$wm" || true
     kill -0 "$xvnc" 2>/dev/null || exit 1
     sleep 1
-    openbox-session &
+    $wm_cmd &
     wm=$!
 done

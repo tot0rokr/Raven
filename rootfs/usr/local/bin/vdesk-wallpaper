@@ -1,0 +1,24 @@
+#!/bin/sh
+# Paint the desktop background from ~/.config/vdesk. The session's own setting
+# (wallpaper.local.*) wins over the host-wide one copied in by vdesk (wallpaper.*).
+# Settings files are "key=value" lines: type=image|color, mode=<xwallpaper mode>, color=<X color>.
+set -u
+dir=$HOME/.config/vdesk
+
+# A previous image daemon would repaint over the new setting on the next resize
+pkill -u "$(id -u)" -x xwallpaper 2>/dev/null
+
+conf=
+for c in "$dir/wallpaper.local.conf" "$dir/wallpaper.conf"; do
+    [ -f "$c" ] && { conf=$c; break; }
+done
+[ -n "$conf" ] || exec xsetroot -solid black
+
+get() { sed -n "s/^$1=//p" "$conf" | head -n 1; }
+case "$(get type)" in
+    color)
+        exec xsetroot -solid "$(get color)" ;;
+    image)
+        # --daemon repaints when the screen size changes (viewer resize)
+        exec xwallpaper --daemon "--$(get mode)" "${conf%.conf}.img" ;;
+esac

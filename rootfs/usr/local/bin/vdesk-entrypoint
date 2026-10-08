@@ -45,6 +45,7 @@ done
 
 export DISPLAY=":$VDESK_DISPLAY"
 xrdb -merge /etc/vdesk/Xresources
+vdesk-wallpaper >/dev/null 2>&1 &
 
 # Let apps exit cleanly before their display goes away
 stop() {

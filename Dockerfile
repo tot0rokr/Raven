@@ -21,7 +21,7 @@ RUN apt-get update \
       ca-certificates curl gpg fontconfig fonts-dejavu-core tzdata procps xauth \
       openbox tigervnc-standalone-server tigervnc-tools tigervnc-viewer \
       xtightvncviewer xinput x11-xserver-utils x11-apps x11-utils xterm tint2 dbus-x11 \
-      python3-minimal rofi libxss1 \
+      python3-minimal rofi libxss1 xwallpaper \
  && mkdir -p /usr/local/share/fonts/NotoSansKR \
  && curl -fsSL -o '/usr/local/share/fonts/NotoSansKR/NotoSansKR[wght].ttf' \
       'https://github.com/google/fonts/raw/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf' \

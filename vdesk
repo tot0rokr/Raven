@@ -281,8 +281,26 @@ cmd_rename() {
     echo "$1" > "$statedir/$id.name"
 }
 
+# host-apps.conf: "NAME = COMMAND" per line. Prints the command of NAME, or every
+# NAME when called without an argument.
+host_app() {
+    [ -f "$confdir/host-apps.conf" ] || return 1
+    awk -v want="${1:-}" '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            i = index($0, "=")
+            if (!i) next
+            k = substr($0, 1, i - 1); v = substr($0, i + 1)
+            gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
+            if (k == "" || v == "") next
+            if (want == "") { print k; found = 1 }
+            else if (k == want) { print v; found = 1; exit }
+        }
+        END { exit !found }' "$confdir/host-apps.conf"
+}
+
 cmd_run() {
-    local target= host=0 id d xf
+    local target= host=0 id d xf cmd
     while [ $# -gt 0 ]; do
         case "$1" in
             -t) [ $# -ge 2 ] || die "-t needs a target"; target=$2; shift 2 ;;
@@ -292,7 +310,14 @@ cmd_run() {
             *) break ;;
         esac
     done
-    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD..."
+    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD... | @NAME"
+    case "$1" in
+        @*)
+            [ $# -eq 1 ] || die "usage: vdesk run [-t TARGET] @NAME"
+            cmd=$(host_app "${1#@}") || die "no host app '${1#@}' in $confdir/host-apps.conf"
+            set -- "$cmd"
+            host=1 ;;
+    esac
     id=$(resolve "$target")
     ensure_up "$id"
     if [ "$host" = 0 ]; then

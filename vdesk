@@ -1,0 +1,560 @@
+#!/bin/sh
+# tmux-like persistent X desktops: Xvnc sessions in Docker, viewed over X11.
+set -eu
+
+self=$(readlink -f "$0")
+srcdir=$(dirname "$self")
+image=vdesk:latest
+core_image=vdesk-core:latest
+user=$(id -un | tr -c 'A-Za-z0-9_.\n-' '_')
+confdir=${XDG_CONFIG_HOME:-$HOME/.config}/vdesk
+statedir=${XDG_STATE_HOME:-$HOME/.local/state}/vdesk/$(hostname)
+rundir=${XDG_RUNTIME_DIR:-/tmp}/vdesk-$(id -u)
+display_base=100
+port_base=15900
+default_cmd=xterm
+default_geometry=1600x900
+default_addons=edge
+
+usage() {
+    cat <<'EOF'
+usage: vdesk [new] [-d] [-s NAME] [-g WxH] [CMD...]   create a session and attach (default)
+       vdesk attach|a [-d] [-g WxH] [TARGET]           attach to a session
+       vdesk ls                                        list sessions
+       vdesk rename [-t] TARGET NAME                   rename a session
+       vdesk run [-t TARGET] [--host] CMD...           start an app in a session
+       vdesk shell [-t TARGET]                         open a shell inside a session
+       vdesk kill [-t] TARGET                          delete a session and its home
+       vdesk recreate [-a | [-t] TARGET]               move sessions onto the current image
+       vdesk build [DOCKER-BUILD-ARGS...]              build core + enabled addons
+       vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
+       vdesk menu edit | show [-t TARGET] | sync
+
+TARGET is a session id or name; the newest session when omitted.
+new: CMD defaults to xterm, -d skips attaching.
+attach: -d detaches other viewers of the session.
+EOF
+}
+
+die() { echo "vdesk: $*" >&2; exit 1; }
+
+cname() { echo "vdesk-$user-$1"; }
+vname() { echo "vdesk-$user-home-$1"; }
+
+# One line per session, newest first: ID DISPLAY PORT STATE CMD
+sessions() {
+    docker ps -a --filter "label=vdesk.user=$user" \
+        --format '{{.Label "vdesk.id"}} {{.Label "vdesk.display"}} {{.Label "vdesk.port"}} {{.State}} {{.Label "vdesk.cmd"}}'
+}
+
+field() { sessions | awk -v id="$1" -v n="$2" '$1 == id { print $n }'; }
+ids() { sessions | awk '{ print $1 }'; }
+name_of() { cat "$statedir/$1.name" 2>/dev/null || true; }
+label_of() { docker inspect -f "{{index .Config.Labels \"$2\"}}" "$1"; }
+
+resolve() {
+    local i
+    case "$1" in
+        "")
+            i=$(ids | head -n 1)
+            [ -n "$i" ] || die "no sessions"
+            echo "$i" ;;
+        *[!0-9]*)
+            for i in $(ids); do
+                [ "$(name_of "$i")" != "$1" ] || { echo "$i"; return 0; }
+            done
+            die "no session named '$1'" ;;
+        *)
+            [ -n "$(field "$1" 1)" ] || die "no session $1"
+            echo "$1" ;;
+    esac
+}
+
+check_name() {
+    case "$1" in
+        [A-Za-z]*) ;;
+        *) die "name must start with a letter: '$1'" ;;
+    esac
+    case "$1" in
+        *[!A-Za-z0-9_.-]*) die "name may only contain letters, digits, '_', '.', '-': '$1'" ;;
+    esac
+    local i
+    for i in $(ids); do
+        [ "$i" = "${2:-}" ] || [ "$(name_of "$i")" != "$1" ] || die "name '$1' is used by session $i"
+    done
+}
+
+check_geometry() {
+    case "$1" in
+        *[!0-9x]* | x* | *x | *x*x*) die "geometry must look like 1600x900: '$1'" ;;
+        *x*) ;;
+        *) die "geometry must look like 1600x900: '$1'" ;;
+    esac
+}
+
+need_display() {
+    [ -n "${DISPLAY:-}" ] || die "DISPLAY is not set; connect with X11 forwarding (ssh -Y)"
+}
+
+need_image() {
+    docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found; run: vdesk build"
+}
+
+# Run a command inside session $1 against its own display
+xin() {
+    local id=$1
+    shift
+    docker exec -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
+        -w /home/vdesk "$(cname "$id")" "$@"
+}
+
+# Copy the host menu rules into a running session
+push_menu() {
+    if [ -f "$confdir/menu.conf" ]; then
+        docker exec -i "$(cname "$1")" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/menu.conf' \
+            < "$confdir/menu.conf"
+    else
+        docker exec "$(cname "$1")" rm -f /home/vdesk/.config/vdesk/menu.conf
+    fi
+}
+
+ensure_up() {
+    local c port i=0
+    c=$(cname "$1")
+    [ "$(field "$1" 4)" = running ] || docker start "$c" >/dev/null
+    port=$(field "$1" 3)
+    until ss -Hltn "sport = :$port" | grep -q .; do
+        i=$((i + 1))
+        [ "$i" -le 40 ] || die "session $1 did not come up; check: docker logs $c"
+        sleep 0.25
+    done
+    push_menu "$1"
+}
+
+# Lowest id with neither a container nor a leftover home volume
+free_id() {
+    local used i=0
+    used=$(ids)
+    while echo "$used" | grep -qx "$i" || docker volume inspect "$(vname "$i")" >/dev/null 2>&1; do
+        i=$((i + 1))
+    done
+    echo "$i"
+}
+
+# Lowest display not claimed by any vdesk container, live X socket, or VNC port
+free_display() {
+    local taken d=$display_base
+    taken=$( (docker ps -a --filter label=vdesk.display --format '{{.Label "vdesk.display"}}'
+              ss -Hxl | grep -o 'X11-unix/X[0-9]*' | sed 's/.*X//') | sort -u)
+    while echo "$taken" | grep -qx "$d" || ss -Hltn "sport = :$((port_base + d - display_base))" | grep -q .; do
+        d=$((d + 1))
+    done
+    echo "$d"
+}
+
+# Create the container for session $1; runtime needs come from the image's addon labels
+run_container() {
+    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 seccomp shm
+    seccomp=$(docker image inspect -f '{{index .Config.Labels "vdesk.seccomp"}}' "$image")
+    shm=$(docker image inspect -f '{{index .Config.Labels "vdesk.shm-size"}}' "$image")
+    set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
+    [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
+    [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
+    docker run -d "$@" \
+        --label vdesk.user="$user" --label vdesk.id="$id" \
+        --label vdesk.display="$d" --label vdesk.port="$p" \
+        --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" \
+        -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" \
+        -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" \
+        -v "$(vname "$id"):/home/vdesk" \
+        -v "$HOME/Downloads:/home/vdesk/Downloads" \
+        "$image" >/dev/null
+}
+
+view() {
+    local id=$1 geometry=$2 exclusive=$3 c port xa=/tmp/viewer.xauth xi
+    c=$(cname "$id")
+    port=$(field "$id" 3)
+    if [ -n "$geometry" ]; then
+        xin "$id" xrandr --fb "$geometry" >/dev/null 2>&1 || die "cannot resize session $id to $geometry"
+    fi
+    docker exec "$c" sh -c ": > $xa"
+    xauth nlist "$DISPLAY" 2>/dev/null | docker exec -i "$c" xauth -q -f "$xa" nmerge - 2>/dev/null || true
+    xi=$(docker exec -e DISPLAY="$DISPLAY" -e XAUTHORITY="$xa" "$c" xinput --version 2>/dev/null \
+        | sed -n 's/^XI version on server: \([0-9][0-9]*\).*/\1/p')
+    if [ "${xi:-0}" -ge 2 ]; then
+        set -- xtigervncviewer "-Shared=$((1 - exclusive))"
+    else
+        # xtigervncviewer refuses to run without XInput 2 (e.g. Xming 6.9)
+        set -- xtightvncviewer -encodings "copyrect raw"
+        [ "$exclusive" = 0 ] || set -- "$@" -noshared
+    fi
+    exec docker exec -e DISPLAY="$DISPLAY" -e XAUTHORITY="$xa" "$c" \
+        "$@" -passwd /home/vdesk/.vnc/passwd "localhost::$port"
+}
+
+cmd_new() {
+    local detach=0 name= geometry=$default_geometry opt cmd id d p
+    OPTIND=1
+    while getopts ds:g: opt; do
+        case "$opt" in
+            d) detach=1 ;;
+            s) name=$OPTARG ;;
+            g) geometry=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    cmd=${*:-$default_cmd}
+    check_geometry "$geometry"
+    [ -z "$name" ] || check_name "$name"
+    [ "$detach" = 1 ] || need_display
+    need_image
+
+    id=$(free_id)
+    d=$(free_display)
+    p=$((port_base + d - display_base))
+    mkdir -p "$HOME/Downloads" "$statedir"
+    rm -f "$statedir/$id.name"
+    [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
+    run_container "$id" "$d" "$p" "$cmd" "$geometry"
+    ensure_up "$id"
+    echo "vdesk: created session $id${name:+ ($name)}" >&2
+    [ "$detach" = 1 ] || view "$id" "" 0
+}
+
+cmd_attach() {
+    local exclusive=0 geometry= target= opt id
+    OPTIND=1
+    while getopts dg:t: opt; do
+        case "$opt" in
+            d) exclusive=1 ;;
+            g) geometry=$OPTARG ;;
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    [ $# -le 1 ] || die "usage: vdesk attach [-d] [-g WxH] [TARGET]"
+    target=${target:-${1:-}}
+    [ -z "$geometry" ] || check_geometry "$geometry"
+    need_display
+    id=$(resolve "$target")
+    ensure_up "$id"
+    view "$id" "$geometry" "$exclusive"
+}
+
+cmd_ls() {
+    local out id display port state cmd clients name
+    out=$(sessions | sort -n)
+    [ -n "$out" ] || { echo "no sessions"; return 0; }
+    printf '%-4s %-16s %-8s %-8s %-6s %-8s %s\n' ID NAME STATE DISPLAY PORT VIEWERS CMD
+    echo "$out" | while read -r id display port state cmd; do
+        clients=-
+        if [ "$state" = running ]; then
+            clients=$(docker top "$(cname "$id")" -eo pid,args | grep -cE 'x(tiger|tight)vncviewer' || true)
+        fi
+        name=$(name_of "$id")
+        printf '%-4s %-16s %-8s %-8s %-6s %-8s %s\n' \
+            "$id" "${name:--}" "$state" ":$display" "$port" "$clients" "$cmd"
+    done
+}
+
+cmd_rename() {
+    local target= opt id
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ -z "$target" ] && [ $# -eq 2 ]; then
+        target=$1
+        shift
+    fi
+    [ -n "$target" ] && [ $# -eq 1 ] || die "usage: vdesk rename [-t] TARGET NAME"
+    id=$(resolve "$target")
+    check_name "$1" "$id"
+    mkdir -p "$statedir"
+    echo "$1" > "$statedir/$id.name"
+}
+
+cmd_run() {
+    local target= host=0 id d xf
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t) [ $# -ge 2 ] || die "-t needs a target"; target=$2; shift 2 ;;
+            -H | --host) host=1; shift ;;
+            --) shift; break ;;
+            -*) die "unknown option: $1" ;;
+            *) break ;;
+        esac
+    done
+    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD..."
+    id=$(resolve "$target")
+    ensure_up "$id"
+    if [ "$host" = 0 ]; then
+        docker exec -d -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
+            -w /home/vdesk "$(cname "$id")" sh -c "$*"
+        return 0
+    fi
+
+    # Host apps reach the session's X socket through the shared network namespace
+    d=$(field "$id" 2)
+    mkdir -p "$rundir"
+    chmod 700 "$rundir"
+    xf=$rundir/$id.xauth
+    (umask 077 && : > "$xf")
+    docker exec "$(cname "$id")" xauth nlist ":$d" | xauth -q -f "$xf" nmerge -
+    DISPLAY=":$d" XAUTHORITY="$xf" setsid sh -c "$*" >>"$rundir/$id.log" 2>&1 </dev/null &
+}
+
+cmd_shell() {
+    local target= opt id
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    target=${target:-${1:-}}
+    id=$(resolve "$target")
+    ensure_up "$id"
+    exec docker exec -it -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
+        -w /home/vdesk "$(cname "$id")" bash
+}
+
+cmd_kill() {
+    local target= opt id
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    target=${target:-${1:-}}
+    [ -n "$target" ] || die "usage: vdesk kill [-t] TARGET"
+    id=$(resolve "$target")
+    docker rm -f "$(cname "$id")" >/dev/null
+    docker volume rm "$(vname "$id")" >/dev/null
+    rm -f "$statedir/$id.name" "$rundir/$id.xauth" "$rundir/$id.log"
+}
+
+cmd_recreate() {
+    local all=0 target= opt id targets c cmd geometry
+    OPTIND=1
+    while getopts at: opt; do
+        case "$opt" in
+            a) all=1 ;;
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    target=${target:-${1:-}}
+    if [ "$all" = 1 ]; then
+        targets=$(ids | sort -n)
+    else
+        [ -n "$target" ] || die "usage: vdesk recreate [-a | [-t] TARGET]"
+        targets=$(resolve "$target")
+    fi
+    need_image
+    for id in $targets; do
+        c=$(cname "$id")
+        cmd=$(label_of "$c" vdesk.cmd)
+        geometry=$(label_of "$c" vdesk.geometry)
+        set -- "$(field "$id" 2)" "$(field "$id" 3)"
+        docker stop "$c" >/dev/null
+        docker rm "$c" >/dev/null
+        run_container "$id" "$1" "$2" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}"
+        ensure_up "$id"
+        echo "vdesk: recreated session $id" >&2
+    done
+}
+
+enabled_addons() {
+    if [ -f "$confdir/addons.enabled" ]; then
+        grep -vE '^[[:space:]]*(#|$)' "$confdir/addons.enabled" || true
+    else
+        echo "$default_addons"
+    fi
+}
+
+# A user addon shadows a built-in one with the same name
+addon_dir() {
+    if [ -f "$confdir/addons/$1/addon.conf" ]; then
+        echo "$confdir/addons/$1"
+    elif [ -f "$srcdir/addons/$1/addon.conf" ]; then
+        echo "$srcdir/addons/$1"
+    else
+        return 1
+    fi
+}
+
+# Print DESCRIPTION, SECCOMP and SHM_SIZE of an addon, tab separated
+addon_info() {
+    (
+        DESCRIPTION= SECCOMP= SHM_SIZE=
+        . "$1/addon.conf"
+        printf '%s\t%s\t%s\n' "$DESCRIPTION" "$SECCOMP" "$SHM_SIZE"
+    )
+}
+
+to_mib() {
+    echo "$1" | awk '{
+        n = $0 + 0; u = tolower(substr($0, length($0)))
+        if (u == "g") n *= 1024; else if (u == "k") n /= 1024; else if (u != "m") n /= 1048576
+        printf "%d\n", n
+    }'
+}
+
+cmd_build() {
+    local a dir info names= seccomp= shm=0
+    docker build -t "$core_image" \
+        --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" \
+        "$@" "$srcdir"
+
+    # --pull would try to fetch the local core image from a registry
+    for a in "$@"; do
+        shift
+        [ "$a" = --pull ] || set -- "$@" "$a"
+    done
+
+    ctx=$(mktemp -d)
+    trap 'rm -rf "$ctx"' EXIT
+    {
+        echo "FROM $core_image"
+        echo "USER root"
+    } > "$ctx/Dockerfile"
+    for a in $(enabled_addons); do
+        dir=$(addon_dir "$a") || die "addon not found: $a (see: vdesk addon ls)"
+        info=$(addon_info "$dir")
+        [ "$(echo "$info" | cut -f 2)" != unconfined ] || seccomp=unconfined
+        if [ -n "$(echo "$info" | cut -f 3)" ] && [ "$(to_mib "$(echo "$info" | cut -f 3)")" -gt "$shm" ]; then
+            shm=$(to_mib "$(echo "$info" | cut -f 3)")
+        fi
+        names="$names${names:+ }$a"
+        echo "RUN --mount=type=bind,from=addon-$a,target=/tmp/vdesk-addon vdesk-apply-addon $a /tmp/vdesk-addon" \
+            >> "$ctx/Dockerfile"
+        set -- "$@" --build-context "addon-$a=$dir"
+    done
+    [ "$shm" -gt 0 ] && shm=${shm}m || shm=
+    {
+        echo "LABEL vdesk.addons=\"$names\" vdesk.seccomp=\"$seccomp\" vdesk.shm-size=\"$shm\""
+        echo "USER vdesk"
+    } >> "$ctx/Dockerfile"
+    docker build -t "$image" -f "$ctx/Dockerfile" "$@" "$ctx"
+    echo "vdesk: built $image with addons: ${names:-(none)}" >&2
+    echo "vdesk: move existing sessions onto it with: vdesk recreate -a" >&2
+}
+
+cmd_addon() {
+    local sub=${1:-ls} built enabled n dir info src
+    [ $# -eq 0 ] || shift
+    case "$sub" in
+        ls)
+            built=$(docker image inspect -f '{{index .Config.Labels "vdesk.addons"}}' "$image" 2>/dev/null || true)
+            enabled=$(enabled_addons)
+            printf '%-16s %-8s %-6s %-8s %s\n' NAME ENABLED BUILT SOURCE DESCRIPTION
+            for n in $( (ls "$srcdir/addons" 2>/dev/null; ls "$confdir/addons" 2>/dev/null) | sort -u); do
+                dir=$(addon_dir "$n") || continue
+                info=$(addon_info "$dir")
+                case "$dir" in "$confdir"/*) src=user ;; *) src=builtin ;; esac
+                printf '%-16s %-8s %-6s %-8s %s\n' "$n" \
+                    "$(echo "$enabled" | grep -qx "$n" && echo yes || echo no)" \
+                    "$(echo " $built " | grep -q " $n " && echo yes || echo no)" \
+                    "$src" "$(echo "$info" | cut -f 1)"
+            done ;;
+        enable)
+            [ $# -eq 1 ] || die "usage: vdesk addon enable NAME"
+            addon_dir "$1" >/dev/null || die "addon not found: $1"
+            enabled=$(enabled_addons)
+            mkdir -p "$confdir"
+            { echo "$enabled"; echo "$enabled" | grep -qx "$1" || echo "$1"; } \
+                | grep -v '^$' > "$confdir/addons.enabled"
+            echo "vdesk: enabled $1; apply with: vdesk build && vdesk recreate -a" >&2 ;;
+        disable)
+            [ $# -eq 1 ] || die "usage: vdesk addon disable NAME"
+            enabled=$(enabled_addons)
+            mkdir -p "$confdir"
+            echo "$enabled" | grep -vx "$1" > "$confdir/addons.enabled" || true
+            echo "vdesk: disabled $1; apply with: vdesk build && vdesk recreate -a" >&2 ;;
+        new)
+            [ $# -ge 1 ] || die "usage: vdesk addon new NAME [PKG...]"
+            n=$1
+            shift
+            case "$n" in
+                [a-z0-9]*) ;;
+                *) die "addon name must start with a lowercase letter or digit: '$n'" ;;
+            esac
+            case "$n" in
+                *[!a-z0-9_.-]*) die "addon name may only contain a-z, 0-9, '_', '.', '-': '$n'" ;;
+            esac
+            dir=$confdir/addons/$n
+            [ ! -e "$dir" ] || die "already exists: $dir"
+            mkdir -p "$dir"
+            printf 'DESCRIPTION="%s"\nPACKAGES="%s"\n' "$n" "$*" > "$dir/addon.conf"
+            echo "vdesk: created $dir/addon.conf" >&2
+            echo "vdesk: next: vdesk addon enable $n && vdesk build && vdesk recreate -a" >&2 ;;
+        *) die "usage: vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]" ;;
+    esac
+}
+
+menu_template() {
+    cat <<'EOF'
+# vdesk menu rules, applied after the image defaults (/etc/vdesk/menu.d/*.conf).
+#   LABEL = COMMAND   add an entry at the top, or change the command of LABEL
+#   !LABEL            hide an entry (also hides generated .desktop entries)
+#   ---               separator
+# Examples:
+#   Edge (work) = microsoft-edge --profile-directory=Work
+#   !Microsoft Edge
+EOF
+}
+
+cmd_menu() {
+    local sub=${1:-show} target= id
+    [ $# -eq 0 ] || shift
+    case "$sub" in
+        edit)
+            mkdir -p "$confdir"
+            [ -f "$confdir/menu.conf" ] || menu_template > "$confdir/menu.conf"
+            ${VISUAL:-${EDITOR:-vi}} "$confdir/menu.conf"
+            cmd_menu sync ;;
+        show)
+            [ "${1:-}" != -t ] || { target=${2:-}; shift 2; }
+            target=${target:-${1:-}}
+            id=$(resolve "$target")
+            ensure_up "$id"
+            xin "$id" vdesk-menu --list ;;
+        sync)
+            for id in $(sessions | awk '$4 == "running" { print $1 }'); do
+                push_menu "$id"
+            done ;;
+        *) die "usage: vdesk menu edit | show [-t TARGET] | sync" ;;
+    esac
+}
+
+[ $# -gt 0 ] || { cmd_new; exit; }
+case "$1" in
+    -h | --help | help) usage ;;
+    -*) cmd_new "$@" ;;
+    new) shift; cmd_new "$@" ;;
+    attach | a) shift; cmd_attach "$@" ;;
+    ls | list) shift; cmd_ls "$@" ;;
+    rename) shift; cmd_rename "$@" ;;
+    run) shift; cmd_run "$@" ;;
+    shell) shift; cmd_shell "$@" ;;
+    kill) shift; cmd_kill "$@" ;;
+    recreate) shift; cmd_recreate "$@" ;;
+    build) shift; cmd_build "$@" ;;
+    addon) shift; cmd_addon "$@" ;;
+    menu) shift; cmd_menu "$@" ;;
+    *) usage >&2; exit 2 ;;
+esac

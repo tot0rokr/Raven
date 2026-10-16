@@ -530,13 +530,33 @@ addon_dir() {
     fi
 }
 
-# Print DESCRIPTION, SECCOMP and SHM_SIZE of an addon, tab separated
+# Print DESCRIPTION, SECCOMP, SHM_SIZE and SESSION_ENV of an addon, tab separated
 addon_info() {
     (
-        DESCRIPTION= SECCOMP= SHM_SIZE=
+        DESCRIPTION= SECCOMP= SHM_SIZE= SESSION_ENV=
         . "$1/addon.conf"
-        printf '%s\t%s\t%s\n' "$DESCRIPTION" "$SECCOMP" "$SHM_SIZE"
+        printf '%s\t%s\t%s\t%s\n' "$DESCRIPTION" "$SECCOMP" "$SHM_SIZE" "$SESSION_ENV"
     )
+}
+
+# Turn an addon's SESSION_ENV ("NAME=VALUE ...") into Dockerfile ENV arguments
+session_env() {
+    local a=$1 kv
+    set -f
+    for kv in $2; do
+        case "$kv" in
+            [A-Za-z_]*=*) ;;
+            *) die "addon $a: SESSION_ENV entries must look like NAME=VALUE: '$kv'" ;;
+        esac
+        case "${kv%%=*}" in
+            *[!A-Za-z0-9_]*) die "addon $a: bad variable name in SESSION_ENV: '$kv'" ;;
+        esac
+        case "${kv#*=}" in
+            *[\"\\\$]*) die "addon $a: SESSION_ENV values may not contain quotes, backslashes or \$: '$kv'" ;;
+        esac
+        printf ' %s="%s"' "${kv%%=*}" "${kv#*=}"
+    done
+    set +f
 }
 
 to_mib() {
@@ -548,7 +568,7 @@ to_mib() {
 }
 
 cmd_build() {
-    local a dir info names= seccomp= shm=0
+    local a dir info names= seccomp= shm=0 env=
     docker build -t "$core_image" \
         --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" \
         "$@" "$srcdir"
@@ -572,6 +592,7 @@ cmd_build() {
         if [ -n "$(echo "$info" | cut -f 3)" ] && [ "$(to_mib "$(echo "$info" | cut -f 3)")" -gt "$shm" ]; then
             shm=$(to_mib "$(echo "$info" | cut -f 3)")
         fi
+        env="$env$(session_env "$a" "$(echo "$info" | cut -f 4)")"
         names="$names${names:+ }$a"
         echo "RUN --mount=type=bind,from=addon-$a,target=/tmp/vdesk-addon vdesk-apply-addon $a /tmp/vdesk-addon" \
             >> "$ctx/Dockerfile"
@@ -579,6 +600,8 @@ cmd_build() {
     done
     [ "$shm" -gt 0 ] && shm=${shm}m || shm=
     {
+        # Image ENV reaches every session process: the entrypoint, menu apps and docker exec
+        [ -z "$env" ] || echo "ENV$env"
         echo "LABEL vdesk.addons=\"$names\" vdesk.seccomp=\"$seccomp\" vdesk.shm-size=\"$shm\""
         echo "USER vdesk"
     } >> "$ctx/Dockerfile"

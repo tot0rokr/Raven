@@ -162,7 +162,7 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 
 - 세션 안에서 `Alt+Shift+/`나 메뉴의 `Keyboard Shortcuts`로 이 표를 rofi 목록으로 본다. 목록은 이미지의 `/etc/vdesk/keys/xmonad`다.
 - `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`도 Windows가 가로챌 수 있어서 레이아웃 전환은 `Alt+\`를 쓴다.
-- `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm start --always-new-process` (호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
+- `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process` (호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
 - 창 사이와 화면 가장자리에 6px 간격을 둔다. 창이 하나여도 둔다. 배경화면은 이 간격과 빈 작업 공간에서 보인다. `Alt+g`로 끄면 창이 화면을 빈틈없이 채운다. 세션이 다시 뜨면 켜진 상태로 돌아간다.
 
 ### openbox
@@ -182,7 +182,7 @@ vdesk menu show -t 0                   # 세션 0의 실제 메뉴를 "LABEL<TAB
 ```
 # ~/.config/vdesk/menu.conf
 Edge (work) = microsoft-edge --profile-directory=Work
-Terminal = @wezterm start --always-new-process
+Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process
 !Microsoft Edge
 ```
 
@@ -206,7 +206,7 @@ Terminal = @wezterm start --always-new-process
 호스트에 설치된 GUI 앱을 세션 화면에 띄운다.
 
 ```bash
-vdesk run -t web --host wezterm start --always-new-process   # 명령을 직접 지정
+vdesk run -t web --host gtkwave wave.vcd                      # 명령을 직접 지정
 vdesk run -t web @Terminal                                    # menu.conf의 호스트 항목 라벨로
 vdesk run -t web @"Host shell"                                # 라벨에 공백이 있을 때
 ```
@@ -220,7 +220,7 @@ vdesk run -t web @"Host shell"                                # 라벨에 공백
 `vdesk menu edit`으로 `menu.conf`를 열고 명령 앞에 `@`를 붙인 항목을 적는다.
 
 ```
-Terminal = @wezterm start --always-new-process
+Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process
 ```
 
 - 세션 메뉴에서 누르면 호스트에서 실행된다. 명령줄에서는 `vdesk run -t TARGET @Terminal`.
@@ -244,6 +244,10 @@ vdesk hostd stop
 
 - 호스트의 `~/.wezterm.lua`를 그대로 쓴다. GPU 없이 Mesa llvmpipe로 그리므로 호스트에 `libegl1`, `libegl-mesa0`이 있어야 한다.
 - `--always-new-process`: 다른 화면에서 실행 중인 wezterm 프로세스에 새 창이 붙어 엉뚱한 화면에 뜨는 것을 막는다.
+- `--config 'front_end="WebGpu"'`를 붙인다. 기본 렌더러(OpenGL)와 `Software`는 세션 화면이 커질 때(뷰어 창을 키울 때) 처음 뜰 때의 높이 아래를 그리지 않는다. 폭은 따라간다. 줄어드는 것은 문제없다. WebGpu는 키우고 줄여도 창 전체를 그린다(wezterm 20240203, Mesa 25.2 llvmpipe에서 확인).
+  ```
+  Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process
+  ```
 
 ## 배경화면
 

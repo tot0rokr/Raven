@@ -40,13 +40,13 @@
 라벨 `Terminal`은 xmonad 세션의 `Alt+Shift+Enter`가 실행하는 항목이다. core 기본 규칙은 `Terminal = xterm`이고, `menu.conf`에서 같은 라벨로 덮어쓰면 단축키와 메뉴가 함께 바뀐다. `!Terminal`로 숨기면 단축키는 xterm을 띄우지 못하고 오류 창을 띄운다.
 
 ```
-Terminal = @wezterm start --always-new-process
+Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process
 ```
 
 ## 호스트 항목 (`@COMMAND`)
 
 ```
-term = @wezterm start --always-new-process
+term = @wezterm --config 'front_end="WebGpu"' start --always-new-process
 ```
 
 - 메뉴에서 누르면 세션이 호스트 중계(`vdesk-hostd`)에 라벨(`term`)만 보낸다. 중계는 호스트의 `~/.config/vdesk/menu.conf`에서 그 라벨의 마지막 규칙을 찾아, `@`로 시작하면 호스트에서 실행한다. 세션이 보낸 명령을 실행하는 일은 없다.

@@ -82,10 +82,8 @@ X11UseLocalhost yes
 
 ### 지역 설정
 
-이미지에 고정되어 있다. 바꾸려면 `Dockerfile`의 `ENV`를 고치고 `vdesk build` 후 `recreate`한다.
-
-- 시간대 `TZ=Asia/Seoul`, 로캘 `LANG=C.UTF-8`
-- 글꼴: DejaVu, Noto Sans KR (한글)
+- 시간대: 세션은 서버의 시간대를 따른다. vdesk가 세션 컨테이너를 만들 때(`new`, `recreate`) `TZ`를 넘긴다. 셸의 `TZ`가 있으면 그것, 없으면 `/etc/localtime`이 가리키는 시간대다. 서버 시간대를 바꾼 뒤에는 `recreate`해야 세션에 반영된다.
+- 로캘 `LANG=C.UTF-8`, 글꼴 DejaVu와 Noto Sans KR(한글)은 이미지에 고정되어 있다. 바꾸려면 `Dockerfile`을 고치고 `vdesk build` 후 `recreate`한다.
 
 ### 재부팅
 

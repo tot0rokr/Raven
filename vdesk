@@ -290,6 +290,14 @@ free_display() {
     echo "$d"
 }
 
+# The server's time zone: $TZ, else the zone /etc/localtime points to, else /etc/timezone
+host_tz() {
+    local z=${TZ:-}
+    [ -n "$z" ] || z=$(readlink -f /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
+    [ -n "$z" ] || z=$(cat /etc/timezone 2>/dev/null || true)
+    echo "${z:-UTC}"
+}
+
 # Create the container for session $1; runtime needs come from the image's addon labels
 run_container() {
     local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm uid
@@ -309,6 +317,7 @@ run_container() {
         --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" --label vdesk.wm="$wm" \
         -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" -e VDESK_WM="$wm" \
         -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" -e VDESK_HOST_UID="$(id -u)" \
+        -e TZ="$(host_tz)" \
         --group-add "$(id -g)" \
         -v "$(vname "$id"):/home/vdesk" \
         -v "$HOME/Downloads:/home/vdesk/Downloads" \

@@ -379,6 +379,7 @@ vdesk recreate -a                      # 모든 세션을 새 이미지로
 | `XDG_STATE_HOME`   | 세션 이름 디렉터리                         | `~/.local/state`             |
 | `XDG_RUNTIME_DIR`  | 호스트 앱 인증, 로그, 중계 로그            | 없으면 `/tmp`                |
 | `VISUAL`, `EDITOR` | `menu edit`의 편집기                       | `vi`                         |
+| `TZ`               | 세션 시간대 (세션을 만들 때 넘긴다)        | 서버의 `/etc/localtime`      |
 
 개발 중인 worktree를 기존 이미지와 나란히 시험할 때는 이미지 이름을 바꾼다.
 

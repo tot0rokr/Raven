@@ -36,6 +36,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요는 [README.md](./README.m
 - Xvnc의 MIT-SHM은 끈 채로 둔다. 켜면 `run --host`로 띄운 Mesa 앱(wezterm 등)이 검은 창이 된다. `--ipc host`로 바꾸지 않는다.
 - 세션과 호스트 사이에는 메뉴 라벨만 오간다. 호스트 명령은 호스트의 `~/.config/vdesk/menu.conf`에 있는 `LABEL = @COMMAND` 규칙에서만 찾고, 세션이 보낸 문자열을 명령으로 실행하지 않는다. 중계는 SO_PEERCRED의 pid로 요청한 프로세스의 컨테이너를 확인한다(세션 uid가 호스트 uid와 다르고 모든 사용자에게 같으므로 uid로는 가릴 수 없다).
 - 세션 사용자는 고정 uid/gid 60000(`Dockerfile`, label `vdesk.uid`)이다. 빌드한 사람의 uid를 이미지에 넣지 않는다. `run_container`가 `--group-add <호스트 gid>`, `-e VDESK_HOST_UID`를 주고 호스트 `~/Downloads`에 `g+rwxs`를 켠다. 다른 uid로 만들어진 홈 volume은 시작 전에 root 도우미 컨테이너로 소유자를 바꾼다.
+- 세션 시간대는 `run_container`가 서버의 것(`TZ`, 없으면 `/etc/localtime`)을 `-e TZ`로 넘긴다. 이미지에는 시간대를 넣지 않는다.
 - 앱의 기본 설정은 addon이 `/etc/xdg/<앱>`에 두고, 개인 설정(`~/.config/<앱>`, 홈 overlay)이 이긴다.
 - 세션 안의 umask는 `002`다. entrypoint가 정하고, `docker exec`는 이를 물려받지 않으므로 사용자 명령을 실행하는 `run`, `shell`도 `umask 002`를 붙인다.
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.

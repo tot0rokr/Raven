@@ -15,7 +15,6 @@ FROM ubuntu:24.04
 # The session bus started by vdesk-entrypoint has a fixed address, so docker exec shells reach it too
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    TZ=Asia/Seoul \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/vdesk-bus/bus
 
 RUN apt-get update \

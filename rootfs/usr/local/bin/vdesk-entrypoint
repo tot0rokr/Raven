@@ -18,6 +18,10 @@ case "$VDESK_WM" in
 esac
 export VDESK_WM
 
+# Ubuntu's bash.bashrc runs groups(1) for its sudo hint unless this file exists; the host
+# group added with --group-add has no name here, so groups would print an error in every shell
+[ -e "$HOME/.hushlogin" ] || : > "$HOME/.hushlogin"
+
 mkdir -p "$HOME/.vnc"
 chmod 700 "$HOME/.vnc"
 head -c 32 /dev/urandom | base64 | head -c 8 | vncpasswd -f > "$HOME/.vnc/passwd"

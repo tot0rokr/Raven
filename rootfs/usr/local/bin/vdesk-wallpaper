@@ -50,7 +50,10 @@ if [ -z "$conf" ]; then
 elif [ "$(get "$conf" type)" = color ]; then
     xsetroot -solid "$(get "$conf" color)"
 else
-    # --daemon repaints when the screen size changes (viewer resize); it must not keep the lock
-    xwallpaper --daemon "--$(get "$conf" mode)" "${conf%.conf}.img" 9>&-
+    # --daemon repaints when the screen size changes (viewer resize); it must not keep the lock.
+    # --no-atoms: xwallpaper 0.7.3 (Ubuntu 24.04) updating the root pixmap atoms kills its own
+    # X connection on the first resize when no earlier root pixmap existed (fixed upstream by
+    # "Kill clients only once"), leaving the background at the size of that resize.
+    xwallpaper --daemon --no-atoms "--$(get "$conf" mode)" "${conf%.conf}.img" 9>&-
 fi
 xprop -root -f _VDESK_WALLPAPER 8s -set _VDESK_WALLPAPER "$key"

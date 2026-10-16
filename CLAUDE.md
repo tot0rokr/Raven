@@ -40,6 +40,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
 - 창 관리자 label(`vdesk.wm`)이 없는 세션은 openbox로 다룬다.
 - 배경화면 설정은 이미지 label `vdesk.features`에 `wallpaper`가 있는 세션에만 복사한다(core `Dockerfile`이 붙이고 addon 이미지가 물려받는다). 이전 이미지 세션의 홈에는 파일을 쓰지 않는다.
 - 배경화면 파일은 conf를 먼저 지우고, 이미지와 conf를 임시 파일을 거쳐 `mv`로 바꾼다. 중간에 끊겨도 conf와 다른 이미지가 짝지어지지 않고, 다음 복사 때 다시 한다. 세션 사본은 이미지 sha가 conf의 `sha=`와 다르면(동시에 쓴 경우) 다시 복사한다. 호스트 쪽에 잠금을 두지 않는 이유는 홈이 NFS여서 잠금에서 멈출 수 있기 때문이다.
+- xwallpaper는 `--daemon --no-atoms`로 띄운다. Ubuntu 24.04의 0.7.3은 root pixmap atom을 갱신하다가, 이전 배경 pixmap이 없던 세션(새로 만들거나 재시작한 세션)에서 첫 크기 변경 때 자기 X 연결을 kill하고 죽는다(upstream 커밋 "Kill clients only once"에서 고침). 그러면 배경이 그때 크기에 멈춘다.
 - `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 `docs/usage.md`와 관련 `docs/`를 같이 고친다. README는 기능 목록과 구조가 바뀔 때 고친다.
 - xmonad 키를 바꾸면 `rootfs/etc/vdesk/keys/xmonad`(세션 안 목록)와 `docs/usage.md`의 키 표를 같이 고친다.

@@ -396,6 +396,7 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 - 호스트 wezterm 창이 검게 나온다: MIT-SHM을 끄기 전에 만든 세션이다. `vdesk recreate`로 옮긴다.
 - addon을 켰는데 세션에 앱이 없다: `vdesk addon ls`에서 `BUILT`를 확인하고 `vdesk recreate`로 새 이미지로 옮긴다.
 - Edge가 `Zygote process exited`로 죽는다: 이미지 label `vdesk.seccomp`가 비어 있다. `edge` addon을 켜고 빌드했는지 확인한다.
+- 화면 크기를 바꾼 뒤 배경이 처음 바꾼 크기에 멈춰 있다(반복되거나 잘려 보인다): xwallpaper 0.7.3이 첫 크기 변경 때 죽는 문제다. 고치기 전 이미지의 세션이면 `vdesk recreate`.
 - 배경화면이 안 보인다: 배경화면 기능 이전 이미지의 세션이면 `vdesk recreate`. xmonad 세션은 창 사이 6px 간격과 빈 작업 공간에서 보인다. 간격 기능 이전 이미지의 xmonad 세션은 창이 화면을 덮는다.
 - `Alt+Tab`이 세션으로 가지 않는다: Windows가 가로챈다. xmonad에서는 `Alt+j`/`Alt+k`를 쓴다.
 - 한글이 입력되지 않는다: `vdesk addon ls`에서 kime가 `BUILT`인지, 세션이 그 이미지로 `recreate`됐는지 확인한다. 세션 안에서 `pgrep -a kime`로 데몬을 보고, 한/영 키는 [한글 입력](#한글-입력)을 본다.

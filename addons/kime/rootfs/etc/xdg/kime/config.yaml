@@ -1,0 +1,52 @@
+# vdesk default for kime: dubeolsik, Shift+Space toggles Hangul/Latin.
+# A session's own ~/.config/kime/config.yaml (e.g. copied from ~/.config/vdesk/home) is used
+# instead of this whole file. Keys left out here keep kime's built-in defaults.
+daemon:
+  modules:
+  - Xim
+engine:
+  default_category: Latin
+  # kime's default toggles plus S-Space: VcXsrv sends the Korean 한/영 key as Left Alt, so
+  # S-Space is the keyboard toggle there. Hangul is what the taskbar 한/A button sends.
+  global_hotkeys:
+    S-Space:
+      behavior: !Toggle
+      - Hangul
+      - Latin
+      result: Consume
+    Hangul:
+      behavior: !Toggle
+      - Hangul
+      - Latin
+      result: Consume
+    AltR:
+      behavior: !Toggle
+      - Hangul
+      - Latin
+      result: Consume
+    Super-Space:
+      behavior: !Toggle
+      - Hangul
+      - Latin
+      result: Consume
+    Muhenkan:
+      behavior: !Toggle
+      - Hangul
+      - Latin
+      result: Consume
+    Esc:
+      behavior: !Switch Latin
+      result: Bypass
+    M-C-E:
+      behavior: !Mode Emoji
+      result: ConsumeIfProcessed
+    M-C-Backslash:
+      behavior: !Mode Math
+      result: ConsumeIfProcessed
+  # The image has Noto Sans KR, not kime's default Noto Sans CJK KR
+  candidate_font: Noto Sans KR
+  xim_preedit_font:
+  - Noto Sans KR
+  - 15.0
+  hangul:
+    layout: dubeolsik

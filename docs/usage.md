@@ -291,11 +291,12 @@ vdesk build
 vdesk recreate web                     # 기존 세션은 recreate, 새 세션은 바로 적용
 ```
 
-- 설정이 없으면 kime 기본값(두벌식, 한/영 키로 전환)이다. 내 설정은 `~/.config/vdesk/home/.config/kime/`에 둔다 ([개인 설정 파일](#개인-설정-파일)).
+- 기본 설정은 addon이 이미지의 `/etc/xdg/kime/config.yaml`에 둔 것이다. 두벌식이고, Shift+Space와 kime 기본 전환 키(한/영, 오른쪽 Alt, `Super+Space`, `Muhenkan`)로 바꾼다. `Esc`는 영문으로 돌린다.
+- 내 설정은 `~/.config/vdesk/home/.config/kime/config.yaml`에 둔다 ([개인 설정 파일](#개인-설정-파일)). 세션 홈에 `~/.config/kime/config.yaml`이 있으면 기본 설정 대신 그 파일 전체를 쓴다. 다른 자판(예: 신세벌식 P2)을 쓰려면 기본 설정을 복사해서 `hangul.layout`을 바꾼다. 개인 설정에도 Shift+Space 같은 전환 키를 넣어야 키보드로 바꿀 수 있다.
 - GTK3 앱(Edge 포함)은 GTK 입력 모듈로, xterm 같은 X 앱은 XIM으로 kime에 붙는다. 환경 변수 `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`는 addon이 이미지에 넣는다.
 - kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
 - VcXsrv는 Windows 한국어 자판의 한/영 키와 한자 키를 왼쪽 Alt(`Alt_L`)와 왼쪽 Ctrl(`Control_L`)로 보낸다. 한국어 자판은 오른쪽 Alt와 오른쪽 Ctrl을 `VK_HANGUL`, `VK_HANJA`로 바꾸는데, VcXsrv의 키 변환표(`hw/xwin/winkeybd.h`)에는 이 두 키가 없어서 오른쪽 표시(확장 비트)가 빠진다. 그래서 세션에서는 한/영 키를 왼쪽 Alt와 구별할 수 없고, kime 설정의 `AltR`, `Hangul` 전환이 동작하지 않는다.
-- 키보드로 바꾸려면 VcXsrv를 거쳐도 그대로 오는 조합을 kime 설정의 `global_hotkeys`에 넣는다. 예: Shift+Space. kime는 Shift의 좌우를 구별하지 않는다.
+- 키보드 전환 키는 VcXsrv를 거쳐도 그대로 오는 조합이어야 한다. 기본 설정의 Shift+Space가 그렇다. kime는 Shift의 좌우를 구별하지 않는다. 개인 설정에서는 이렇게 쓴다.
   ```yaml
   # ~/.config/vdesk/home/.config/kime/config.yaml (engine.global_hotkeys 아래)
   S-Space:

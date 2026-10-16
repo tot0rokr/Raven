@@ -111,7 +111,7 @@ Xming 6.9처럼 XInput 2가 없는 X 서버에서는 `xtightvncviewer`로 붙고
 ### 키보드 (Windows + VcXsrv)
 
 - Windows가 Win 키와 `Alt+Tab`을 가로챈다. 그래서 xmonad 조작 키는 Alt이고, 창 이동은 `Alt+j`/`Alt+k`다.
-- 한국어 자판의 한/영 키와 한자 키는 VcXsrv가 왼쪽 Alt와 왼쪽 Ctrl로 보낸다. 세션에서는 이 키로 한/영을 바꿀 수 없다. kime 설정에 다른 전환 키(예: `S-Space`)를 넣거나 작업표시줄의 `한/A` 버튼을 쓴다([usage.md](./usage.md#한글-입력)).
+- 한국어 자판의 한/영 키와 한자 키는 VcXsrv가 왼쪽 Alt와 왼쪽 Ctrl로 보낸다. 세션에서는 이 키로 한/영을 바꿀 수 없다. `kime` addon의 기본 설정은 Shift+Space로 바꾸고, 작업표시줄의 `한/A` 버튼도 있다([usage.md](./usage.md#한글-입력)).
 - Windows IME는 영문 상태로 둔다.
 
 ### macOS, Linux

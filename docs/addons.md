@@ -164,6 +164,7 @@ echo "$sha256  /tmp/kime.deb" | sha256sum -c -
 - `post-install`에서 `/tmp/kime.deb`를 지운다.
 - `rootfs/etc/vdesk/session.d/50-kime`: `start`에서 kime를 띄우고 XIM 서버가 등록될 때까지 기다린다. `reload`에서는 `~/.config/kime`가 바뀌었을 때만 다시 띄운다.
 - `rootfs/etc/vdesk/panel.d/50-kime.tint2rc`: 작업표시줄의 `한/A` 버튼. 누르면 `vdesk-kime-toggle`이 포커스된 창에 `Hangul` 키를 보낸다(`xdotool`).
+- `rootfs/etc/xdg/kime/config.yaml`: 앱의 기본 설정은 XDG 시스템 설정 디렉터리(`/etc/xdg/<앱>`)에 둔다. 사용자의 `~/.config/<앱>`에 같은 파일이 있으면 앱이 그쪽을 쓰는 방식이라 개인 설정과 부딪히지 않는다. kime의 기본 설정은 두벌식과 Shift+Space 전환이다.
 
 ### 실행 옵션 고정
 

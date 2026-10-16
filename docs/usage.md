@@ -291,10 +291,11 @@ vdesk recreate web                     # 기존 세션은 recreate, 새 세션�
 - 설정이 없으면 kime 기본값(두벌식, 한/영 키로 전환)이다. 내 설정은 `~/.config/vdesk/home/.config/kime/`에 둔다 ([개인 설정 파일](#개인-설정-파일)).
 - GTK3 앱(Edge 포함)은 GTK 입력 모듈로, xterm 같은 X 앱은 XIM으로 kime에 붙는다. 환경 변수 `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`는 addon이 이미지에 넣는다.
 - kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
-- 한/영 키가 X에 어떤 키로 오는지는 Windows 키보드 드라이버에 따라 다르다(`Hangul` 또는 `Alt_R`). 전환이 안 되면 `vdesk shell`에서 `xev -event keyboard | grep keysym`을 실행하고, 세션 화면에 뜬 창에서 그 키를 눌러 본다. 나온 이름을 kime 설정의 `global_hotkeys`에 넣는다.
+- VcXsrv는 Windows 한국어 자판의 한/영 키와 한자 키를 왼쪽 Alt(`Alt_L`)와 왼쪽 Ctrl(`Control_L`)로 보낸다. 한국어 자판은 오른쪽 Alt와 오른쪽 Ctrl을 `VK_HANGUL`, `VK_HANJA`로 바꾸는데, VcXsrv의 키 변환표(`hw/xwin/winkeybd.h`)에는 이 두 키가 없어서 오른쪽 표시(확장 비트)가 빠진다. 그래서 세션에서는 한/영 키를 왼쪽 Alt와 구별할 수 없고, kime 설정의 `AltR`, `Hangul` 전환이 동작하지 않는다.
+- 키가 X에 어떤 키로 오는지는 세션 xterm에서 `xev -event keyboard | grep --line-buffered -A2 KeyPress`를 실행하고, 뜬 창에서 그 키를 눌러 본다.
 - Windows 쪽 IME는 영문 상태로 둔다. 한글 상태면 Windows IME가 키를 먼저 가로챌 수 있다.
 - 세션에 D-Bus가 있어 kime의 상태 표시(indicator)도 뜨지만, 작업표시줄(tint2)은 이 방식의 트레이(StatusNotifierItem)를 보여 주지 못해서 화면에는 나오지 않는다. Wayland 모듈은 세션에서 뜨지 않는다. 둘 다 XIM과 GTK 입력에는 영향이 없다.
-- 로그는 세션 안의 `/tmp/vdesk-kime.log`.
+- 로그는 세션 안의 `/tmp/kime.err`(kime가 직접 쓴다). kime가 시작하지 못한 경우의 출력은 `/tmp/vdesk-kime.log`.
 
 ## 파일 주고받기
 
@@ -395,5 +396,5 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 - Edge가 `Zygote process exited`로 죽는다: 이미지 label `vdesk.seccomp`가 비어 있다. `edge` addon을 켜고 빌드했는지 확인한다.
 - 배경화면이 안 보인다: 배경화면 기능 이전 이미지의 세션이면 `vdesk recreate`. xmonad 세션은 창 사이 6px 간격과 빈 작업 공간에서 보인다. 간격 기능 이전 이미지의 xmonad 세션은 창이 화면을 덮는다.
 - `Alt+Tab`이 세션으로 가지 않는다: Windows가 가로챈다. xmonad에서는 `Alt+j`/`Alt+k`를 쓴다.
-- 한글이 입력되지 않는다: `vdesk addon ls`에서 kime가 `BUILT`인지, 세션이 그 이미지로 `recreate`됐는지 확인한다. 세션 안에서 `pgrep -a kime`로 데몬을 보고, 한/영 키는 [한글 입력](#한글-입력)의 `xev` 방법으로 확인한다.
+- 한글이 입력되지 않는다: `vdesk addon ls`에서 kime가 `BUILT`인지, 세션이 그 이미지로 `recreate`됐는지 확인한다. 세션 안에서 `pgrep -a kime`로 데몬을 보고, 한/영 키는 [한글 입력](#한글-입력)을 본다.
 - `home files not updated`: `~/.config/vdesk/home` 안의 symlink가 없는 곳을 가리키거나 읽을 수 없는 파일이 있다. 고친 뒤 `vdesk home sync -t TARGET`.

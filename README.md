@@ -81,3 +81,7 @@ image vdesk:latest = vdesk-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xt
 - 세션 사용자는 호스트 계정과 다른 uid 60000이다. 컨테이너가 host network namespace에 있어도, uid로 상대를 확인하는 호스트 사용자의 소켓을 통과하지 못한다. 호스트와는 `~/Downloads`만 호스트 사용자의 그룹으로 공유한다.
 - 세션과 호스트 사이에는 메뉴 라벨만 오간다. 호스트 중계는 요청한 프로세스가 그 사용자의 그 세션 컨테이너 안에 있을 때만 받고, 명령은 호스트의 `menu.conf`에서만 찾는다.
 - seccomp, `/dev/shm` 크기는 addon이 요구할 때만 바꾼다. 켜진 addon 중 하나라도 `SECCOMP=unconfined`면 모든 세션에 적용된다 (`edge`가 Chromium sandbox 때문에 요구). `--no-sandbox`는 쓰지 않는다.
+
+## 라이선스
+
+MIT. [LICENSE](./LICENSE).

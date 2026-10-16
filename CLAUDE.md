@@ -1,6 +1,6 @@
 # vdesk 작업 지침
 
-tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](./README.md), 사용법은 [docs/usage.md](./docs/usage.md), addon 작성은 [docs/addons.md](./docs/addons.md), 메뉴는 [docs/menu.md](./docs/menu.md).
+tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요는 [README.md](./README.md), 서버와 클라이언트 준비는 [docs/install.md](./docs/install.md), 사용법은 [docs/usage.md](./docs/usage.md), addon 작성은 [docs/addons.md](./docs/addons.md), 메뉴는 [docs/menu.md](./docs/menu.md).
 
 ## 파일
 
@@ -45,6 +45,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
 - xwallpaper는 `--daemon --no-atoms`로 띄운다. Ubuntu 24.04의 0.7.3은 root pixmap atom을 갱신하다가, 이전 배경 pixmap이 없던 세션(새로 만들거나 재시작한 세션)에서 첫 크기 변경 때 자기 X 연결을 kill하고 죽는다(upstream 커밋 "Kill clients only once"에서 고침). 그러면 배경이 그때 크기에 멈춘다.
 - `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 `docs/usage.md`와 관련 `docs/`를 같이 고친다. README는 기능 목록과 구조가 바뀔 때 고친다.
+- 서버나 클라이언트에 필요한 것, vdesk가 서버에 만들거나 바꾸는 것(파일, Docker 객체, 프로세스, 권한)이 바뀌면 `docs/install.md`를 고친다.
 - xmonad 키를 바꾸면 `rootfs/etc/vdesk/keys/xmonad`(세션 안 목록)와 `docs/usage.md`의 키 표를 같이 고친다.
 
 ## 검증

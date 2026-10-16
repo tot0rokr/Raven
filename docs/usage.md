@@ -4,9 +4,11 @@
 
 ## 접속 준비
 
+서버와 클라이언트에 필요한 것, 설치, 제거는 [install.md](./install.md).
+
 - 클라이언트에 X 서버를 띄운다. Windows는 VcXsrv를 권장한다. Xming 6.9도 되지만 뷰어 창 크기가 고정된다 ([뷰어](#뷰어)).
-- X11 forwarding을 켜고 VM에 접속한다.
-  - OpenSSH: `ssh -Y user@vm`. Windows OpenSSH는 먼저 `DISPLAY`를 정한다 (cmd: `set DISPLAY=127.0.0.1:0.0`, PowerShell: `$env:DISPLAY="127.0.0.1:0.0"`).
+- X11 forwarding을 켜고 서버에 접속한다.
+  - OpenSSH: `ssh -Y user@server`. Windows OpenSSH는 먼저 `DISPLAY`를 정한다 (cmd: `set DISPLAY=127.0.0.1:0.0`, PowerShell: `$env:DISPLAY="127.0.0.1:0.0"`).
   - PuTTY: Connection > SSH > X11 > Enable X11 forwarding.
 - 접속한 셸에서 `echo $DISPLAY`가 `localhost:10.0` 같은 값이면 된다. 비어 있으면 `new`와 `attach`가 `DISPLAY is not set`으로 멈춘다.
 - tmux 안의 기존 셸은 이전 접속의 `DISPLAY`를 갖고 있다. 다시 접속한 뒤에는 새 창을 열거나 `eval "$(tmux show-environment -s DISPLAY)"`로 갱신한다.
@@ -293,7 +295,18 @@ vdesk recreate web                     # 기존 세션은 recreate, 새 세션�
 - GTK3 앱(Edge 포함)은 GTK 입력 모듈로, xterm 같은 X 앱은 XIM으로 kime에 붙는다. 환경 변수 `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`는 addon이 이미지에 넣는다.
 - kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
 - VcXsrv는 Windows 한국어 자판의 한/영 키와 한자 키를 왼쪽 Alt(`Alt_L`)와 왼쪽 Ctrl(`Control_L`)로 보낸다. 한국어 자판은 오른쪽 Alt와 오른쪽 Ctrl을 `VK_HANGUL`, `VK_HANJA`로 바꾸는데, VcXsrv의 키 변환표(`hw/xwin/winkeybd.h`)에는 이 두 키가 없어서 오른쪽 표시(확장 비트)가 빠진다. 그래서 세션에서는 한/영 키를 왼쪽 Alt와 구별할 수 없고, kime 설정의 `AltR`, `Hangul` 전환이 동작하지 않는다.
-- 작업표시줄의 `한/A` 버튼을 누르면 포커스된 창의 한/영이 바뀐다. 버튼은 그 창에 `Hangul` 키를 보내므로 kime 설정의 `global_hotkeys`에 `Hangul` 전환이 있어야 한다(kime 기본 설정에 있다). 한/영 상태는 kime 설정 `global_category_state`가 `false`면 창마다 따로다.
+- 키보드로 바꾸려면 VcXsrv를 거쳐도 그대로 오는 조합을 kime 설정의 `global_hotkeys`에 넣는다. 예: Shift+Space. kime는 Shift의 좌우를 구별하지 않는다.
+  ```yaml
+  # ~/.config/vdesk/home/.config/kime/config.yaml (engine.global_hotkeys 아래)
+  S-Space:
+    behavior: !Toggle
+    - Hangul
+    - Latin
+    result: Consume
+  ```
+- 작업표시줄의 `한/A` 버튼을 누르면 포커스된 창의 한/영이 바뀐다. 버튼은 그 창에 `Hangul` 키를 보내므로 kime 설정의 `global_hotkeys`에 `Hangul` 전환이 있어야 한다(kime 기본 설정에 있다).
+- xmonad는 마우스가 올라간 창에 포커스를 준다. 버튼으로 가는 길에 다른 창 위를 지나면 그 창이 바뀐다.
+- 한/영 상태는 창(입력 칸)마다 따로다. kime의 `global_category_state: true`도 지금은 효과가 없다. 창이 포커스를 받을 때마다 kime가 그 창의 상태로 공유 상태를 덮어쓴다(kime 소스의 XIM `handle_set_focus`, GTK3 `focus_in`).
 - 키가 X에 어떤 키로 오는지는 세션 xterm에서 `xev -event keyboard | grep --line-buffered -A2 KeyPress`를 실행하고, 뜬 창에서 그 키를 눌러 본다.
 - Windows 쪽 IME는 영문 상태로 둔다. 한글 상태면 Windows IME가 키를 먼저 가로챌 수 있다.
 - 세션에 D-Bus가 있어 kime의 상태 표시(indicator)도 뜨지만, 작업표시줄(tint2)은 이 방식의 트레이(StatusNotifierItem)를 보여 주지 못해서 화면에는 나오지 않는다. Wayland 모듈은 세션에서 뜨지 않는다. 둘 다 XIM과 GTK 입력에는 영향이 없다.
@@ -391,6 +404,7 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 
 - 홈이 NFS라서 세션 홈은 로컬 디스크의 volume에 둔다. Chromium 계열 프로필의 SQLite 잠금 문제를 피하기 위해서다.
 - 세션 이름은 호스트별 디렉터리에 둔다. NFS 홈을 공유하는 다른 호스트와 섞이지 않게 하기 위해서다.
+- vdesk가 서버에 만들고 바꾸는 것 전체(Docker 이미지, 컨테이너, volume, 중계 프로세스, `~/Downloads` 권한)와 제거 방법은 [install.md](./install.md#vdesk가-만들고-바꾸는-것).
 
 ## 문제 해결
 

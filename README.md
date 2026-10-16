@@ -1,6 +1,6 @@
 # vdesk
 
-tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 창 관리자(xmonad 또는 openbox)를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행되고, 다시 attach하면 그대로 이어서 쓴다. 앱은 addon으로 이미지에 추가하고, 호스트에는 Docker 외 패키지를 설치하지 않는다.
+tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 창 관리자(xmonad 또는 openbox)를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행되고, 다시 attach하면 그대로 이어서 쓴다. 앱은 addon으로 이미지에 추가하고, 서버에는 Docker와 기본 도구 외에 설치하지 않는다. 클라이언트에는 X 서버와 SSH 클라이언트만 있으면 된다.
 
 ## 기능
 
@@ -9,19 +9,21 @@ tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안
 - 앱: addon으로 이미지에 넣는다. 기본으로 Microsoft Edge가 켜져 있다. 메뉴는 설치된 앱의 `.desktop`에서 자동으로 만들고 `menu.conf`로 고친다.
 - 호스트 앱: 호스트에 설치된 GUI 앱(wezterm 등)을 세션 화면에 띄우고, 세션 메뉴에서도 실행한다.
 - 배경화면: 모든 세션 또는 세션별로 이미지나 단색을 지정한다.
-- 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 작업표시줄의 `한/A` 버튼으로 전환한다.
+- 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 kime 설정의 다른 전환 키(예: Shift+Space)나 작업표시줄의 `한/A` 버튼으로 전환한다.
 - 개인 설정: `~/.config/vdesk/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
 
 ## 요구 사항
 
-- 호스트 (VM): Linux, Docker (BuildKit), `python3`, `xauth`, `ss`, X11 forwarding이 켜진 sshd.
-- 클라이언트: X 서버 (VcXsrv 권장, Xming 6.9), X11 forwarding을 켠 SSH 클라이언트.
+- 서버: Linux, rootful Docker와 BuildKit(`docker buildx`), `python3`, `xauth`, `ss`, X11 forwarding이 켜진 sshd. 사용자는 `docker` 그룹이어야 한다. 빌드할 때 인터넷이 필요하다.
+- 클라이언트: X 서버(Windows는 VcXsrv 권장, Xming 6.9도 됨), X11 forwarding을 켠 SSH 클라이언트.
+- 확인한 환경은 Ubuntu 24.04 서버와 Windows + VcXsrv 클라이언트다. 준비 과정, 여러 사용자, vdesk가 서버에 만드는 것, 제거 방법은 [docs/install.md](./docs/install.md).
 
 ## 설치
 
 ```bash
+git clone <저장소> ~/vdesk
 ln -s ~/vdesk/vdesk ~/.local/bin/vdesk
 vdesk build
 ```
@@ -45,6 +47,7 @@ xmonad 세션에서는 `Alt+p`가 메뉴, `Alt+Shift+Enter`가 터미널, `Alt+j
 
 | 문서                                 | 내용                                                  |
 | ------------------------------------ | ----------------------------------------------------- |
+| [docs/install.md](./docs/install.md) | 서버와 클라이언트 준비, 설치, 여러 사용자, 제거       |
 | [docs/usage.md](./docs/usage.md)     | 명령별 사용법, 키, 데이터 위치, 환경 변수, 문제 해결  |
 | [docs/menu.md](./docs/menu.md)       | 메뉴 규칙 문법과 우선순위                             |
 | [docs/addons.md](./docs/addons.md)   | addon 작성법                                          |

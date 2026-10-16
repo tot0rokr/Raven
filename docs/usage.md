@@ -192,6 +192,7 @@ Terminal = @wezterm start --always-new-process
 
 - xmonad 세션: 왼쪽부터 `menu` 버튼, 작업 공간별 창 목록이다. 현재 작업 공간이 강조된다. 창 버튼을 누르면 그 창으로 이동하고, 가운데 버튼은 창을 닫는다. 기본 설정은 이미지의 `/etc/vdesk/tint2/xmonad.tint2rc`.
 - openbox 세션: 열린 창 목록이고, 창 버튼을 누르면 최소화와 복원이 바뀐다. 기본 설정은 이미지의 `/etc/xdg/tint2/tint2rc`.
+- addon이 넣은 버튼은 시계 앞에 붙는다. 예: `kime` addon의 `한/A` 버튼 ([한글 입력](#한글-입력)).
 - 최대화하거나 타일로 배치한 창은 작업표시줄 위까지만 차지한다.
 - 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 창 관리자와 상관없이 그 파일을 쓴다. `vdesk shell`에서 위 기본 설정을 복사한 뒤 고친다. 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md).
 - 설정을 바꾼 뒤에는 `vdesk shell`에서 `pkill -x tint2; sleep 1; setsid vdesk-panel >/dev/null 2>&1 &`로 다시 띄운다.
@@ -292,6 +293,7 @@ vdesk recreate web                     # 기존 세션은 recreate, 새 세션�
 - GTK3 앱(Edge 포함)은 GTK 입력 모듈로, xterm 같은 X 앱은 XIM으로 kime에 붙는다. 환경 변수 `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`는 addon이 이미지에 넣는다.
 - kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
 - VcXsrv는 Windows 한국어 자판의 한/영 키와 한자 키를 왼쪽 Alt(`Alt_L`)와 왼쪽 Ctrl(`Control_L`)로 보낸다. 한국어 자판은 오른쪽 Alt와 오른쪽 Ctrl을 `VK_HANGUL`, `VK_HANJA`로 바꾸는데, VcXsrv의 키 변환표(`hw/xwin/winkeybd.h`)에는 이 두 키가 없어서 오른쪽 표시(확장 비트)가 빠진다. 그래서 세션에서는 한/영 키를 왼쪽 Alt와 구별할 수 없고, kime 설정의 `AltR`, `Hangul` 전환이 동작하지 않는다.
+- 작업표시줄의 `한/A` 버튼을 누르면 포커스된 창의 한/영이 바뀐다. 버튼은 그 창에 `Hangul` 키를 보내므로 kime 설정의 `global_hotkeys`에 `Hangul` 전환이 있어야 한다(kime 기본 설정에 있다). 한/영 상태는 kime 설정 `global_category_state`가 `false`면 창마다 따로다.
 - 키가 X에 어떤 키로 오는지는 세션 xterm에서 `xev -event keyboard | grep --line-buffered -A2 KeyPress`를 실행하고, 뜬 창에서 그 키를 눌러 본다.
 - Windows 쪽 IME는 영문 상태로 둔다. 한글 상태면 Windows IME가 키를 먼저 가로챌 수 있다.
 - 세션에 D-Bus가 있어 kime의 상태 표시(indicator)도 뜨지만, 작업표시줄(tint2)은 이 방식의 트레이(StatusNotifierItem)를 보여 주지 못해서 화면에는 나오지 않는다. Wayland 모듈은 세션에서 뜨지 않는다. 둘 다 XIM과 GTK 입력에는 영향이 없다.

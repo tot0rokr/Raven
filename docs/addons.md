@@ -9,7 +9,7 @@ addon은 이미지에 앱을 추가하는 디렉터리 하나다. `vdesk build`�
 ├── addon.conf     # 필수. 설명, apt 패키지, 런타임 요구사항
 ├── pre-install    # 선택. 패키지 설치 전 실행 (apt 저장소 등록 등)
 ├── post-install   # 선택. 패키지와 rootfs 적용 후 실행 (캐시 갱신 등)
-├── rootfs/        # 선택. 이미지의 / 에 그대로 복사 (세션 hook은 rootfs/etc/vdesk/session.d/)
+├── rootfs/        # 선택. 이미지의 / 에 그대로 복사 (세션 hook은 etc/vdesk/session.d/, 작업표시줄 버튼은 etc/vdesk/panel.d/)
 └── menu.conf      # 선택. 기본 메뉴 규칙 (docs/menu.md 문법)
 ```
 
@@ -58,6 +58,27 @@ addon 하나는 이미지 레이어 하나로 적용된다 (`vdesk-apply-addon`)
 - hook은 데몬을 백그라운드로 띄우고 바로 끝낸다. 시작 명령은 hook이 끝난 뒤 시작한다.
 - `reload`에서는 자기 설정이 실제로 바뀌었는지 보고 필요할 때만 다시 띄운다. 모르는 이벤트는 무시한다.
 - `DISPLAY`가 설정되어 있다. 실패해도 세션은 계속 뜬다.
+
+## 작업표시줄 버튼
+
+`rootfs/etc/vdesk/panel.d/<순서>-<name>.tint2rc`에 tint2의 버튼 설정(`button = new`로 시작하는 묶음)을 둔다. `vdesk-panel`이 작업표시줄을 띄울 때 창 관리자별 기본 설정 뒤에 이 파일들을 이름순으로 붙이고, 버튼 수만큼 `panel_items`의 시계 앞에 `P`를 넣는다.
+
+```
+# rootfs/etc/vdesk/panel.d/50-kime.tint2rc
+button = new
+button_text = 한/A
+button_tooltip = 한/영 전환 (kime)
+button_lclick_command = vdesk-kime-toggle
+button_font = Noto Sans KR Bold 9
+button_font_color = #dddddd 100
+button_padding = 10 2
+button_background_id = 2
+button_centered = 1
+```
+
+- 배경 번호는 core 설정의 것을 쓴다. 2번이 버튼 모양이다(xmonad, openbox 설정 모두).
+- 세션 홈에 `~/.config/tint2/tint2rc`가 있으면 그 파일만 쓰므로 addon 버튼은 붙지 않는다.
+- 설정 항목은 [tint2 매뉴얼](https://gitlab.com/o9000/tint2/-/blob/master/doc/tint2.md)의 Button.
 
 ## 위치와 우선순위
 
@@ -127,7 +148,7 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://
 ```sh
 # addon.conf
 DESCRIPTION="kime Korean input method"
-PACKAGES="/tmp/kime.deb"
+PACKAGES="/tmp/kime.deb xdotool"
 SESSION_ENV="GTK_IM_MODULE=kime QT_IM_MODULE=kime XMODIFIERS=@im=kime"
 ```
 
@@ -142,6 +163,7 @@ echo "$sha256  /tmp/kime.deb" | sha256sum -c -
 
 - `post-install`에서 `/tmp/kime.deb`를 지운다.
 - `rootfs/etc/vdesk/session.d/50-kime`: `start`에서 kime를 띄우고 XIM 서버가 등록될 때까지 기다린다. `reload`에서는 `~/.config/kime`가 바뀌었을 때만 다시 띄운다.
+- `rootfs/etc/vdesk/panel.d/50-kime.tint2rc`: 작업표시줄의 `한/A` 버튼. 누르면 `vdesk-kime-toggle`이 포커스된 창에 `Hangul` 키를 보낸다(`xdotool`).
 
 ### 실행 옵션 고정
 

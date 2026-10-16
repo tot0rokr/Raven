@@ -11,7 +11,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
   - `rootfs/usr/local/bin/vdesk-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/vdesk-launcher`: xmonad용 메뉴. `vdesk-menu --list`를 rofi로 고른다.
   - `rootfs/usr/local/bin/vdesk-keys`: `/etc/vdesk/keys/$VDESK_WM`(키<TAB>설명)을 rofi 목록으로 보여 준다. xmonad의 `Alt+Shift+/`와 메뉴의 `Keyboard Shortcuts`가 부른다.
-  - `rootfs/usr/local/bin/vdesk-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정을 고른다.
+  - `rootfs/usr/local/bin/vdesk-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정에 addon 버튼(`/etc/vdesk/panel.d/*.tint2rc`)을 붙여 `/tmp/vdesk-tint2rc`로 띄운다.
   - `rootfs/usr/local/bin/vdesk-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없거나 쓸 수 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
   - `rootfs/usr/local/bin/vdesk-apply-addon`: 빌드 중 addon 하나를 적용.
   - `rootfs/usr/local/bin/vdesk-session-hooks`: addon이 둔 `/etc/vdesk/session.d/*`를 `start`(entrypoint, 창 관리자보다 먼저)와 `reload`(vdesk가 홈 파일을 복사한 뒤)에 실행.
@@ -21,7 +21,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
 - `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다. `XMonad.Layout.Spacing`으로 창 사이와 화면 가장자리에 6px 간격(각 3px)을 두고 `Alt+g`로 끈다.
 - `vdesk-hostd`: 호스트 중계 (python3). abstract socket `@vdesk-host-<uid>`로 세션의 요청(세션 id + 라벨)을 받아 `vdesk run -t ID @LABEL`로 넘긴다. 시작한 `vdesk`의 경로와 환경 변수를 물려받는다.
   - `rootfs/usr/local/bin/vdesk-host`: 세션 쪽 요청 프로그램 (python3). 실패하면 `xmessage`로 알린다.
-- `addons/<name>/`: 기본 제공 addon. `edge`(기본으로 켜짐), `kime`(한글 입력기, upstream .deb를 버전과 sha256 고정).
+- `addons/<name>/`: 기본 제공 addon. `edge`(기본으로 켜짐), `kime`(한글 입력기, upstream .deb를 버전과 sha256 고정. VcXsrv가 한/영 키를 왼쪽 Alt로 보내서 작업표시줄 `한/A` 버튼이 `xdotool`로 Hangul 키를 보낸다).
 - `docs/`: 사용자 매뉴얼.
 
 ## 규칙

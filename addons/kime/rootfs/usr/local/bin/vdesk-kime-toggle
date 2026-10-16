@@ -1,0 +1,4 @@
+#!/bin/sh
+# Toggle Hangul/Latin in the focused window by sending the Hangul key, which kime's
+# global_hotkeys toggle on. VcXsrv cannot deliver that key: it sends 한/영 as Left Alt.
+exec xdotool key --clearmodifiers Hangul

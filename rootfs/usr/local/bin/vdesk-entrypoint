@@ -8,6 +8,9 @@ set -eu
 : "${VDESK_CMD:=}"
 : "${VDESK_WM:=openbox}"
 
+# Files in the shared ~/Downloads stay writable for the host user's group
+umask 002
+
 case "$VDESK_WM" in
     openbox) wm_cmd=openbox-session ;;
     xmonad) wm_cmd=xmonad-x86_64-linux ;;

@@ -220,7 +220,7 @@ Terminal = @wezterm start --always-new-process
 ```
 
 - 세션 메뉴에서 누르면 호스트에서 실행된다. 명령줄에서는 `vdesk run -t TARGET @Terminal`.
-- 메뉴 항목은 컨테이너 안에서 실행되므로 호스트 중계 `vdesk-hostd`에 요청을 보낸다. 세션은 라벨만 보내고, 명령은 호스트의 `~/.config/vdesk/menu.conf`에서만 찾는다. 같은 사용자의 요청만 받는다.
+- 메뉴 항목은 컨테이너 안에서 실행되므로 호스트 중계 `vdesk-hostd`에 요청을 보낸다. 세션은 라벨만 보내고, 명령은 호스트의 `~/.config/vdesk/menu.conf`에서만 찾는다. 요청한 프로세스가 그 사용자의 그 세션 컨테이너 안에 있을 때만 받는다(프로세스의 cgroup으로 컨테이너를 찾고 label을 확인한다).
 - 그래서 `@` 항목은 사용자의 `menu.conf`에서만 동작한다. 이미지 기본 규칙이나 addon의 `menu.conf`에 넣으면 메뉴에는 나오지만 누르면 오류 창이 뜬다.
 - 호스트 항목 기능 이전 이미지로 만든 세션에서는 메뉴에서 실행되지 않는다. `vdesk recreate`로 옮긴다. 명령줄의 `vdesk run @LABEL`은 이미지와 상관없이 된다.
 
@@ -302,6 +302,10 @@ vdesk recreate web                     # 기존 세션은 recreate, 새 세션�
 ## 파일 주고받기
 
 - 세션의 `~/Downloads`는 호스트 `~/Downloads`를 그대로 연결한 것이다. 모든 세션이 같은 디렉터리를 쓴다. Edge로 받은 파일도 여기 생긴다.
+- 세션 사용자는 호스트 계정과 다른 uid 60000이다. 대신 호스트 사용자의 기본 그룹을 함께 받는다. vdesk는 세션을 만들 때 호스트 `~/Downloads`에 그룹 쓰기와 setgid를 켠다(`chmod g+rwxs`). 그래서 세션이 만든 파일은 호스트에서 소유자 `60000`, 그룹은 호스트 사용자 그룹, 권한 `rw-rw-r--`로 보이고, 호스트 사용자가 고치고 지울 수 있다.
+- 세션 안의 umask는 `002`다(시작 명령, 메뉴 앱, `vdesk run`, `vdesk shell`). 앱이 권한을 따로 정해 만든 파일은 그 권한을 따른다.
+- 기본 그룹을 다른 사람과 같이 쓰는 계정이면(사용자별 개인 그룹이 아니면) 그 그룹 사람들도 `~/Downloads`에 쓸 수 있게 된다.
+- 이전부터 `~/Downloads`에 있던 하위 디렉터리는 그룹 쓰기가 없으면 세션에서 그 안에 쓸 수 없다. 필요하면 호스트에서 `chmod g+ws`.
 - 그 밖의 세션 파일은 `docker cp`로 꺼낸다. 컨테이너 이름은 `vdesk-<user>-<id>`다.
 
 ```bash
@@ -333,6 +337,7 @@ vdesk recreate -a                      # 모든 세션을 새 이미지로
 
 - 이미지를 다시 빌드해도 실행 중인 세션은 이전 이미지를 계속 쓴다. `recreate`로 옮긴다.
 - `recreate`는 컨테이너만 교체하고 홈 volume, 이름, 시작 명령, 화면 번호, 포트, 창 관리자는 유지한다. 세션 안의 앱은 다시 시작된다.
+- 세션 사용자 uid는 이미지 label `vdesk.uid`(60000)에 있다. 이전 이미지는 빌드한 사람의 uid를 썼다. 다른 uid로 만들어진 홈 volume은 컨테이너를 만들 때(`new`, `recreate`) 이 uid로 소유자를 바꾼다.
 - `build`의 인자는 `docker build`에 그대로 넘긴다. `--pull`은 core의 base 이미지에만 적용된다.
 
 ## 뷰어
@@ -392,7 +397,7 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 - `DISPLAY is not set`: X11 forwarding 없이 접속했다. [접속 준비](#접속-준비)를 본다.
 - `image vdesk:latest not found`: `vdesk build`를 먼저 실행한다.
 - `session N did not come up`: `docker logs vdesk-<user>-N`으로 Xvnc 오류를 확인한다.
-- 메뉴의 호스트 항목을 눌렀더니 오류 창이 뜬다: `vdesk hostd`로 중계가 떠 있는지 보고, 없으면 `vdesk hostd start`. 라벨이 호스트 `menu.conf`에 `LABEL = @COMMAND`로 있는지 확인한다.
+- 메뉴의 호스트 항목을 눌렀더니 오류 창이 뜬다: `vdesk hostd`로 중계가 떠 있는지 보고, 없으면 `vdesk hostd start`. 라벨이 호스트 `menu.conf`에 `LABEL = @COMMAND`로 있는지 확인한다. `permission denied`면 중계가 세션 uid 분리 이전 버전이다. `vdesk hostd stop` 뒤 다시 띄운다. `VDESK_HOST_UID is not set`이면 세션을 `vdesk recreate`한다.
 - 호스트 wezterm 창이 검게 나온다: MIT-SHM을 끄기 전에 만든 세션이다. `vdesk recreate`로 옮긴다.
 - addon을 켰는데 세션에 앱이 없다: `vdesk addon ls`에서 `BUILT`를 확인하고 `vdesk recreate`로 새 이미지로 옮긴다.
 - Edge가 `Zygote process exited`로 죽는다: 이미지 label `vdesk.seccomp`가 비어 있다. `edge` addon을 켜고 빌드했는지 확인한다.

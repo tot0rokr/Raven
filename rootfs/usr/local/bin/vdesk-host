@@ -19,10 +19,14 @@ def fail(msg):
 def main():
     if len(sys.argv) != 2:
         fail("usage: vdesk-host LABEL")
+    # The relay belongs to the host user, whose uid differs from the session user's
+    host_uid = os.environ.get("VDESK_HOST_UID", "")
+    if not host_uid.isdigit():
+        fail("VDESK_HOST_UID is not set; recreate the session with vdesk recreate")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(20)
     try:
-        sock.connect("\0vdesk-host-%d" % os.getuid())
+        sock.connect("\0vdesk-host-%s" % host_uid)
     except OSError:
         fail("host relay is not running. Run on the host: vdesk hostd start")
     sock.sendall(("%s %s\n" % (os.environ.get("VDESK_ID", ""), sys.argv[1])).encode())

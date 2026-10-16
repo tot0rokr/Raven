@@ -75,5 +75,6 @@ image vdesk:latest = vdesk-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xt
 - 화면 번호는 100부터, VNC 포트는 15900부터 비어 있는 것을 고른다. VNC는 `127.0.0.1`에만 열리고, 비밀번호는 세션이 시작할 때마다 새로 만들어 컨테이너 밖으로 꺼내지 않는다.
 - X 화면은 host network namespace에 노출되므로 MIT-MAGIC-COOKIE 인증을 건다.
 - Xvnc의 MIT-SHM 확장을 끈다. `run --host` 앱은 컨테이너와 IPC namespace가 달라 X 서버와 SysV 공유 메모리를 나눌 수 없고, Mesa(OpenGL) 앱은 이때 아무것도 그리지 못한다. 호스트 IPC를 공유(`--ipc host`)하면 해결되지만 컨테이너가 호스트 사용자의 공유 메모리에 접근할 수 있게 되므로 쓰지 않는다.
-- 세션과 호스트 사이에는 메뉴 라벨만 오간다. 호스트 중계는 같은 uid의 요청만 받고, 명령은 호스트의 `menu.conf`에서만 찾는다.
+- 세션 사용자는 호스트 계정과 다른 uid 60000이다. 컨테이너가 host network namespace에 있어도, uid로 상대를 확인하는 호스트 사용자의 소켓을 통과하지 못한다. 호스트와는 `~/Downloads`만 호스트 사용자의 그룹으로 공유한다.
+- 세션과 호스트 사이에는 메뉴 라벨만 오간다. 호스트 중계는 요청한 프로세스가 그 사용자의 그 세션 컨테이너 안에 있을 때만 받고, 명령은 호스트의 `menu.conf`에서만 찾는다.
 - seccomp, `/dev/shm` 크기는 addon이 요구할 때만 바꾼다. 켜진 addon 중 하나라도 `SECCOMP=unconfined`면 모든 세션에 적용된다 (`edge`가 Chromium sandbox 때문에 요구). `--no-sandbox`는 쓰지 않는다.

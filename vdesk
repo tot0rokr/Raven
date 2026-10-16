@@ -292,21 +292,33 @@ free_display() {
 
 # Create the container for session $1; runtime needs come from the image's addon labels
 run_container() {
-    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm
+    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm uid
     seccomp=$(docker image inspect -f '{{index .Config.Labels "vdesk.seccomp"}}' "$image")
     shm=$(docker image inspect -f '{{index .Config.Labels "vdesk.shm-size"}}' "$image")
+    uid=$(docker image inspect -f '{{index .Config.Labels "vdesk.uid"}}' "$image")
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
     [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
     [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
+    # The session user is not the host user. The host user's group lets it share ~/Downloads,
+    # and the setgid bit keeps the files it makes there in that group.
+    mkdir -p "$HOME/Downloads"
+    chmod g+rwxs "$HOME/Downloads"
     docker create "$@" \
         --label vdesk.user="$user" --label vdesk.id="$id" \
         --label vdesk.display="$d" --label vdesk.port="$p" \
         --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" --label vdesk.wm="$wm" \
         -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" -e VDESK_WM="$wm" \
-        -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" \
+        -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" -e VDESK_HOST_UID="$(id -u)" \
+        --group-add "$(id -g)" \
         -v "$(vname "$id"):/home/vdesk" \
         -v "$HOME/Downloads:/home/vdesk/Downloads" \
         "$image" >/dev/null
+    # A home made under another session uid (older images used the host user's uid) is handed
+    # over to this image's session user before the start
+    [ -z "$uid" ] || docker run --rm --network none --user 0 -v "$(vname "$id"):/home/vdesk" \
+        --entrypoint find "$image" /home/vdesk -xdev \( ! -user "$uid" -o ! -group "$uid" \) \
+        -exec chown -h "$uid:$uid" {} + \
+        || echo "vdesk: session $id: could not hand the home over to uid $uid" >&2
     # Home files go in before the first start, so session hooks see them from the beginning
     push_home "$id" || [ $? -eq 1 ] || echo "vdesk: session $id: home files not copied" >&2
     docker start "$(cname "$id")" >/dev/null
@@ -484,8 +496,9 @@ cmd_run() {
     id=$(resolve "$target")
     ensure_up "$id"
     if [ "$host" = 0 ]; then
+        # docker exec does not inherit the entrypoint's umask (shared ~/Downloads)
         docker exec -d -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-            -w /home/vdesk "$(cname "$id")" sh -c "$*"
+            -w /home/vdesk "$(cname "$id")" sh -c "umask 002; $*"
         return 0
     fi
 
@@ -513,7 +526,7 @@ cmd_shell() {
     id=$(resolve "$target")
     ensure_up "$id"
     exec docker exec -it -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-        -w /home/vdesk "$(cname "$id")" bash
+        -w /home/vdesk "$(cname "$id")" sh -c 'umask 002; exec bash'
 }
 
 cmd_kill() {
@@ -626,9 +639,7 @@ to_mib() {
 
 cmd_build() {
     local a dir info names= seccomp= shm=0 env=
-    docker build -t "$core_image" \
-        --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" \
-        "$@" "$srcdir"
+    docker build -t "$core_image" "$@" "$srcdir"
 
     # --pull would try to fetch the local core image from a registry
     for a in "$@"; do

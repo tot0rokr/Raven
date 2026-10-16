@@ -30,18 +30,18 @@ RUN apt-get update \
  && fc-cache -f \
  && rm -rf /var/lib/apt/lists/*
 
-ARG UID=1000
-ARG GID=1000
-# -l: skip lastlog; a large UID would otherwise create a huge sparse file
+# The session user has its own uid, apart from every host account, so the image is the same
+# whoever builds it. vdesk adds the host user's group to share ~/Downloads (see run_container).
 RUN userdel -r ubuntu 2>/dev/null || true \
- && groupadd -g "$GID" vdesk \
- && useradd -l -m -u "$UID" -g "$GID" -s /bin/bash vdesk \
+ && groupadd -g 60000 vdesk \
+ && useradd -l -m -u 60000 -g 60000 -s /bin/bash vdesk \
  && mkdir -p /home/vdesk/Downloads \
  && chown -R vdesk:vdesk /home/vdesk
 
 COPY --from=xmonad-build /src/xmonad-x86_64-linux /usr/local/bin/xmonad-x86_64-linux
-# vdesk checks this before writing wallpaper settings into a session
-LABEL vdesk.features="wallpaper"
+# vdesk checks these: wallpaper support before writing wallpaper settings into a session,
+# the session uid before giving an older home volume to that user
+LABEL vdesk.features="wallpaper" vdesk.uid="60000"
 COPY rootfs/ /
 
 USER vdesk

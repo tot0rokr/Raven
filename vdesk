@@ -32,12 +32,14 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        vdesk build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
        vdesk menu edit | show [-t TARGET] | sync
+       vdesk home sync [-t TARGET]                     copy ~/.config/vdesk/home into running sessions
        vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
        vdesk wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or openbox.
 wallpaper: without -t the setting applies to every session; -t sets one session's own.
+home: files under ~/.config/vdesk/home go into every session home (symlinks followed).
 attach: -d detaches other viewers of the session.
 EOF
 }
@@ -112,6 +114,49 @@ xin() {
     shift
     docker exec -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
         -w /home/vdesk "$(cname "$id")" "$@"
+}
+
+# Unpack a tar from stdin into session $1's home as the session user; directories that
+# already exist keep their mode and times. A stopped session is reached through its volume.
+untar_home() {
+    local c
+    c=$(cname "$1")
+    if [ "$(docker inspect -f '{{.State.Running}}' "$c")" = true ]; then
+        docker exec -i "$c" tar -C /home/vdesk --no-overwrite-dir -xf -
+    else
+        docker run --rm -i --network none -v "$(vname "$1"):/home/vdesk" --entrypoint tar \
+            "$(docker inspect -f '{{.Image}}' "$c")" -C /home/vdesk --no-overwrite-dir -xf -
+    fi
+}
+
+# $confdir/home mirrors the session home (/home/vdesk). Its files are copied into session $1,
+# running or not, when they changed since the last copy; symlinks are followed on the host,
+# so a link into a dotfiles repo copies what it points to. Returns 0 when copied, 1 when
+# there was nothing new, 2 on failure.
+push_home() {
+    local id=$1 t sum rc=0
+    [ -n "$(ls -A "$confdir/home" 2>/dev/null)" ] || return 1
+    t=$(mktemp) || return 2
+    if (cd "$confdir/home" && find . -mindepth 1 -maxdepth 1 -print0 \
+            | tar --null -T - --sort=name -chf -) > "$t" 2>/dev/null; then
+        sum=$(sha256sum < "$t")
+        if [ "$sum" = "$(cat "$statedir/$id.home" 2>/dev/null)" ]; then
+            rc=1
+        elif untar_home "$id" < "$t" >/dev/null; then
+            { mkdir -p "$statedir" && echo "$sum" > "$statedir/$id.home"; } || rc=2
+        else
+            rc=2
+        fi
+    else
+        rc=2
+    fi
+    rm -f "$t"
+    return "$rc"
+}
+
+# Let a running session's hooks pick up new home files; images before hooks have none
+reload_session() {
+    xin "$1" sh -c 'command -v vdesk-session-hooks >/dev/null || exit 0; exec vdesk-session-hooks reload'
 }
 
 # Copy the host menu rules into a running session
@@ -200,9 +245,14 @@ ensure_hostd() {
 }
 
 ensure_up() {
-    local c port i=0
+    local c port i=0 home=0 started=0
     c=$(cname "$1")
-    [ "$(field "$1" 4)" = running ] || docker start "$c" >/dev/null
+    # Before a start, so the session's start hooks already see the new files
+    push_home "$1" || home=$?
+    if [ "$(field "$1" 4)" != running ]; then
+        docker start "$c" >/dev/null
+        started=1
+    fi
     port=$(field "$1" 3)
     until ss -Hltn "sport = :$port" | grep -q .; do
         i=$((i + 1))
@@ -212,6 +262,10 @@ ensure_up() {
     push_menu "$1"
     # The wallpaper is cosmetic; never let it stop attach, run or new
     push_wallpaper "$1" || [ $? -eq 2 ] || echo "vdesk: session $1: wallpaper not updated" >&2
+    case "$home" in
+        0) [ "$started" = 1 ] || reload_session "$1" || echo "vdesk: session $1: session hooks failed" >&2 ;;
+        2) echo "vdesk: session $1: home files not updated" >&2 ;;
+    esac
     ensure_hostd || true
 }
 
@@ -244,7 +298,7 @@ run_container() {
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
     [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
     [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
-    docker run -d "$@" \
+    docker create "$@" \
         --label vdesk.user="$user" --label vdesk.id="$id" \
         --label vdesk.display="$d" --label vdesk.port="$p" \
         --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" --label vdesk.wm="$wm" \
@@ -253,6 +307,9 @@ run_container() {
         -v "$(vname "$id"):/home/vdesk" \
         -v "$HOME/Downloads:/home/vdesk/Downloads" \
         "$image" >/dev/null
+    # Home files go in before the first start, so session hooks see them from the beginning
+    push_home "$id" || [ $? -eq 1 ] || echo "vdesk: session $id: home files not copied" >&2
+    docker start "$(cname "$id")" >/dev/null
 }
 
 view() {
@@ -315,7 +372,7 @@ cmd_new() {
     d=$(free_display)
     p=$((port_base + d - display_base))
     mkdir -p "$HOME/Downloads" "$statedir"
-    rm -f "$statedir/$id.name"
+    rm -f "$statedir/$id.name" "$statedir/$id.home"
     [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
     run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
     ensure_up "$id"
@@ -474,7 +531,7 @@ cmd_kill() {
     id=$(resolve "$target")
     docker rm -f "$(cname "$id")" >/dev/null
     docker volume rm "$(vname "$id")" >/dev/null
-    rm -f "$statedir/$id.name" "$rundir/$id.xauth" "$rundir/$id.log"
+    rm -f "$statedir/$id.name" "$statedir/$id.home" "$rundir/$id.xauth" "$rundir/$id.log"
 }
 
 cmd_recreate() {
@@ -840,6 +897,40 @@ cmd_wallpaper() {
     esac
 }
 
+# Copy changed home files into session $1 and let a running session's hooks reload
+sync_home() {
+    local rc=0
+    push_home "$1" || rc=$?
+    case "$rc" in
+        0) [ "$(field "$1" 4)" != running ] || reload_session "$1" \
+               || echo "vdesk: session $1: session hooks failed" >&2 ;;
+        2) echo "vdesk: session $1: home files not updated" >&2; return 1 ;;
+    esac
+}
+
+cmd_home() {
+    local target= opt id failed=0
+    [ "${1:-}" = sync ] || die "usage: vdesk home sync [-t TARGET]"
+    shift
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    [ $# -eq 0 ] || die "usage: vdesk home sync [-t TARGET]"
+    if [ -n "$target" ]; then
+        sync_home "$(resolve "$target")"
+        return
+    fi
+    for id in $(sessions | awk '$4 == "running" { print $1 }'); do
+        sync_home "$id" || failed=1
+    done
+    [ "$failed" = 0 ]
+}
+
 cmd_hostd() {
     local pid
     case "${1:-status}" in
@@ -874,6 +965,7 @@ case "$1" in
     build) shift; cmd_build "$@" ;;
     addon) shift; cmd_addon "$@" ;;
     menu) shift; cmd_menu "$@" ;;
+    home) shift; cmd_home "$@" ;;
     hostd) shift; cmd_hostd "$@" ;;
     wallpaper) shift; cmd_wallpaper "$@" ;;
     *) usage >&2; exit 2 ;;

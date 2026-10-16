@@ -45,6 +45,8 @@ done
 
 export DISPLAY=":$VDESK_DISPLAY"
 xrdb -merge /etc/vdesk/Xresources
+# Addon daemons such as an input method must be up before the apps that connect to them
+vdesk-session-hooks start
 vdesk-wallpaper >/dev/null 2>&1 &
 
 # Let apps exit cleanly before their display goes away

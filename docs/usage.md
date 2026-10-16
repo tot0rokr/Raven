@@ -26,6 +26,7 @@
 | `vdesk build`             | core 이미지와 켜진 addon으로 이미지 빌드                  |
 | `vdesk addon`             | addon 목록, 켜기, 끄기, 만들기                            |
 | `vdesk menu`              | 메뉴 규칙 편집, 반영, 확인                                |
+| `vdesk home`              | 개인 설정 파일(`~/.config/vdesk/home`)을 세션 홈에 복사   |
 | `vdesk hostd`             | 호스트 중계 상태, 시작, 중지                              |
 | `vdesk wallpaper`         | 배경화면 지정, 해제, 확인                                 |
 | `vdesk help`              | 사용법 출력                                               |
@@ -256,6 +257,42 @@ vdesk wallpaper                                     # 현재 설정 보기
 - 뷰어 창 크기에 맞춰 화면 크기가 바뀌면 배경을 다시 맞춘다(`xwallpaper --daemon`).
 - 배경화면 기능 이전 이미지로 만든 세션에는 복사하지 않는다. `vdesk recreate` 뒤부터 적용된다.
 
+## 개인 설정 파일
+
+호스트의 `~/.config/vdesk/home/`은 세션 홈(`/home/vdesk`)과 같은 구조다. 여기 둔 파일은 모든 세션 홈의 같은 경로로 복사된다. 설정은 사람마다 각자의 호스트 `~/.config/vdesk/`에 있으므로, 같은 VM을 쓰는 사람끼리 섞이지 않는다.
+
+```bash
+mkdir -p ~/.config/vdesk/home/.config
+ln -s ~/dotfiles/.config/kime ~/.config/vdesk/home/.config/kime   # dotfiles의 설정을 연결
+vdesk home sync                        # 실행 중인 모든 세션에 바로 반영
+vdesk home sync -t web                 # 이 세션만
+```
+
+- 세션을 다룰 때(`new`, `attach`, `run`, `shell`, `recreate`) 바뀐 것이 있으면 복사한다. 새 세션과 멈춘 세션은 시작하기 전에 복사하므로, 세션 안의 데몬(kime 등)이 처음부터 이 설정을 쓴다.
+- 실행 중인 세션에 복사하면 addon의 세션 hook이 바뀐 설정을 다시 읽는다 ([addons.md](./addons.md#세션-hook)).
+- symlink는 호스트에서 따라가서, 가리키는 내용을 복사한다. dotfiles 저장소를 가리키게 두면 된다.
+- 호스트가 기준이다. 여기 있는 경로는 세션 쪽 사본을 덮어쓴다. 여기 없는 세션 파일은 건드리지 않고, 이미 있는 디렉터리의 권한도 바꾸지 않는다. 여기서 파일을 지워도 세션의 사본은 남는다.
+- 바뀌었는지는 묶음의 sha256으로 판단한다. 기록은 `~/.local/state/vdesk/<hostname>/<id>.home`. 작은 설정 파일용이다. 큰 파일을 두면 세션을 다룰 때마다 묶는 시간이 든다.
+- 세션 하나만 다르게 하려면 `vdesk shell`로 그 세션 홈에서 고친다. 이 디렉터리에 있는 경로는 다음 복사 때 덮어써진다.
+
+## 한글 입력
+
+`kime` addon을 켜면 세션 안에서 kime로 한글을 입력한다. Windows IME가 조합한 글자는 VcXsrv를 거쳐 세션으로 넘어오지 않으므로, 한글 조합은 세션 안의 입력기가 한다.
+
+```bash
+vdesk addon enable kime
+vdesk build
+vdesk recreate web                     # 기존 세션은 recreate, 새 세션은 바로 적용
+```
+
+- 설정이 없으면 kime 기본값(두벌식, 한/영 키로 전환)이다. 내 설정은 `~/.config/vdesk/home/.config/kime/`에 둔다 ([개인 설정 파일](#개인-설정-파일)).
+- GTK3 앱(Edge 포함)은 GTK 입력 모듈로, xterm 같은 X 앱은 XIM으로 kime에 붙는다. 환경 변수 `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`는 addon이 이미지에 넣는다.
+- kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
+- 한/영 키가 X에 어떤 키로 오는지는 Windows 키보드 드라이버에 따라 다르다(`Hangul` 또는 `Alt_R`). 전환이 안 되면 `vdesk shell`에서 `xev -event keyboard | grep keysym`을 실행하고, 세션 화면에 뜬 창에서 그 키를 눌러 본다. 나온 이름을 kime 설정의 `global_hotkeys`에 넣는다.
+- Windows 쪽 IME는 영문 상태로 둔다. 한글 상태면 Windows IME가 키를 먼저 가로챌 수 있다.
+- kime의 상태 표시(indicator)와 Wayland 모듈은 세션에서 뜨지 않는다. 설정에 있어도 XIM과 GTK 입력에는 영향이 없다.
+- 로그는 세션 안의 `/tmp/vdesk-kime.log`.
+
 ## 파일 주고받기
 
 - 세션의 `~/Downloads`는 호스트 `~/Downloads`를 그대로 연결한 것이다. 모든 세션이 같은 디렉터리를 쓴다. Edge로 받은 파일도 여기 생긴다.
@@ -332,6 +369,8 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 | 세션 홈 (앱 설정 전체) | Docker volume `vdesk-<user>-home-<id>`                |
 | 다운로드               | 호스트 `~/Downloads` (모든 세션이 공유)               |
 | 세션 이름              | `~/.local/state/vdesk/<hostname>/<id>.name`           |
+| 개인 설정 파일         | `~/.config/vdesk/home/` (세션 홈과 같은 구조)         |
+| 개인 설정 복사 기록    | `~/.local/state/vdesk/<hostname>/<id>.home`           |
 | addon 설정             | `~/.config/vdesk/addons.enabled`, `addons/<name>/`    |
 | 메뉴 규칙              | `~/.config/vdesk/menu.conf`                           |
 | 전체 배경화면          | `~/.config/vdesk/wallpaper.conf`, `wallpaper.img`     |
@@ -353,3 +392,5 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 - Edge가 `Zygote process exited`로 죽는다: 이미지 label `vdesk.seccomp`가 비어 있다. `edge` addon을 켜고 빌드했는지 확인한다.
 - 배경화면이 안 보인다: 배경화면 기능 이전 이미지의 세션이면 `vdesk recreate`. xmonad 세션은 창 사이 6px 간격과 빈 작업 공간에서 보인다. 간격 기능 이전 이미지의 xmonad 세션은 창이 화면을 덮는다.
 - `Alt+Tab`이 세션으로 가지 않는다: Windows가 가로챈다. xmonad에서는 `Alt+j`/`Alt+k`를 쓴다.
+- 한글이 입력되지 않는다: `vdesk addon ls`에서 kime가 `BUILT`인지, 세션이 그 이미지로 `recreate`됐는지 확인한다. 세션 안에서 `pgrep -a kime`로 데몬을 보고, 한/영 키는 [한글 입력](#한글-입력)의 `xev` 방법으로 확인한다.
+- `home files not updated`: `~/.config/vdesk/home` 안의 symlink가 없는 곳을 가리키거나 읽을 수 없는 파일이 있다. 고친 뒤 `vdesk home sync -t TARGET`.

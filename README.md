@@ -9,6 +9,8 @@ tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안
 - 앱: addon으로 이미지에 넣는다. 기본으로 Microsoft Edge가 켜져 있다. 메뉴는 설치된 앱의 `.desktop`에서 자동으로 만들고 `menu.conf`로 고친다.
 - 호스트 앱: 호스트에 설치된 GUI 앱(wezterm 등)을 세션 화면에 띄우고, 세션 메뉴에서도 실행한다.
 - 배경화면: 모든 세션 또는 세션별로 이미지나 단색을 지정한다.
+- 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm).
+- 개인 설정: `~/.config/vdesk/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
 

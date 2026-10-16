@@ -15,7 +15,8 @@
 
 - 규칙 파일: 아래 순서대로 읽고, 같은 라벨은 나중 규칙이 이긴다.
   1. `/etc/vdesk/menu.d/*.conf` (이미지 기본값. core는 `00-core.conf`, addon은 `50-<name>.conf`)
-  2. 세션 안의 `~/.config/vdesk/menu.conf` (호스트의 `~/.config/vdesk/menu.conf`를 복사한 것)
+  2. `/etc/vdesk/menu.d/<창 관리자>/*.conf` (그 창 관리자 세션에서만 읽는다. 예: `menu.d/xmonad/00-core.conf`)
+  3. 세션 안의 `~/.config/vdesk/menu.conf` (호스트의 `~/.config/vdesk/menu.conf`를 복사한 것)
 - .desktop 앱: `/usr/share/applications`, `/usr/local/share/applications`, 세션 홈의 `~/.local/share/applications` 순서로 읽는다. 같은 파일 이름이면 뒤쪽이 이긴다.
   - `Type=Application`이 아니거나 `NoDisplay=true`, `Hidden=true`인 항목은 뺀다.
   - `Exec`의 `%U` 같은 field code는 지운다. `Terminal=true`면 `xterm -e`로 실행한다.
@@ -116,4 +117,5 @@ EOF
 ## 기본값
 
 - core (`00-core.conf`): `Terminal = xterm`을 넣고, 중복되는 `XTerm`, `UXTerm`, 세션 안에서 쓸 일이 없는 `TigerVNC Viewer`, 이미 떠 있는 작업표시줄을 하나 더 띄우는 `Tint2`를 숨긴다. 작업표시줄 설정 도구인 `Tint2 Settings`는 남긴다.
+- core, xmonad 세션 (`xmonad/00-core.conf`): `Keyboard Shortcuts = vdesk-keys`. xmonad 단축키 목록을 rofi로 보여 준다 (`Alt+Shift+/`와 같음).
 - addon이 기본 규칙을 넣으려면 addon 디렉터리에 `menu.conf`를 둔다 ([addons.md](./addons.md)).

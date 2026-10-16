@@ -1,0 +1,15 @@
+#!/bin/sh
+# Show the window manager's key bindings (/etc/vdesk/keys/$VDESK_WM) in rofi.
+# usage: vdesk-keys
+set -u
+wm=${VDESK_WM:-openbox}
+f=/etc/vdesk/keys/$wm
+[ -f "$f" ] || { xmessage -center "vdesk-keys: no key list for $wm" 2>/dev/null & exit 1; }
+# Keys are ASCII, so awk's length pads the column correctly in a monospace font
+list=$(awk -F '\t' '
+    /^#/ || NF < 2 { next }
+    { n++; key[n] = $1; desc[n] = $2; if (length($1) > w) w = length($1) }
+    END { for (i = 1; i <= n; i++) printf "%-" w "s   %s\n", key[i], desc[i] }' "$f")
+printf '%s\n' "$list" | rofi -dmenu -i -no-custom -p "$wm" -l "$(printf '%s\n' "$list" | wc -l)" \
+    -font 'DejaVu Sans Mono 11' >/dev/null
+exit 0

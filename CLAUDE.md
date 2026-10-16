@@ -10,11 +10,12 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
   - `rootfs/usr/local/bin/vdesk-entrypoint`: Xvnc, 창 관리자(`VDESK_WM`: xmonad 또는 openbox), 시작 명령.
   - `rootfs/usr/local/bin/vdesk-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/vdesk-launcher`: xmonad용 메뉴. `vdesk-menu --list`를 rofi로 고른다.
+  - `rootfs/usr/local/bin/vdesk-keys`: `/etc/vdesk/keys/$VDESK_WM`(키<TAB>설명)을 rofi 목록으로 보여 준다. xmonad의 `Alt+Shift+/`와 메뉴의 `Keyboard Shortcuts`가 부른다.
   - `rootfs/usr/local/bin/vdesk-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정을 고른다.
   - `rootfs/usr/local/bin/vdesk-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없거나 쓸 수 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
   - `rootfs/usr/local/bin/vdesk-apply-addon`: 빌드 중 addon 하나를 적용.
   - `rootfs/usr/local/bin/vdesk-session-hooks`: addon이 둔 `/etc/vdesk/session.d/*`를 `start`(entrypoint, 창 관리자보다 먼저)와 `reload`(vdesk가 홈 파일을 복사한 뒤)에 실행.
-  - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
+  - `rootfs/etc/vdesk/menu.d/00-core.conf`, `rootfs/etc/vdesk/menu.d/xmonad/00-core.conf`(창 관리자별 규칙), `rootfs/etc/vdesk/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 `vdesk-panel`을 부른다.
   - `rootfs/etc/xdg/tint2/tint2rc` (openbox), `rootfs/etc/vdesk/tint2/xmonad.tint2rc` (xmonad): 작업표시줄 기본 설정. tint2는 `-c`로 실행해서 세션 홈에 복사본을 만들지 않게 한다.
 - `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다. `XMonad.Layout.Spacing`으로 창 사이와 화면 가장자리에 6px 간격(각 3px)을 두고 `Alt+g`로 끈다.
@@ -41,6 +42,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
 - 배경화면 파일은 conf를 먼저 지우고, 이미지와 conf를 임시 파일을 거쳐 `mv`로 바꾼다. 중간에 끊겨도 conf와 다른 이미지가 짝지어지지 않고, 다음 복사 때 다시 한다. 세션 사본은 이미지 sha가 conf의 `sha=`와 다르면(동시에 쓴 경우) 다시 복사한다. 호스트 쪽에 잠금을 두지 않는 이유는 홈이 NFS여서 잠금에서 멈출 수 있기 때문이다.
 - `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 `docs/usage.md`와 관련 `docs/`를 같이 고친다. README는 기능 목록과 구조가 바뀔 때 고친다.
+- xmonad 키를 바꾸면 `rootfs/etc/vdesk/keys/xmonad`(세션 안 목록)와 `docs/usage.md`의 키 표를 같이 고친다.
 
 ## 검증
 

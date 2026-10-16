@@ -36,6 +36,8 @@ vdeskConfig = def
     -- Alt+Space may be taken by Windows for the viewer's system menu
     , ("M-\\", sendMessage NextLayout)
     , ("M-g", toggleScreenSpacingEnabled >> toggleWindowSpacingEnabled)
+    -- Replaces the default help, which lists stock bindings; the list is /etc/vdesk/keys/xmonad
+    , ("M-S-/", spawn "vdesk-keys")
     ]
 
 vdeskManage :: ManageHook

@@ -1,0 +1,19 @@
+# xmonad key bindings shown by vdesk-keys: KEY<TAB>DESCRIPTION.
+# Keep in sync with xmonad/xmonad.hs and the key table in docs/usage.md.
+Alt+p	메뉴 (작업표시줄의 menu 버튼과 같음)
+Alt+Shift+Enter	메뉴의 Terminal 항목 (기본 xterm)
+Alt+j / Alt+k	다음 / 이전 창으로 포커스
+Alt+Shift+j / Alt+Shift+k	포커스된 창을 다음 / 이전 자리와 바꿈
+Alt+Enter	포커스된 창을 주 영역으로
+Alt+h / Alt+l	주 영역 줄이기 / 늘리기
+Alt+, / Alt+.	주 영역 창 수 늘리기 / 줄이기
+Alt+\ / Alt+Space	레이아웃 전환 (좌우 분할, 상하 분할, 전체 화면)
+Alt+1..9	작업 공간 이동
+Alt+Shift+1..9	포커스된 창을 작업 공간으로 보냄
+Alt+t	떠 있는 창을 다시 타일로
+Alt+left drag	창을 띄워서 이동
+Alt+right drag	창을 띄워서 크기 조절
+Alt+Shift+c	포커스된 창 닫기
+Alt+g	창 사이 간격 끄기 / 켜기
+Alt+q	xmonad 재시작 (창은 유지)
+Alt+Shift+/	이 단축키 목록

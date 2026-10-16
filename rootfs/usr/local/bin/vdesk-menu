@@ -6,7 +6,8 @@ set -u
 mode=xml
 [ "${1:-}" != --list ] || mode=list
 
-rules=$(cat /etc/vdesk/menu.d/*.conf "$HOME/.config/vdesk/menu.conf" 2>/dev/null)
+rules=$(cat /etc/vdesk/menu.d/*.conf "/etc/vdesk/menu.d/${VDESK_WM:-openbox}"/*.conf \
+    "$HOME/.config/vdesk/menu.conf" 2>/dev/null)
 
 # Same file name in a later directory overrides an earlier one
 files=$(for d in /usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications"; do

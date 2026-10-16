@@ -12,15 +12,17 @@ RUN cd /src && ghc --make -O2 -threaded -outputdir /tmp/ghc xmonad.hs -o /src/xm
 
 FROM ubuntu:24.04
 
+# The session bus started by vdesk-entrypoint has a fixed address, so docker exec shells reach it too
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    TZ=Asia/Seoul
+    TZ=Asia/Seoul \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/vdesk-bus/bus
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl gpg fontconfig fonts-dejavu-core tzdata procps xauth \
       openbox tigervnc-standalone-server tigervnc-tools tigervnc-viewer \
-      xtightvncviewer xinput x11-xserver-utils x11-apps x11-utils xterm tint2 dbus-x11 \
+      xtightvncviewer xinput x11-xserver-utils x11-apps x11-utils xterm tint2 dbus-x11 dbus-daemon \
       python3-minimal rofi libxss1 xwallpaper \
  && mkdir -p /usr/local/share/fonts/NotoSansKR \
  && curl -fsSL -o '/usr/local/share/fonts/NotoSansKR/NotoSansKR[wght].ttf' \

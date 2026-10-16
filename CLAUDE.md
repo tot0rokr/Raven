@@ -7,7 +7,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요와 설치는 [README.md](
 - `vdesk`: 호스트 CLI (POSIX sh + `local`). `docker run` 옵션, 세션 label 규칙, addon 조립 빌드가 모두 여기 있다. `~/.local/bin/vdesk`가 이 파일을 가리키는 symlink다.
 - `Dockerfile`, `rootfs/`: core 이미지 (`vdesk-core:latest`). 앱을 넣지 않는다.
   - 첫 단계(`xmonad-build`)에서 `xmonad/xmonad.hs`를 GHC로 컴파일해 `xmonad-x86_64-linux`만 최종 이미지에 복사한다.
-  - `rootfs/usr/local/bin/vdesk-entrypoint`: Xvnc, 창 관리자(`VDESK_WM`: xmonad 또는 openbox), 시작 명령.
+  - `rootfs/usr/local/bin/vdesk-entrypoint`: Xvnc, D-Bus 세션 버스, 창 관리자(`VDESK_WM`: xmonad 또는 openbox), 시작 명령. 버스 주소는 `Dockerfile`의 `ENV DBUS_SESSION_BUS_ADDRESS`로 고정해서 `docker exec` 셸도 같은 버스를 쓴다.
   - `rootfs/usr/local/bin/vdesk-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/vdesk-launcher`: xmonad용 메뉴. `vdesk-menu --list`를 rofi로 고른다.
   - `rootfs/usr/local/bin/vdesk-keys`: `/etc/vdesk/keys/$VDESK_WM`(키<TAB>설명)을 rofi 목록으로 보여 준다. xmonad의 `Alt+Shift+/`와 메뉴의 `Keyboard Shortcuts`가 부른다.

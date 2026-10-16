@@ -45,6 +45,15 @@ done
 
 export DISPLAY=":$VDESK_DISPLAY"
 xrdb -merge /etc/vdesk/Xresources
+
+# Session bus at the image's fixed address; --fork returns once it accepts connections.
+# Started after DISPLAY so services it activates can reach the screen.
+bus=${DBUS_SESSION_BUS_ADDRESS#unix:path=}
+rm -rf "${bus%/*}"
+mkdir -m 700 "${bus%/*}"
+dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile \
+    || echo "dbus-daemon did not start; continuing without a session bus" >&2
+
 # Addon daemons such as an input method must be up before the apps that connect to them
 vdesk-session-hooks start
 vdesk-wallpaper >/dev/null 2>&1 &

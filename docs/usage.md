@@ -101,6 +101,7 @@ vdesk shell -t 0                       # 세션 안의 bash (DISPLAY 설정됨)
 
 - `run`은 앱을 띄우고 바로 돌아온다.
 - `--host`(`-H`)와 `@LABEL`은 [호스트 앱](#호스트-앱).
+- 세션마다 D-Bus 세션 버스가 하나 있다(`unix:path=/tmp/vdesk-bus/bus`). 세션 안의 앱과 `run`, `shell`로 연 셸이 같은 버스를 쓴다. `--host`로 띄운 호스트 앱은 호스트의 버스를 쓴다.
 
 ### 재시작과 보존
 
@@ -292,7 +293,7 @@ vdesk recreate web                     # 기존 세션은 recreate, 새 세션�
 - kime 설정이 바뀌어 복사되면 kime가 다시 뜬다. 이미 열린 xterm 같은 XIM 앱은 다시 열어야 한글이 된다.
 - 한/영 키가 X에 어떤 키로 오는지는 Windows 키보드 드라이버에 따라 다르다(`Hangul` 또는 `Alt_R`). 전환이 안 되면 `vdesk shell`에서 `xev -event keyboard | grep keysym`을 실행하고, 세션 화면에 뜬 창에서 그 키를 눌러 본다. 나온 이름을 kime 설정의 `global_hotkeys`에 넣는다.
 - Windows 쪽 IME는 영문 상태로 둔다. 한글 상태면 Windows IME가 키를 먼저 가로챌 수 있다.
-- kime의 상태 표시(indicator)와 Wayland 모듈은 세션에서 뜨지 않는다. 설정에 있어도 XIM과 GTK 입력에는 영향이 없다.
+- 세션에 D-Bus가 있어 kime의 상태 표시(indicator)도 뜨지만, 작업표시줄(tint2)은 이 방식의 트레이(StatusNotifierItem)를 보여 주지 못해서 화면에는 나오지 않는다. Wayland 모듈은 세션에서 뜨지 않는다. 둘 다 XIM과 GTK 입력에는 영향이 없다.
 - 로그는 세션 안의 `/tmp/vdesk-kime.log`.
 
 ## 파일 주고받기

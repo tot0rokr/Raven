@@ -131,6 +131,7 @@ vdesk build                                # 처음에는 xmonad 컴파일과 Ed
 ## 첫 실행 확인
 
 ```bash
+vdesk doctor               # 서버 준비 상태. fail이 없어야 한다
 vdesk new -s t xclock      # 세션을 만들고 뷰어를 띄운다. 시계가 보이면 된다
 vdesk ls                   # STATE running, VIEWERS 1
 vdesk menu show t          # 메뉴 항목
@@ -140,6 +141,20 @@ vdesk kill t
 - `DISPLAY is not set`: X11 forwarding 없이 접속했다.
 - `image vdesk:latest not found`: `vdesk build`를 먼저 한다.
 - `session N did not come up`: `docker logs vdesk-<user>-N`.
+
+`vdesk doctor`가 보는 것은 다음과 같다. 결과는 `ok`, `info`, `warn`, `fail`로 나오고, `fail`이 있으면 종료 코드가 1이다.
+
+| 항목             | 확인 내용                                                                  |
+| ---------------- | -------------------------------------------------------------------------- |
+| Docker, buildx   | 데몬에 닿는지(권한), BuildKit이 있는지                                     |
+| 호스트 도구      | `python3`, `xauth`, `ss`, GNU `tar` 등                                     |
+| 이미지           | `vdesk build`를 했는지, 세션 uid 분리 이후 이미지인지, 켜진 addon          |
+| 세션 uid, 그룹   | uid 60000이 서버 계정과 겹치지 않는지, 기본 그룹을 다른 사람이 같이 쓰는지 |
+| `~/Downloads`    | 그룹 쓰기와 setgid가 켜졌는지                                              |
+| 세션             | 이전 이미지로 만든 세션(`recreate` 대상)                                   |
+| 호스트 중계      | 이 vdesk의 중계인지, 중계 파일이 바뀐 뒤에 뜬 것인지                       |
+| `DISPLAY`        | 설정됐는지, X 쿠키가 있는지                                                |
+| 시간대, 부팅     | 세션에 넘길 시간대, Docker가 부팅 때 뜨는지                                |
 
 ## 여러 사용자가 한 서버를 쓸 때
 
@@ -176,11 +191,18 @@ vdesk가 읽기만 하는 바깥 파일은 다음과 같다.
 ## 제거
 
 ```bash
-vdesk ls                                          # 남은 세션 확인
-vdesk kill <ID>                                   # 세션마다. 컨테이너와 홈 volume이 지워진다
-vdesk hostd stop
-docker image rm vdesk:latest vdesk-core:latest    # 바꿔 쓴 태그가 있으면 그것도
-rm -r ~/.config/vdesk ~/.local/state/vdesk "${XDG_RUNTIME_DIR:-/tmp}/vdesk-$(id -u)"
+vdesk uninstall -n                     # 지울 것만 보여 준다
+vdesk uninstall                        # 확인('yes' 입력) 후 지운다
+vdesk uninstall --config --images      # 설정과 이미지까지
+```
+
+- 기본으로 지우는 것: 이 사용자의 세션 컨테이너와 홈 volume(컨테이너 없이 남은 volume 포함), 이 서버의 상태 디렉터리(`~/.local/state/vdesk/<hostname>`), runtime 디렉터리, 호스트 중계.
+- `--config`: `~/.config/vdesk`(메뉴, 배경, addon, 개인 설정 파일).
+- `--images`: `VDESK_IMAGE`, `VDESK_CORE_IMAGE`. 다른 세션(다른 사용자 포함)이 쓰는 이미지는 남긴다.
+- `-y`는 확인 없이 지운다. 터미널이 아닌 곳에서 `-y` 없이 실행하면 멈춘다.
+- 지우지 않는 것: `~/Downloads`와 그 안의 파일, vdesk 저장소, `~/.local/bin/vdesk`. 손으로 마무리한다.
+
+```bash
 rm ~/.local/bin/vdesk
-chmod g-ws ~/Downloads                            # 원래 권한으로 되돌릴 때
+chmod g-ws ~/Downloads                 # vdesk가 켠 그룹 공유 설정을 되돌릴 때
 ```

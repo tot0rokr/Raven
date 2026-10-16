@@ -4,7 +4,7 @@ tmux처럼 쓰는 지속형 X 데스크톱 CLI. 개요는 [README.md](./README.m
 
 ## 파일
 
-- `vdesk`: 호스트 CLI (POSIX sh + `local`). `docker run` 옵션, 세션 label 규칙, addon 조립 빌드가 모두 여기 있다. `~/.local/bin/vdesk`가 이 파일을 가리키는 symlink다.
+- `vdesk`: 호스트 CLI (POSIX sh + `local`). `docker run` 옵션, 세션 label 규칙, addon 조립 빌드가 모두 여기 있다. `~/.local/bin/vdesk`가 이 파일을 가리키는 symlink다. `doctor`는 `docs/install.md`의 서버 준비 항목을 읽기만 해서 점검하고, `uninstall`은 그 문서의 "vdesk가 만들고 바꾸는 것"을 지운다.
 - `Dockerfile`, `rootfs/`: core 이미지 (`vdesk-core:latest`). 앱을 넣지 않는다.
   - 첫 단계(`xmonad-build`)에서 `xmonad/xmonad.hs`를 GHC로 컴파일해 `xmonad-x86_64-linux`만 최종 이미지에 복사한다.
   - `rootfs/usr/local/bin/vdesk-entrypoint`: Xvnc, D-Bus 세션 버스, 창 관리자(`VDESK_WM`: xmonad 또는 openbox), 시작 명령. 버스 주소는 `Dockerfile`의 `ENV DBUS_SESSION_BUS_ADDRESS`로 고정해서 `docker exec` 셸도 같은 버스를 쓴다.

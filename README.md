@@ -25,8 +25,11 @@ tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안
 ```bash
 git clone <저장소> ~/vdesk
 ln -s ~/vdesk/vdesk ~/.local/bin/vdesk
+vdesk doctor                           # 서버 준비 상태 점검
 vdesk build
 ```
+
+지울 때는 `vdesk uninstall`([docs/install.md](./docs/install.md#제거)).
 
 `vdesk build`는 core 이미지(`vdesk-core:latest`)를 만든 뒤 켜진 addon을 하나씩 레이어로 얹어 `vdesk:latest`를 만든다. 처음 빌드는 xmonad 설정 컴파일과 Edge 내려받기 때문에 오래 걸린다.
 

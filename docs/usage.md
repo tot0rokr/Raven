@@ -31,6 +31,8 @@
 | `vdesk home`              | 개인 설정 파일(`~/.config/vdesk/home`)을 세션 홈에 복사   |
 | `vdesk hostd`             | 호스트 중계 상태, 시작, 중지                              |
 | `vdesk wallpaper`         | 배경화면 지정, 해제, 확인                                 |
+| `vdesk doctor`            | 서버 준비 상태 점검 (아무것도 바꾸지 않음)                |
+| `vdesk uninstall`         | 이 사용자의 세션, 홈, vdesk 파일 제거                     |
 | `vdesk help`              | 사용법 출력                                               |
 
 ## 세션
@@ -410,6 +412,7 @@ VDESK_IMAGE=vdesk:dev VDESK_CORE_IMAGE=vdesk-core:dev ./vdesk new -s dev
 
 ## 문제 해결
 
+- 먼저 `vdesk doctor`로 서버 준비 상태를 본다([install.md](./install.md#첫-실행-확인)).
 - `DISPLAY is not set`: X11 forwarding 없이 접속했다. [접속 준비](#접속-준비)를 본다.
 - `image vdesk:latest not found`: `vdesk build`를 먼저 실행한다.
 - `session N did not come up`: `docker logs vdesk-<user>-N`으로 Xvnc 오류를 확인한다.

@@ -35,6 +35,8 @@ usage: vdesk [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        vdesk home sync [-t TARGET]                     copy ~/.config/vdesk/home into running sessions
        vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
        vdesk wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
+       vdesk doctor                                    check what the server needs (read only)
+       vdesk uninstall [-y] [-n] [--config] [--images] remove this user's sessions, homes and vdesk files
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or openbox.
@@ -951,6 +953,157 @@ cmd_home() {
     [ "$failed" = 0 ]
 }
 
+doctor_bad=0
+report() {
+    printf '%-5s %s\n' "$1" "$2"
+    [ "$1" != fail ] || doctor_bad=1
+}
+
+# Check what the server needs (docs/install.md) without changing anything
+cmd_doctor() {
+    local v t missing= uid members old= stale= cur id c pid age
+    [ $# -eq 0 ] || die "usage: vdesk doctor"
+    if v=$(docker version --format '{{.Server.Version}}' 2>/dev/null); then
+        report ok "docker $v"
+    else
+        report fail "docker: cannot reach the daemon (is $(id -un) in the docker group?)"
+    fi
+    if v=$(docker buildx version 2>/dev/null); then
+        report ok "buildx $(echo "$v" | awk '{ print $2 }')"
+    else
+        report fail "docker buildx (BuildKit) is missing; vdesk build needs it"
+    fi
+    for t in python3 xauth ss tar find sha256sum setsid mktemp readlink hostname awk sed; do
+        command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+    done
+    if [ -n "$missing" ]; then
+        report fail "missing host tools:$missing"
+    elif ! tar --version 2>/dev/null | head -n 1 | grep -q GNU; then
+        report fail "tar is not GNU tar (vdesk uses --sort and --no-overwrite-dir)"
+    else
+        report ok "host tools"
+    fi
+
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        uid=$(docker image inspect -f '{{index .Config.Labels "vdesk.uid"}}' "$image")
+        report ok "image $image (addons: $(docker image inspect -f '{{index .Config.Labels "vdesk.addons"}}' "$image"))"
+        [ -n "$uid" ] || report warn "image $image predates the separate session uid; run: vdesk build"
+    else
+        report warn "image $image is not built; run: vdesk build"
+    fi
+    if t=$(getent passwd "${uid:-60000}"); then
+        report warn "uid ${uid:-60000} is the host account ${t%%:*}; files sessions make in ~/Downloads belong to it"
+    else
+        report ok "session uid ${uid:-60000} has no host account"
+    fi
+    members=$(getent group "$(id -g)" | cut -d: -f4)
+    case ",$members," in
+        ,, | ",$(id -un),") report ok "primary group $(id -gn) has no other members" ;;
+        *) report warn "primary group $(id -gn) also has $members; they can write ~/Downloads" ;;
+    esac
+    if [ -d "$HOME/Downloads" ] && [ -g "$HOME/Downloads" ] && [ -n "$(find "$HOME/Downloads" -maxdepth 0 -perm -g+w)" ]; then
+        report ok "~/Downloads is group-writable with setgid"
+    else
+        report info "~/Downloads gets g+rwxs when a session is created"
+    fi
+
+    cur=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)
+    for id in $(ids | sort -n); do
+        c=$(cname "$id")
+        [ -n "$(label_of "$c" vdesk.uid)" ] || old="$old $id"
+        [ "$(docker inspect -f '{{.Image}}' "$c")" = "$cur" ] || stale="$stale $id"
+    done
+    [ -z "$old" ] || report warn "sessions from before the separate session uid:$old (vdesk recreate)"
+    [ -z "$stale" ] || report info "sessions not on the current $image:$stale (vdesk recreate to update)"
+
+    pid=$(hostd_pid)
+    if [ -z "$pid" ]; then
+        report info "host relay is not running; attach, run and shell start it"
+    elif ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qF "$srcdir/vdesk-hostd"; then
+        report warn "host relay (pid $pid) belongs to another vdesk: $(tr '\0' ' ' < "/proc/$pid/cmdline"); vdesk hostd stop"
+    else
+        age=$(ps -o etimes= -p "$pid" | tr -d ' ')
+        if [ $(($(date +%s) - age)) -lt "$(stat -c %Y "$srcdir/vdesk-hostd")" ]; then
+            report warn "host relay (pid $pid) started before vdesk-hostd changed; vdesk hostd stop"
+        else
+            report ok "host relay running (pid $pid)"
+        fi
+    fi
+
+    if [ -z "${DISPLAY:-}" ]; then
+        report warn "DISPLAY is not set; attach needs X11 forwarding (ssh -Y)"
+    elif [ -n "$(xauth list "$DISPLAY" 2>/dev/null)" ]; then
+        report ok "DISPLAY $DISPLAY with an X cookie"
+    else
+        report warn "DISPLAY $DISPLAY has no X cookie; the viewer connects only if the X server allows it"
+    fi
+    report info "session time zone: $(host_tz)"
+    if command -v systemctl >/dev/null 2>&1; then
+        if [ "$(systemctl is-enabled docker 2>/dev/null)" = enabled ]; then
+            report ok "docker starts at boot"
+        else
+            report warn "docker is not enabled at boot; sessions do not come back after a reboot"
+        fi
+    fi
+    return "$doctor_bad"
+}
+
+# Remove this user's vdesk from the server: sessions with their homes, names, runtime files
+# and the relay; --config also ~/.config/vdesk, --images the images no other session uses
+cmd_uninstall() {
+    local yes=0 dry=0 config=0 images=0 list vols answer img id v
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -y | --yes) yes=1 ;;
+            -n | --dry-run) dry=1 ;;
+            --config) config=1 ;;
+            --images) images=1 ;;
+            *) die "usage: vdesk uninstall [-y] [-n] [--config] [--images]" ;;
+        esac
+        shift
+    done
+    list=$(ids | sort -n | tr '\n' ' ' | sed 's/ $//')
+    # Homes left behind by containers removed outside vdesk
+    vols=$(docker volume ls -q | awk -v p="vdesk-$user-home-" \
+        'index($0, p) == 1 && substr($0, length(p) + 1) ~ /^[0-9]+$/' | tr '\n' ' ' | sed 's/ $//')
+    echo "vdesk uninstall removes:"
+    echo "  sessions (containers): ${list:-none}"
+    echo "  home volumes: ${vols:-none}"
+    echo "  $statedir, $rundir and the host relay"
+    [ "$config" = 0 ] || echo "  $confdir (menu, wallpaper, addons, personal files)"
+    [ "$images" = 0 ] || echo "  images $image, $core_image unless another session uses them"
+    echo "kept: ~/Downloads and its files, the vdesk checkout, ~/.local/bin/vdesk"
+    [ "$dry" = 0 ] || return 0
+    if [ "$yes" = 0 ]; then
+        [ -t 0 ] || die "stdin is not a terminal; pass -y to confirm"
+        printf "type 'yes' to continue: "
+        read -r answer
+        [ "$answer" = yes ] || die "cancelled"
+    fi
+    for id in $list; do
+        docker rm -f "$(cname "$id")" >/dev/null
+    done
+    for v in $vols; do
+        docker volume rm "$v" >/dev/null
+    done
+    cmd_hostd stop
+    rm -rf "$statedir" "$rundir"
+    rmdir "${statedir%/*}" 2>/dev/null || true
+    [ "$config" = 0 ] || rm -rf "$confdir"
+    if [ "$images" = 1 ]; then
+        for img in "$image" "$core_image"; do
+            docker image inspect "$img" >/dev/null 2>&1 || continue
+            if [ -n "$(docker ps -aq --filter "ancestor=$img")" ]; then
+                echo "vdesk: kept $img: other sessions use it" >&2
+            else
+                docker image rm "$img" >/dev/null
+            fi
+        done
+    fi
+    echo "vdesk: removed. Left to do by hand: rm ~/.local/bin/vdesk and the checkout;" \
+        "chmod g-ws ~/Downloads undoes the shared-group setting" >&2
+}
+
 cmd_hostd() {
     local pid
     case "${1:-status}" in
@@ -988,5 +1141,7 @@ case "$1" in
     home) shift; cmd_home "$@" ;;
     hostd) shift; cmd_hostd "$@" ;;
     wallpaper) shift; cmd_wallpaper "$@" ;;
+    doctor) shift; cmd_doctor "$@" ;;
+    uninstall) shift; cmd_uninstall "$@" ;;
     *) usage >&2; exit 2 ;;
 esac

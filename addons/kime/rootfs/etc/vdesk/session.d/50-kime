@@ -1,0 +1,31 @@
+# kime: start with the session; restart when vdesk copied a changed ~/.config/kime
+config_sum() { find "$HOME/.config/kime" -type f -exec cksum {} + 2>/dev/null | sort; }
+state=/tmp/vdesk-kime.sum
+uid=$(id -u)
+
+case "$1" in
+    start) ;;
+    reload)
+        [ "$(config_sum)" != "$(cat "$state" 2>/dev/null)" ] || exit 0
+        # Apps already connected through XIM (xterm) need reopening; GTK apps reconnect.
+        # A new kime fails while the old one still holds the XIM server name.
+        pkill -u "$uid" '^kime(-.*)?$'
+        i=0
+        while pgrep -u "$uid" '^kime(-.*)?$' >/dev/null; do
+            i=$((i + 1))
+            [ "$i" -le 30 ] || { pkill -KILL -u "$uid" '^kime(-.*)?$'; sleep 0.2; break; }
+            sleep 0.1
+        done ;;
+    *) exit 0 ;;
+esac
+
+config_sum > "$state"
+setsid kime > /tmp/vdesk-kime.log 2>&1 < /dev/null &
+# XIM clients look for the server only when they start, and the session command starts next.
+# The root property outlives a stopped server, so wait for the process as well.
+i=0
+until pgrep -u "$uid" -x kime-xim >/dev/null && xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server=kime'; do
+    i=$((i + 1))
+    [ "$i" -le 30 ] || break
+    sleep 0.1
+done

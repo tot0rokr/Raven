@@ -1,0 +1,5 @@
+version=3.2.0
+sha256=05f74236414345aa77047fd5f490d7383a8db2cd1cd8550a7dc47b06bd755b51
+curl -fsSL -o /tmp/kime.deb \
+    "https://github.com/Riey/kime/releases/download/v$version/kime-v${version}_amd64_ubuntu-24.04.deb"
+echo "$sha256  /tmp/kime.deb" | sha256sum -c -

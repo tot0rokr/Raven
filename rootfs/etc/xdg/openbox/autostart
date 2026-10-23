@@ -1,2 +1,2 @@
-# vdesk: runs on every openbox start; the entrypoint restarts openbox if it dies.
-vdesk-panel &
+# raven: runs on every openbox start; the entrypoint restarts openbox if it dies.
+raven-panel &

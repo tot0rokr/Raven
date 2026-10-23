@@ -1,6 +1,6 @@
-# vdesk
+# Raven
 
-tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 창 관리자(xmonad 또는 openbox)를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행되고, 다시 attach하면 그대로 이어서 쓴다. 앱은 addon으로 이미지에 추가하고, 서버에는 Docker와 기본 도구 외에 설치하지 않는다. 클라이언트에는 X 서버와 SSH 클라이언트만 있으면 된다.
+Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안에 가상 화면(TigerVNC `Xvnc`)과 창 관리자(xmonad 또는 openbox)를 띄우고, 뷰어를 X11(`ssh -Y`)로 클라이언트 X 서버에 띄운다. 뷰어를 닫거나 SSH가 끊겨도 세션 안의 앱은 계속 실행되고, 다시 attach하면 그대로 이어서 쓴다. 앱은 addon으로 이미지에 추가하고, 서버에는 Docker와 기본 도구 외에 설치하지 않는다. 클라이언트에는 X 서버와 SSH 클라이언트만 있으면 된다.
 
 ## 기능
 
@@ -10,7 +10,7 @@ tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안
 - 호스트 앱: 호스트에 설치된 GUI 앱(wezterm 등)을 세션 화면에 띄우고, 세션 메뉴에서도 실행한다.
 - 배경화면: 모든 세션 또는 세션별로 이미지나 단색을 지정한다.
 - 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 기본은 두벌식이고, VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 Shift+Space나 작업표시줄의 `한/A` 버튼으로 전환한다. 개인 설정으로 다른 자판과 키를 쓴다.
-- 개인 설정: `~/.config/vdesk/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
+- 개인 설정: `~/.config/raven/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
 
@@ -18,30 +18,30 @@ tmux처럼 쓰는 지속형 X 데스크톱. 세션마다 Docker 컨테이너 안
 
 - 서버: Linux, rootful Docker와 BuildKit(`docker buildx`), `python3`, `xauth`, `ss`, X11 forwarding이 켜진 sshd. 사용자는 `docker` 그룹이어야 한다. 빌드할 때 인터넷이 필요하다.
 - 클라이언트: X 서버(Windows는 VcXsrv 권장, Xming 6.9도 됨), X11 forwarding을 켠 SSH 클라이언트.
-- 확인한 환경은 Ubuntu 24.04 서버와 Windows + VcXsrv 클라이언트다. 준비 과정, 여러 사용자, vdesk가 서버에 만드는 것, 제거 방법은 [docs/install.md](./docs/install.md).
+- 확인한 환경은 Ubuntu 24.04 서버와 Windows + VcXsrv 클라이언트다. 준비 과정, 여러 사용자, Raven이 서버에 만드는 것, 제거 방법은 [docs/install.md](./docs/install.md).
 
 ## 설치
 
 ```bash
-git clone <저장소> ~/vdesk
-ln -s ~/vdesk/vdesk ~/.local/bin/vdesk
-vdesk doctor                           # 서버 준비 상태 점검
-vdesk build
+git clone <저장소> ~/raven
+ln -s ~/raven/raven ~/.local/bin/raven
+raven doctor                           # 서버 준비 상태 점검
+raven build
 ```
 
-지울 때는 `vdesk uninstall`([docs/install.md](./docs/install.md#제거)).
+지울 때는 `raven uninstall`([docs/install.md](./docs/install.md#제거)).
 
-`vdesk build`는 core 이미지(`vdesk-core:latest`)를 만든 뒤 켜진 addon을 하나씩 레이어로 얹어 `vdesk:latest`를 만든다. 처음 빌드는 xmonad 설정 컴파일과 Edge 내려받기 때문에 오래 걸린다.
+`raven build`는 core 이미지(`raven-core:latest`)를 만든 뒤 켜진 addon을 하나씩 레이어로 얹어 `raven:latest`를 만든다. 처음 빌드는 xmonad 설정 컴파일과 Edge 내려받기 때문에 오래 걸린다.
 
 ## 빠른 시작
 
 ```bash
 ssh -Y user@vm                         # 클라이언트에서 X11 forwarding으로 접속
-vdesk new -s web microsoft-edge        # Edge 세션을 만들고 화면을 띄운다
+raven new -s web microsoft-edge        # Edge 세션을 만들고 화면을 띄운다
                                        # 뷰어 창을 닫거나 SSH가 끊겨도 Edge는 계속 실행된다
-vdesk a web                            # 다시 attach
-vdesk ls                               # 세션 목록
-vdesk kill web                         # 세션과 홈 삭제
+raven a web                            # 다시 attach
+raven ls                               # 세션 목록
+raven kill web                         # 세션과 홈 삭제
 ```
 
 xmonad 세션에서는 `Alt+p`가 메뉴, `Alt+Shift+Enter`가 터미널, `Alt+j`/`Alt+k`가 창 이동이다. 전체 키와 명령은 [docs/usage.md](./docs/usage.md).
@@ -59,21 +59,21 @@ xmonad 세션에서는 `Alt+p`가 메뉴, `Alt+Shift+Enter`가 터미널, `Alt+j
 ## 구조
 
 ```
-image vdesk:latest = vdesk-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xterm) + enabled addons (edge, ...)
+image raven:latest = raven-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xterm) + enabled addons (edge, ...)
 
 ┌─ session 0 (:100, 15900) ──────┐   ┌─ session 1 (:101, 15901) ──────┐
 │ Xvnc + xmonad                  │   │ Xvnc + openbox                 │
 │  ├ microsoft-edge (addon)      │   │  └ xterm (core)                │
 │  └ wezterm (host, run --host)  │   │                                │
-│ volume: vdesk-<user>-home-0    │   │ volume: vdesk-<user>-home-1    │
+│ volume: raven-<user>-home-0    │   │ volume: raven-<user>-home-1    │
 └───────────────┬────────────────┘   └────────────────┬───────────────┘
                 └──── viewer ── X11 (ssh -Y) ─────────┴──> VcXsrv / Xming
 ```
 
-- 세션 하나는 컨테이너 `vdesk-<user>-<id>`와 홈 volume `vdesk-<user>-home-<id>`다.
+- 세션 하나는 컨테이너 `raven-<user>-<id>`와 홈 volume `raven-<user>-home-<id>`다.
 - 뷰어(`xtigervncviewer` 또는 `xtightvncviewer`)도 컨테이너 안에서 실행되고, SSH X11 forwarding으로 클라이언트 X 서버에 창을 띄운다. 그래서 클라이언트에는 X 서버만 있으면 되고 VNC 뷰어를 따로 설치하지 않는다.
-- 호스트 앱은 호스트 프로세스가 세션의 X socket에 직접 붙는다. 세션 메뉴의 호스트 항목은 호스트 중계 `vdesk-hostd`를 거친다.
-- CLI(`vdesk`)는 POSIX sh 스크립트 하나다. 세션 정보는 컨테이너 label과 `~/.local/state/vdesk/<hostname>/`에 둔다.
+- 호스트 앱은 호스트 프로세스가 세션의 X socket에 직접 붙는다. 세션 메뉴의 호스트 항목은 호스트 중계 `raven-hostd`를 거친다.
+- CLI(`raven`)는 POSIX sh 스크립트 하나다. 세션 정보는 컨테이너 label과 `~/.local/state/raven/<hostname>/`에 둔다.
 
 ## 보안 설계
 

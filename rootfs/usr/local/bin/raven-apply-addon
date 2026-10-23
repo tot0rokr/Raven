@@ -1,6 +1,6 @@
 #!/bin/sh
 # Apply one addon while building the image (runs as root).
-# usage: vdesk-apply-addon NAME DIR
+# usage: raven-apply-addon NAME DIR
 set -eu
 
 name=$1
@@ -15,6 +15,6 @@ if [ -n "$PACKAGES" ]; then
     apt-get install -y --no-install-recommends $PACKAGES
 fi
 [ ! -d "$dir/rootfs" ] || cp -R --preserve=mode "$dir/rootfs/." /
-[ ! -f "$dir/menu.conf" ] || cp "$dir/menu.conf" "/etc/vdesk/menu.d/50-$name.conf"
+[ ! -f "$dir/menu.conf" ] || cp "$dir/menu.conf" "/etc/raven/menu.d/50-$name.conf"
 [ ! -f "$dir/post-install" ] || sh -eu "$dir/post-install"
 rm -rf /var/lib/apt/lists/*

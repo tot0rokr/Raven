@@ -5,56 +5,56 @@ set -eu
 self=$(readlink -f "$0")
 srcdir=$(dirname "$self")
 # Separate tags let a worktree build and run its own image beside the main one
-image=${VDESK_IMAGE:-vdesk:latest}
-core_image=${VDESK_CORE_IMAGE:-vdesk-core:latest}
+image=${RAVEN_IMAGE:-raven:latest}
+core_image=${RAVEN_CORE_IMAGE:-raven-core:latest}
 user=$(id -un | tr -c 'A-Za-z0-9_.\n-' '_')
-confdir=${XDG_CONFIG_HOME:-$HOME/.config}/vdesk
-statedir=${XDG_STATE_HOME:-$HOME/.local/state}/vdesk/$(hostname)
-rundir=${XDG_RUNTIME_DIR:-/tmp}/vdesk-$(id -u)
+confdir=${XDG_CONFIG_HOME:-$HOME/.config}/raven
+statedir=${XDG_STATE_HOME:-$HOME/.local/state}/raven/$(hostname)
+rundir=${XDG_RUNTIME_DIR:-/tmp}/raven-$(id -u)
 display_base=100
 port_base=15900
 default_cmd=xterm
 default_geometry=1600x900
 default_addons=edge
-default_wm=${VDESK_WM:-xmonad}
+default_wm=${RAVEN_WM:-xmonad}
 
 usage() {
     cat <<'EOF'
-usage: vdesk [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session and attach (default)
-       vdesk attach|a [-d] [-g WxH] [TARGET]           attach to a session
-       vdesk ls                                        list sessions
-       vdesk rename [-t] TARGET NAME                   rename a session
-       vdesk run [-t TARGET] [--host] CMD...           start an app in a session
-       vdesk run [-t TARGET] @LABEL                    start a host entry of menu.conf
-       vdesk shell [-t TARGET]                         open a shell inside a session
-       vdesk kill [-t] TARGET                          delete a session and its home
-       vdesk recreate [-a | [-t] TARGET]               move sessions onto the current image
-       vdesk build [DOCKER-BUILD-ARGS...]              build core + enabled addons
-       vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]
-       vdesk menu edit | show [-t TARGET] | sync
-       vdesk home sync [-t TARGET]                     copy ~/.config/vdesk/home into running sessions
-       vdesk hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
-       vdesk wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
-       vdesk doctor                                    check what the server needs (read only)
-       vdesk uninstall [-y] [-n] [--config] [--images] remove this user's sessions, homes and vdesk files
+usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session and attach (default)
+       raven attach|a [-d] [-g WxH] [TARGET]           attach to a session
+       raven ls                                        list sessions
+       raven rename [-t] TARGET NAME                   rename a session
+       raven run [-t TARGET] [--host] CMD...           start an app in a session
+       raven run [-t TARGET] @LABEL                    start a host entry of menu.conf
+       raven shell [-t TARGET]                         open a shell inside a session
+       raven kill [-t] TARGET                          delete a session and its home
+       raven recreate [-a | [-t] TARGET]               move sessions onto the current image
+       raven build [DOCKER-BUILD-ARGS...]              build core + enabled addons
+       raven addon ls | enable NAME | disable NAME | new NAME [PKG...]
+       raven menu edit | show [-t TARGET] | sync
+       raven home sync [-t TARGET]                     copy ~/.config/raven/home into running sessions
+       raven hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
+       raven wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
+       raven doctor                                    check what the server needs (read only)
+       raven uninstall [-y] [-n] [--config] [--images] remove this user's sessions, homes and raven files
 
 TARGET is a session id or name; the newest session when omitted.
 new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or openbox.
 wallpaper: without -t the setting applies to every session; -t sets one session's own.
-home: files under ~/.config/vdesk/home go into every session home (symlinks followed).
+home: files under ~/.config/raven/home go into every session home (symlinks followed).
 attach: -d detaches other viewers of the session.
 EOF
 }
 
-die() { echo "vdesk: $*" >&2; exit 1; }
+die() { echo "raven: $*" >&2; exit 1; }
 
-cname() { echo "vdesk-$user-$1"; }
-vname() { echo "vdesk-$user-home-$1"; }
+cname() { echo "raven-$user-$1"; }
+vname() { echo "raven-$user-home-$1"; }
 
 # One line per session, newest first: ID DISPLAY PORT STATE CMD
 sessions() {
-    docker ps -a --filter "label=vdesk.user=$user" \
-        --format '{{.Label "vdesk.id"}} {{.Label "vdesk.display"}} {{.Label "vdesk.port"}} {{.State}} {{.Label "vdesk.cmd"}}'
+    docker ps -a --filter "label=raven.user=$user" \
+        --format '{{.Label "raven.id"}} {{.Label "raven.display"}} {{.Label "raven.port"}} {{.State}} {{.Label "raven.cmd"}}'
 }
 
 field() { sessions | awk -v id="$1" -v n="$2" '$1 == id { print $n }'; }
@@ -107,15 +107,15 @@ need_display() {
 }
 
 need_image() {
-    docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found; run: vdesk build"
+    docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found; run: raven build"
 }
 
 # Run a command inside session $1 against its own display
 xin() {
     local id=$1
     shift
-    docker exec -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-        -w /home/vdesk "$(cname "$id")" "$@"
+    docker exec -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/raven/.Xauthority \
+        -w /home/raven "$(cname "$id")" "$@"
 }
 
 # Unpack a tar from stdin into session $1's home as the session user; directories that
@@ -124,14 +124,14 @@ untar_home() {
     local c
     c=$(cname "$1")
     if [ "$(docker inspect -f '{{.State.Running}}' "$c")" = true ]; then
-        docker exec -i "$c" tar -C /home/vdesk --no-overwrite-dir -xf -
+        docker exec -i "$c" tar -C /home/raven --no-overwrite-dir -xf -
     else
-        docker run --rm -i --network none -v "$(vname "$1"):/home/vdesk" --entrypoint tar \
-            "$(docker inspect -f '{{.Image}}' "$c")" -C /home/vdesk --no-overwrite-dir -xf -
+        docker run --rm -i --network none -v "$(vname "$1"):/home/raven" --entrypoint tar \
+            "$(docker inspect -f '{{.Image}}' "$c")" -C /home/raven --no-overwrite-dir -xf -
     fi
 }
 
-# $confdir/home mirrors the session home (/home/vdesk). Its files are copied into session $1,
+# $confdir/home mirrors the session home (/home/raven). Its files are copied into session $1,
 # running or not, when they changed since the last copy; symlinks are followed on the host,
 # so a link into a dotfiles repo copies what it points to. Returns 0 when copied, 1 when
 # there was nothing new, 2 on failure.
@@ -158,16 +158,16 @@ push_home() {
 
 # Let a running session's hooks pick up new home files; images before hooks have none
 reload_session() {
-    xin "$1" sh -c 'command -v vdesk-session-hooks >/dev/null || exit 0; exec vdesk-session-hooks reload'
+    xin "$1" sh -c 'command -v raven-session-hooks >/dev/null || exit 0; exec raven-session-hooks reload'
 }
 
 # Copy the host menu rules into a running session
 push_menu() {
     if [ -f "$confdir/menu.conf" ]; then
-        docker exec -i "$(cname "$1")" sh -c 'mkdir -p ~/.config/vdesk && cat > ~/.config/vdesk/menu.conf' \
+        docker exec -i "$(cname "$1")" sh -c 'mkdir -p ~/.config/raven && cat > ~/.config/raven/menu.conf' \
             < "$confdir/menu.conf"
     else
-        docker exec "$(cname "$1")" rm -f /home/vdesk/.config/vdesk/menu.conf
+        docker exec "$(cname "$1")" rm -f /home/raven/.config/raven/menu.conf
     fi
 }
 
@@ -175,22 +175,22 @@ push_menu() {
 # copied into session homes; wallpaper.local.{conf,img} in a session home win there.
 # The image label works for stopped sessions too and costs no docker exec.
 has_wallpaper() {
-    case " $(label_of "$(cname "$1")" vdesk.features 2>/dev/null) " in
+    case " $(label_of "$(cname "$1")" raven.features 2>/dev/null) " in
         *" wallpaper "*) return 0 ;;
     esac
     return 1
 }
 
 apply_wallpaper() {
-    docker exec -d -e DISPLAY=":$(field "$1" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-        "$(cname "$1")" vdesk-wallpaper
+    docker exec -d -e DISPLAY=":$(field "$1" 2)" -e XAUTHORITY=/home/raven/.Xauthority \
+        "$(cname "$1")" raven-wallpaper
 }
 
 # Write NAME.img (or remove it when IMG is empty) and then NAME.conf with text CONF into the
 # session home, each through a temp file. The old conf goes first, so an interrupted copy
 # leaves no conf and is redone on the next push instead of pairing a conf with a wrong image.
 put_wallpaper() {
-    local c="$1" n="$2" conf="$3" img="$4" d=/home/vdesk/.config/vdesk
+    local c="$1" n="$2" conf="$3" img="$4" d=/home/raven/.config/raven
     docker exec "$c" sh -c "mkdir -p $d && rm -f $d/$n.conf" || return 1
     if [ -n "$img" ]; then
         docker exec -i "$c" sh -c "cat > $d/$n.img.tmp && mv -f $d/$n.img.tmp $d/$n.img" < "$img" || return 1
@@ -209,7 +209,7 @@ push_wallpaper() {
     has_wallpaper "$1" || return 2
     # A copy whose image does not match its sha (two writers at once) gets a marker line,
     # so it never equals the host's conf and is copied again or removed
-    cur=$(docker exec "$c" sh -c 'd=/home/vdesk/.config/vdesk; cat $d/wallpaper.conf || exit 0
+    cur=$(docker exec "$c" sh -c 'd=/home/raven/.config/raven; cat $d/wallpaper.conf || exit 0
         s=$(sed -n "s/^sha=//p" $d/wallpaper.conf)
         [ -z "$s" ] || [ "$(sha256sum < $d/wallpaper.img)" = "$s  -" ] || echo "# image does not match"' 2>/dev/null) || cur=
     if [ -f "$confdir/wallpaper.conf" ]; then
@@ -221,27 +221,27 @@ push_wallpaper() {
         fi
     else
         [ -n "$cur" ] || return 0
-        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.conf /home/vdesk/.config/vdesk/wallpaper.img \
+        docker exec "$c" rm -f /home/raven/.config/raven/wallpaper.conf /home/raven/.config/raven/wallpaper.img \
             || return 1
     fi
     # Without the conf the next push copies again and retries the paint
-    apply_wallpaper "$1" || { docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.conf; return 1; }
+    apply_wallpaper "$1" || { docker exec "$c" rm -f /home/raven/.config/raven/wallpaper.conf; return 1; }
 }
 
 hostd_pid() {
-    ss -Hxlp | grep -F "@vdesk-host-$(id -u) " | grep -o 'pid=[0-9]*' | head -n 1 | cut -d = -f 2
+    ss -Hxlp | grep -F "@raven-host-$(id -u) " | grep -o 'pid=[0-9]*' | head -n 1 | cut -d = -f 2
 }
 
-# Start the host relay (vdesk-hostd) unless it is already listening
+# Start the host relay (raven-hostd) unless it is already listening
 ensure_hostd() {
     local i=0
     [ -z "$(hostd_pid)" ] || return 0
     mkdir -p "$rundir"
     chmod 700 "$rundir"
-    setsid python3 "$srcdir/vdesk-hostd" "$self" >>"$rundir/hostd.log" 2>&1 </dev/null &
+    setsid python3 "$srcdir/raven-hostd" "$self" >>"$rundir/hostd.log" 2>&1 </dev/null &
     until [ -n "$(hostd_pid)" ]; do
         i=$((i + 1))
-        [ "$i" -le 20 ] || { echo "vdesk: host relay did not start; see $rundir/hostd.log" >&2; return 1; }
+        [ "$i" -le 20 ] || { echo "raven: host relay did not start; see $rundir/hostd.log" >&2; return 1; }
         sleep 0.1
     done
 }
@@ -263,10 +263,10 @@ ensure_up() {
     done
     push_menu "$1"
     # The wallpaper is cosmetic; never let it stop attach, run or new
-    push_wallpaper "$1" || [ $? -eq 2 ] || echo "vdesk: session $1: wallpaper not updated" >&2
+    push_wallpaper "$1" || [ $? -eq 2 ] || echo "raven: session $1: wallpaper not updated" >&2
     case "$home" in
-        0) [ "$started" = 1 ] || reload_session "$1" || echo "vdesk: session $1: session hooks failed" >&2 ;;
-        2) echo "vdesk: session $1: home files not updated" >&2 ;;
+        0) [ "$started" = 1 ] || reload_session "$1" || echo "raven: session $1: session hooks failed" >&2 ;;
+        2) echo "raven: session $1: home files not updated" >&2 ;;
     esac
     ensure_hostd || true
 }
@@ -281,10 +281,10 @@ free_id() {
     echo "$i"
 }
 
-# Lowest display not claimed by any vdesk container, live X socket, or VNC port
+# Lowest display not claimed by any raven container, live X socket, or VNC port
 free_display() {
     local taken d=$display_base
-    taken=$( (docker ps -a --filter label=vdesk.display --format '{{.Label "vdesk.display"}}'
+    taken=$( (docker ps -a --filter label=raven.display --format '{{.Label "raven.display"}}'
               ss -Hxl | grep -o 'X11-unix/X[0-9]*' | sed 's/.*X//') | sort -u)
     while echo "$taken" | grep -qx "$d" || ss -Hltn "sport = :$((port_base + d - display_base))" | grep -q .; do
         d=$((d + 1))
@@ -303,9 +303,9 @@ host_tz() {
 # Create the container for session $1; runtime needs come from the image's addon labels
 run_container() {
     local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm uid
-    seccomp=$(docker image inspect -f '{{index .Config.Labels "vdesk.seccomp"}}' "$image")
-    shm=$(docker image inspect -f '{{index .Config.Labels "vdesk.shm-size"}}' "$image")
-    uid=$(docker image inspect -f '{{index .Config.Labels "vdesk.uid"}}' "$image")
+    seccomp=$(docker image inspect -f '{{index .Config.Labels "raven.seccomp"}}' "$image")
+    shm=$(docker image inspect -f '{{index .Config.Labels "raven.shm-size"}}' "$image")
+    uid=$(docker image inspect -f '{{index .Config.Labels "raven.uid"}}' "$image")
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
     [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
     [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
@@ -314,24 +314,24 @@ run_container() {
     mkdir -p "$HOME/Downloads"
     chmod g+rwxs "$HOME/Downloads"
     docker create "$@" \
-        --label vdesk.user="$user" --label vdesk.id="$id" \
-        --label vdesk.display="$d" --label vdesk.port="$p" \
-        --label vdesk.cmd="$cmd" --label vdesk.geometry="$geometry" --label vdesk.wm="$wm" \
-        -e VDESK_DISPLAY="$d" -e VDESK_PORT="$p" -e VDESK_GEOMETRY="$geometry" -e VDESK_WM="$wm" \
-        -e VDESK_ID="$id" -e VDESK_TITLE="vdesk $id" -e VDESK_CMD="$cmd" -e VDESK_HOST_UID="$(id -u)" \
+        --label raven.user="$user" --label raven.id="$id" \
+        --label raven.display="$d" --label raven.port="$p" \
+        --label raven.cmd="$cmd" --label raven.geometry="$geometry" --label raven.wm="$wm" \
+        -e RAVEN_DISPLAY="$d" -e RAVEN_PORT="$p" -e RAVEN_GEOMETRY="$geometry" -e RAVEN_WM="$wm" \
+        -e RAVEN_ID="$id" -e RAVEN_TITLE="raven $id" -e RAVEN_CMD="$cmd" -e RAVEN_HOST_UID="$(id -u)" \
         -e TZ="$(host_tz)" \
         --group-add "$(id -g)" \
-        -v "$(vname "$id"):/home/vdesk" \
-        -v "$HOME/Downloads:/home/vdesk/Downloads" \
+        -v "$(vname "$id"):/home/raven" \
+        -v "$HOME/Downloads:/home/raven/Downloads" \
         "$image" >/dev/null
     # A home made under another session uid (older images used the host user's uid) is handed
     # over to this image's session user before the start
-    [ -z "$uid" ] || docker run --rm --network none --user 0 -v "$(vname "$id"):/home/vdesk" \
-        --entrypoint find "$image" /home/vdesk -xdev \( ! -user "$uid" -o ! -group "$uid" \) \
+    [ -z "$uid" ] || docker run --rm --network none --user 0 -v "$(vname "$id"):/home/raven" \
+        --entrypoint find "$image" /home/raven -xdev \( ! -user "$uid" -o ! -group "$uid" \) \
         -exec chown -h "$uid:$uid" {} + \
-        || echo "vdesk: session $id: could not hand the home over to uid $uid" >&2
+        || echo "raven: session $id: could not hand the home over to uid $uid" >&2
     # Home files go in before the first start, so session hooks see them from the beginning
-    push_home "$id" || [ $? -eq 1 ] || echo "vdesk: session $id: home files not copied" >&2
+    push_home "$id" || [ $? -eq 1 ] || echo "raven: session $id: home files not copied" >&2
     docker start "$(cname "$id")" >/dev/null
 }
 
@@ -361,7 +361,7 @@ view() {
         [ "$exclusive" = 0 ] || set -- "$@" -noshared
     fi
     exec docker exec -e DISPLAY="$DISPLAY" -e XAUTHORITY="$xa" "$c" \
-        "$@" -passwd /home/vdesk/.vnc/passwd "localhost::$port"
+        "$@" -passwd /home/raven/.vnc/passwd "localhost::$port"
 }
 
 check_wm() {
@@ -399,7 +399,7 @@ cmd_new() {
     [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
     run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
     ensure_up "$id"
-    echo "vdesk: created session $id${name:+ ($name)} with $wm" >&2
+    echo "raven: created session $id${name:+ ($name)} with $wm" >&2
     [ "$detach" = 1 ] || view "$id" "" 0
 }
 
@@ -415,7 +415,7 @@ cmd_attach() {
         esac
     done
     shift $((OPTIND - 1))
-    [ $# -le 1 ] || die "usage: vdesk attach [-d] [-g WxH] [TARGET]"
+    [ $# -le 1 ] || die "usage: raven attach [-d] [-g WxH] [TARGET]"
     target=${target:-${1:-}}
     [ -z "$geometry" ] || check_geometry "$geometry"
     need_display
@@ -436,7 +436,7 @@ cmd_ls() {
         fi
         name=$(name_of "$id")
         # Sessions made before window managers were selectable run openbox
-        wm=$(label_of "$(cname "$id")" vdesk.wm)
+        wm=$(label_of "$(cname "$id")" raven.wm)
         printf '%-4s %-16s %-8s %-8s %-8s %-6s %-8s %s\n' \
             "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$clients" "$cmd"
     done
@@ -456,7 +456,7 @@ cmd_rename() {
         target=$1
         shift
     fi
-    [ -n "$target" ] && [ $# -eq 1 ] || die "usage: vdesk rename [-t] TARGET NAME"
+    [ -n "$target" ] && [ $# -eq 1 ] || die "usage: raven rename [-t] TARGET NAME"
     id=$(resolve "$target")
     check_name "$1" "$id"
     mkdir -p "$statedir"
@@ -495,10 +495,10 @@ cmd_run() {
             *) break ;;
         esac
     done
-    [ $# -gt 0 ] || die "usage: vdesk run [-t TARGET] [--host] CMD... | @LABEL"
+    [ $# -gt 0 ] || die "usage: raven run [-t TARGET] [--host] CMD... | @LABEL"
     case "$1" in
         @*)
-            [ $# -eq 1 ] || die "usage: vdesk run [-t TARGET] @LABEL"
+            [ $# -eq 1 ] || die "usage: raven run [-t TARGET] @LABEL"
             cmd=$(host_cmd "${1#@}") \
                 || die "no host entry '${1#@} = @COMMAND' in $confdir/menu.conf"
             set -- "$cmd"
@@ -508,8 +508,8 @@ cmd_run() {
     ensure_up "$id"
     if [ "$host" = 0 ]; then
         # docker exec does not inherit the entrypoint's umask (shared ~/Downloads)
-        docker exec -d -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-            -w /home/vdesk "$(cname "$id")" sh -c "umask 002; $*"
+        docker exec -d -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/raven/.Xauthority \
+            -w /home/raven "$(cname "$id")" sh -c "umask 002; $*"
         return 0
     fi
 
@@ -536,8 +536,8 @@ cmd_shell() {
     target=${target:-${1:-}}
     id=$(resolve "$target")
     ensure_up "$id"
-    exec docker exec -it -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/vdesk/.Xauthority \
-        -w /home/vdesk "$(cname "$id")" sh -c 'umask 002; exec bash'
+    exec docker exec -it -e DISPLAY=":$(field "$id" 2)" -e XAUTHORITY=/home/raven/.Xauthority \
+        -w /home/raven "$(cname "$id")" sh -c 'umask 002; exec bash'
 }
 
 cmd_kill() {
@@ -551,7 +551,7 @@ cmd_kill() {
     done
     shift $((OPTIND - 1))
     target=${target:-${1:-}}
-    [ -n "$target" ] || die "usage: vdesk kill [-t] TARGET"
+    [ -n "$target" ] || die "usage: raven kill [-t] TARGET"
     id=$(resolve "$target")
     docker rm -f "$(cname "$id")" >/dev/null
     docker volume rm "$(vname "$id")" >/dev/null
@@ -573,22 +573,22 @@ cmd_recreate() {
     if [ "$all" = 1 ]; then
         targets=$(ids | sort -n)
     else
-        [ -n "$target" ] || die "usage: vdesk recreate [-a | [-t] TARGET]"
+        [ -n "$target" ] || die "usage: raven recreate [-a | [-t] TARGET]"
         targets=$(resolve "$target")
     fi
     need_image
     for id in $targets; do
         c=$(cname "$id")
-        cmd=$(label_of "$c" vdesk.cmd)
-        geometry=$(label_of "$c" vdesk.geometry)
-        wm=$(label_of "$c" vdesk.wm)
+        cmd=$(label_of "$c" raven.cmd)
+        geometry=$(label_of "$c" raven.geometry)
+        wm=$(label_of "$c" raven.wm)
         set -- "$(field "$id" 2)" "$(field "$id" 3)"
         docker stop "$c" >/dev/null
         docker rm "$c" >/dev/null
         # Sessions made before window managers were selectable run openbox
         run_container "$id" "$1" "$2" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}" "${wm:-openbox}"
         ensure_up "$id"
-        echo "vdesk: recreated session $id" >&2
+        echo "raven: recreated session $id" >&2
     done
 }
 
@@ -665,7 +665,7 @@ cmd_build() {
         echo "USER root"
     } > "$ctx/Dockerfile"
     for a in $(enabled_addons); do
-        dir=$(addon_dir "$a") || die "addon not found: $a (see: vdesk addon ls)"
+        dir=$(addon_dir "$a") || die "addon not found: $a (see: raven addon ls)"
         info=$(addon_info "$dir")
         [ "$(echo "$info" | cut -f 2)" != unconfined ] || seccomp=unconfined
         if [ -n "$(echo "$info" | cut -f 3)" ] && [ "$(to_mib "$(echo "$info" | cut -f 3)")" -gt "$shm" ]; then
@@ -673,7 +673,7 @@ cmd_build() {
         fi
         env="$env$(session_env "$a" "$(echo "$info" | cut -f 4)")"
         names="$names${names:+ }$a"
-        echo "RUN --mount=type=bind,from=addon-$a,target=/tmp/vdesk-addon vdesk-apply-addon $a /tmp/vdesk-addon" \
+        echo "RUN --mount=type=bind,from=addon-$a,target=/tmp/raven-addon raven-apply-addon $a /tmp/raven-addon" \
             >> "$ctx/Dockerfile"
         set -- "$@" --build-context "addon-$a=$dir"
     done
@@ -681,12 +681,12 @@ cmd_build() {
     {
         # Image ENV reaches every session process: the entrypoint, menu apps and docker exec
         [ -z "$env" ] || echo "ENV$env"
-        echo "LABEL vdesk.addons=\"$names\" vdesk.seccomp=\"$seccomp\" vdesk.shm-size=\"$shm\""
-        echo "USER vdesk"
+        echo "LABEL raven.addons=\"$names\" raven.seccomp=\"$seccomp\" raven.shm-size=\"$shm\""
+        echo "USER raven"
     } >> "$ctx/Dockerfile"
     docker build -t "$image" -f "$ctx/Dockerfile" "$@" "$ctx"
-    echo "vdesk: built $image with addons: ${names:-(none)}" >&2
-    echo "vdesk: move existing sessions onto it with: vdesk recreate -a" >&2
+    echo "raven: built $image with addons: ${names:-(none)}" >&2
+    echo "raven: move existing sessions onto it with: raven recreate -a" >&2
 }
 
 cmd_addon() {
@@ -694,7 +694,7 @@ cmd_addon() {
     [ $# -eq 0 ] || shift
     case "$sub" in
         ls)
-            built=$(docker image inspect -f '{{index .Config.Labels "vdesk.addons"}}' "$image" 2>/dev/null || true)
+            built=$(docker image inspect -f '{{index .Config.Labels "raven.addons"}}' "$image" 2>/dev/null || true)
             enabled=$(enabled_addons)
             printf '%-16s %-8s %-6s %-8s %s\n' NAME ENABLED BUILT SOURCE DESCRIPTION
             for n in $( (ls "$srcdir/addons" 2>/dev/null; ls "$confdir/addons" 2>/dev/null) | sort -u); do
@@ -707,21 +707,21 @@ cmd_addon() {
                     "$src" "$(echo "$info" | cut -f 1)"
             done ;;
         enable)
-            [ $# -eq 1 ] || die "usage: vdesk addon enable NAME"
+            [ $# -eq 1 ] || die "usage: raven addon enable NAME"
             addon_dir "$1" >/dev/null || die "addon not found: $1"
             enabled=$(enabled_addons)
             mkdir -p "$confdir"
             { echo "$enabled"; echo "$enabled" | grep -qx "$1" || echo "$1"; } \
                 | grep -v '^$' > "$confdir/addons.enabled"
-            echo "vdesk: enabled $1; apply with: vdesk build && vdesk recreate -a" >&2 ;;
+            echo "raven: enabled $1; apply with: raven build && raven recreate -a" >&2 ;;
         disable)
-            [ $# -eq 1 ] || die "usage: vdesk addon disable NAME"
+            [ $# -eq 1 ] || die "usage: raven addon disable NAME"
             enabled=$(enabled_addons)
             mkdir -p "$confdir"
             echo "$enabled" | grep -vx "$1" > "$confdir/addons.enabled" || true
-            echo "vdesk: disabled $1; apply with: vdesk build && vdesk recreate -a" >&2 ;;
+            echo "raven: disabled $1; apply with: raven build && raven recreate -a" >&2 ;;
         new)
-            [ $# -ge 1 ] || die "usage: vdesk addon new NAME [PKG...]"
+            [ $# -ge 1 ] || die "usage: raven addon new NAME [PKG...]"
             n=$1
             shift
             case "$n" in
@@ -735,17 +735,17 @@ cmd_addon() {
             [ ! -e "$dir" ] || die "already exists: $dir"
             mkdir -p "$dir"
             printf 'DESCRIPTION="%s"\nPACKAGES="%s"\n' "$n" "$*" > "$dir/addon.conf"
-            echo "vdesk: created $dir/addon.conf" >&2
-            echo "vdesk: next: vdesk addon enable $n && vdesk build && vdesk recreate -a" >&2 ;;
-        *) die "usage: vdesk addon ls | enable NAME | disable NAME | new NAME [PKG...]" ;;
+            echo "raven: created $dir/addon.conf" >&2
+            echo "raven: next: raven addon enable $n && raven build && raven recreate -a" >&2 ;;
+        *) die "usage: raven addon ls | enable NAME | disable NAME | new NAME [PKG...]" ;;
     esac
 }
 
 menu_template() {
     cat <<'EOF'
-# vdesk menu rules, applied after the image defaults (/etc/vdesk/menu.d/*.conf).
+# raven menu rules, applied after the image defaults (/etc/raven/menu.d/*.conf).
 #   LABEL = COMMAND    add an entry at the top, or change the command of LABEL
-#   LABEL = @COMMAND   same, but COMMAND runs on the host (vdesk run @LABEL also works)
+#   LABEL = @COMMAND   same, but COMMAND runs on the host (raven run @LABEL also works)
 #   !LABEL             hide an entry (also hides generated .desktop entries)
 #   ---                separator
 # Examples:
@@ -775,12 +775,12 @@ cmd_menu() {
             target=${target:-${1:-}}
             id=$(resolve "$target")
             ensure_up "$id"
-            xin "$id" vdesk-menu --list ;;
+            xin "$id" raven-menu --list ;;
         sync)
             for id in $(sessions | awk '$4 == "running" { print $1 }'); do
                 push_menu "$id"
             done ;;
-        *) die "usage: vdesk menu edit | show [-t TARGET] | sync" ;;
+        *) die "usage: raven menu edit | show [-t TARGET] | sync" ;;
     esac
 }
 
@@ -837,11 +837,11 @@ save_wallpaper() {
                     skipped=$((skipped + 1))
                 else
                     failed=$((failed + 1))
-                    echo "vdesk: session $id: wallpaper not updated" >&2
+                    echo "raven: session $id: wallpaper not updated" >&2
                 fi
             fi
         done
-        printf 'vdesk: applied to %s running session(s)' "$n" >&2
+        printf 'raven: applied to %s running session(s)' "$n" >&2
         [ "$skipped" -eq 0 ] || printf '; %s older session(s) get it after recreate' "$skipped" >&2
         [ "$failed" -eq 0 ] || printf '; %s failed' "$failed" >&2
         printf '\n' >&2
@@ -854,7 +854,7 @@ save_wallpaper() {
     ensure_up "$id"
     c=$(cname "$id")
     if [ -z "$conf" ]; then
-        docker exec "$c" rm -f /home/vdesk/.config/vdesk/wallpaper.local.conf /home/vdesk/.config/vdesk/wallpaper.local.img \
+        docker exec "$c" rm -f /home/raven/.config/raven/wallpaper.local.conf /home/raven/.config/raven/wallpaper.local.img \
             || die "session $id: cannot clear its wallpaper"
     else
         put_wallpaper "$c" wallpaper.local "$conf" "$img" || die "session $id: cannot store its wallpaper"
@@ -877,11 +877,11 @@ cmd_wallpaper() {
     case "$sub" in
         set) ;;
         color | clear) [ -z "$mode" ] || die "-m only applies to wallpaper set" ;;
-        show) [ -z "$mode$target" ] && [ $# -eq 0 ] || die "usage: vdesk wallpaper show" ;;
+        show) [ -z "$mode$target" ] && [ $# -eq 0 ] || die "usage: raven wallpaper show" ;;
     esac
     case "$sub" in
         set)
-            [ $# -eq 1 ] || die "usage: vdesk wallpaper set [-t TARGET] [-m MODE] FILE"
+            [ $# -eq 1 ] || die "usage: raven wallpaper set [-t TARGET] [-m MODE] FILE"
             mode=${mode:-zoom}
             case "$mode" in
                 zoom | maximize | center | tile | stretch | focus) ;;
@@ -891,14 +891,14 @@ cmd_wallpaper() {
             sha=$(sha256sum < "$1") || die "cannot read image: $1"
             save_wallpaper "$target" "$(printf 'type=image\nmode=%s\nsha=%s' "$mode" "${sha%% *}")" "$1" ;;
         color)
-            [ $# -eq 1 ] || die "usage: vdesk wallpaper color [-t TARGET] '#rrggbb'"
+            [ $# -eq 1 ] || die "usage: raven wallpaper color [-t TARGET] '#rrggbb'"
             case "$1" in
                 \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
                 *) die "color must look like '#24303c': '$1'" ;;
             esac
             save_wallpaper "$target" "$(printf 'type=color\ncolor=%s' "$1")" "" ;;
         clear)
-            [ $# -eq 0 ] || die "usage: vdesk wallpaper clear [-t TARGET]"
+            [ $# -eq 0 ] || die "usage: raven wallpaper clear [-t TARGET]"
             save_wallpaper "$target" "" "" ;;
         show)
             if [ -f "$confdir/wallpaper.conf" ]; then
@@ -909,13 +909,13 @@ cmd_wallpaper() {
             # Only running sessions can be asked for their own setting
             for id in $(sessions | awk '$4 == "running" { print $1 }' | sort -n); do
                 has_wallpaper "$id" || continue
-                own=$(docker exec "$(cname "$id")" cat /home/vdesk/.config/vdesk/wallpaper.local.conf 2>/dev/null) \
+                own=$(docker exec "$(cname "$id")" cat /home/raven/.config/raven/wallpaper.local.conf 2>/dev/null) \
                     || continue
                 [ -n "$own" ] || continue
                 name=$(name_of "$id")
                 printf 'session %s%s: %s\n' "$id" "${name:+ ($name)}" "$(wallpaper_summary "$own")"
             done ;;
-        *) die "usage: vdesk wallpaper set|color|clear [-t TARGET] ... | show" ;;
+        *) die "usage: raven wallpaper set|color|clear [-t TARGET] ... | show" ;;
     esac
 }
 
@@ -925,14 +925,14 @@ sync_home() {
     push_home "$1" || rc=$?
     case "$rc" in
         0) [ "$(field "$1" 4)" != running ] || reload_session "$1" \
-               || echo "vdesk: session $1: session hooks failed" >&2 ;;
-        2) echo "vdesk: session $1: home files not updated" >&2; return 1 ;;
+               || echo "raven: session $1: session hooks failed" >&2 ;;
+        2) echo "raven: session $1: home files not updated" >&2; return 1 ;;
     esac
 }
 
 cmd_home() {
     local target= opt id failed=0
-    [ "${1:-}" = sync ] || die "usage: vdesk home sync [-t TARGET]"
+    [ "${1:-}" = sync ] || die "usage: raven home sync [-t TARGET]"
     shift
     OPTIND=1
     while getopts t: opt; do
@@ -942,7 +942,7 @@ cmd_home() {
         esac
     done
     shift $((OPTIND - 1))
-    [ $# -eq 0 ] || die "usage: vdesk home sync [-t TARGET]"
+    [ $# -eq 0 ] || die "usage: raven home sync [-t TARGET]"
     if [ -n "$target" ]; then
         sync_home "$(resolve "$target")"
         return
@@ -962,7 +962,7 @@ report() {
 # Check what the server needs (docs/install.md) without changing anything
 cmd_doctor() {
     local v t missing= uid members old= stale= cur id c pid age
-    [ $# -eq 0 ] || die "usage: vdesk doctor"
+    [ $# -eq 0 ] || die "usage: raven doctor"
     if v=$(docker version --format '{{.Server.Version}}' 2>/dev/null); then
         report ok "docker $v"
     else
@@ -971,7 +971,7 @@ cmd_doctor() {
     if v=$(docker buildx version 2>/dev/null); then
         report ok "buildx $(echo "$v" | awk '{ print $2 }')"
     else
-        report fail "docker buildx (BuildKit) is missing; vdesk build needs it"
+        report fail "docker buildx (BuildKit) is missing; raven build needs it"
     fi
     for t in python3 xauth ss tar find sha256sum setsid mktemp readlink hostname awk sed; do
         command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
@@ -979,17 +979,17 @@ cmd_doctor() {
     if [ -n "$missing" ]; then
         report fail "missing host tools:$missing"
     elif ! tar --version 2>/dev/null | head -n 1 | grep -q GNU; then
-        report fail "tar is not GNU tar (vdesk uses --sort and --no-overwrite-dir)"
+        report fail "tar is not GNU tar (raven uses --sort and --no-overwrite-dir)"
     else
         report ok "host tools"
     fi
 
     if docker image inspect "$image" >/dev/null 2>&1; then
-        uid=$(docker image inspect -f '{{index .Config.Labels "vdesk.uid"}}' "$image")
-        report ok "image $image (addons: $(docker image inspect -f '{{index .Config.Labels "vdesk.addons"}}' "$image"))"
-        [ -n "$uid" ] || report warn "image $image predates the separate session uid; run: vdesk build"
+        uid=$(docker image inspect -f '{{index .Config.Labels "raven.uid"}}' "$image")
+        report ok "image $image (addons: $(docker image inspect -f '{{index .Config.Labels "raven.addons"}}' "$image"))"
+        [ -n "$uid" ] || report warn "image $image predates the separate session uid; run: raven build"
     else
-        report warn "image $image is not built; run: vdesk build"
+        report warn "image $image is not built; run: raven build"
     fi
     if t=$(getent passwd "${uid:-60000}"); then
         report warn "uid ${uid:-60000} is the host account ${t%%:*}; files sessions make in ~/Downloads belong to it"
@@ -1010,21 +1010,21 @@ cmd_doctor() {
     cur=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || true)
     for id in $(ids | sort -n); do
         c=$(cname "$id")
-        [ -n "$(label_of "$c" vdesk.uid)" ] || old="$old $id"
+        [ -n "$(label_of "$c" raven.uid)" ] || old="$old $id"
         [ "$(docker inspect -f '{{.Image}}' "$c")" = "$cur" ] || stale="$stale $id"
     done
-    [ -z "$old" ] || report warn "sessions from before the separate session uid:$old (vdesk recreate)"
-    [ -z "$stale" ] || report info "sessions not on the current $image:$stale (vdesk recreate to update)"
+    [ -z "$old" ] || report warn "sessions from before the separate session uid:$old (raven recreate)"
+    [ -z "$stale" ] || report info "sessions not on the current $image:$stale (raven recreate to update)"
 
     pid=$(hostd_pid)
     if [ -z "$pid" ]; then
         report info "host relay is not running; attach, run and shell start it"
-    elif ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qF "$srcdir/vdesk-hostd"; then
-        report warn "host relay (pid $pid) belongs to another vdesk: $(tr '\0' ' ' < "/proc/$pid/cmdline"); vdesk hostd stop"
+    elif ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -qF "$srcdir/raven-hostd"; then
+        report warn "host relay (pid $pid) belongs to another raven: $(tr '\0' ' ' < "/proc/$pid/cmdline"); raven hostd stop"
     else
         age=$(ps -o etimes= -p "$pid" | tr -d ' ')
-        if [ $(($(date +%s) - age)) -lt "$(stat -c %Y "$srcdir/vdesk-hostd")" ]; then
-            report warn "host relay (pid $pid) started before vdesk-hostd changed; vdesk hostd stop"
+        if [ $(($(date +%s) - age)) -lt "$(stat -c %Y "$srcdir/raven-hostd")" ]; then
+            report warn "host relay (pid $pid) started before raven-hostd changed; raven hostd stop"
         else
             report ok "host relay running (pid $pid)"
         fi
@@ -1048,8 +1048,8 @@ cmd_doctor() {
     return "$doctor_bad"
 }
 
-# Remove this user's vdesk from the server: sessions with their homes, names, runtime files
-# and the relay; --config also ~/.config/vdesk, --images the images no other session uses
+# Remove this user's raven from the server: sessions with their homes, names, runtime files
+# and the relay; --config also ~/.config/raven, --images the images no other session uses
 cmd_uninstall() {
     local yes=0 dry=0 config=0 images=0 list vols answer img id v
     while [ $# -gt 0 ]; do
@@ -1058,21 +1058,21 @@ cmd_uninstall() {
             -n | --dry-run) dry=1 ;;
             --config) config=1 ;;
             --images) images=1 ;;
-            *) die "usage: vdesk uninstall [-y] [-n] [--config] [--images]" ;;
+            *) die "usage: raven uninstall [-y] [-n] [--config] [--images]" ;;
         esac
         shift
     done
     list=$(ids | sort -n | tr '\n' ' ' | sed 's/ $//')
-    # Homes left behind by containers removed outside vdesk
-    vols=$(docker volume ls -q | awk -v p="vdesk-$user-home-" \
+    # Homes left behind by containers removed outside raven
+    vols=$(docker volume ls -q | awk -v p="raven-$user-home-" \
         'index($0, p) == 1 && substr($0, length(p) + 1) ~ /^[0-9]+$/' | tr '\n' ' ' | sed 's/ $//')
-    echo "vdesk uninstall removes:"
+    echo "raven uninstall removes:"
     echo "  sessions (containers): ${list:-none}"
     echo "  home volumes: ${vols:-none}"
     echo "  $statedir, $rundir and the host relay"
     [ "$config" = 0 ] || echo "  $confdir (menu, wallpaper, addons, personal files)"
     [ "$images" = 0 ] || echo "  images $image, $core_image unless another session uses them"
-    echo "kept: ~/Downloads and its files, the vdesk checkout, ~/.local/bin/vdesk"
+    echo "kept: ~/Downloads and its files, the raven checkout, ~/.local/bin/raven"
     [ "$dry" = 0 ] || return 0
     if [ "$yes" = 0 ]; then
         [ -t 0 ] || die "stdin is not a terminal; pass -y to confirm"
@@ -1094,13 +1094,13 @@ cmd_uninstall() {
         for img in "$image" "$core_image"; do
             docker image inspect "$img" >/dev/null 2>&1 || continue
             if [ -n "$(docker ps -aq --filter "ancestor=$img")" ]; then
-                echo "vdesk: kept $img: other sessions use it" >&2
+                echo "raven: kept $img: other sessions use it" >&2
             else
                 docker image rm "$img" >/dev/null
             fi
         done
     fi
-    echo "vdesk: removed. Left to do by hand: rm ~/.local/bin/vdesk and the checkout;" \
+    echo "raven: removed. Left to do by hand: rm ~/.local/bin/raven and the checkout;" \
         "chmod g-ws ~/Downloads undoes the shared-group setting" >&2
 }
 
@@ -1119,7 +1119,7 @@ cmd_hostd() {
         stop)
             pid=$(hostd_pid)
             [ -z "$pid" ] || kill "$pid" ;;
-        *) die "usage: vdesk hostd [status | start | stop]" ;;
+        *) die "usage: raven hostd [status | start | stop]" ;;
     esac
 }
 

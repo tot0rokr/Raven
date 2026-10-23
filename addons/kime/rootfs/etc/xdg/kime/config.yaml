@@ -1,5 +1,5 @@
-# vdesk default for kime: dubeolsik, Shift+Space toggles Hangul/Latin.
-# A session's own ~/.config/kime/config.yaml (e.g. copied from ~/.config/vdesk/home) is used
+# raven default for kime: dubeolsik, Shift+Space toggles Hangul/Latin.
+# A session's own ~/.config/kime/config.yaml (e.g. copied from ~/.config/raven/home) is used
 # instead of this whole file. Keys left out here keep kime's built-in defaults.
 daemon:
   modules:

@@ -12,10 +12,10 @@ RUN cd /src && ghc --make -O2 -threaded -outputdir /tmp/ghc xmonad.hs -o /src/xm
 
 FROM ubuntu:24.04
 
-# The session bus started by vdesk-entrypoint has a fixed address, so docker exec shells reach it too
+# The session bus started by raven-entrypoint has a fixed address, so docker exec shells reach it too
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/vdesk-bus/bus
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/raven-bus/bus
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -30,19 +30,19 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The session user has its own uid, apart from every host account, so the image is the same
-# whoever builds it. vdesk adds the host user's group to share ~/Downloads (see run_container).
+# whoever builds it. raven adds the host user's group to share ~/Downloads (see run_container).
 RUN userdel -r ubuntu 2>/dev/null || true \
- && groupadd -g 60000 vdesk \
- && useradd -l -m -u 60000 -g 60000 -s /bin/bash vdesk \
- && mkdir -p /home/vdesk/Downloads \
- && chown -R vdesk:vdesk /home/vdesk
+ && groupadd -g 60000 raven \
+ && useradd -l -m -u 60000 -g 60000 -s /bin/bash raven \
+ && mkdir -p /home/raven/Downloads \
+ && chown -R raven:raven /home/raven
 
 COPY --from=xmonad-build /src/xmonad-x86_64-linux /usr/local/bin/xmonad-x86_64-linux
-# vdesk checks these: wallpaper support before writing wallpaper settings into a session,
+# raven checks these: wallpaper support before writing wallpaper settings into a session,
 # the session uid before giving an older home volume to that user
-LABEL vdesk.features="wallpaper" vdesk.uid="60000"
+LABEL raven.features="wallpaper" raven.uid="60000"
 COPY rootfs/ /
 
-USER vdesk
-WORKDIR /home/vdesk
-ENTRYPOINT ["/usr/local/bin/vdesk-entrypoint"]
+USER raven
+WORKDIR /home/raven
+ENTRYPOINT ["/usr/local/bin/raven-entrypoint"]

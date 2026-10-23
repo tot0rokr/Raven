@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run the session hooks that addons put in /etc/raven/session.d, in name order.
+#   start   the display is up; the window manager and session command come next
+#   reload  raven copied changed files from ~/.config/raven/home into the session home
+# A hook starts its own daemons in the background and returns.
+set -u
+for h in /etc/raven/session.d/*; do
+    [ -f "$h" ] || continue
+    sh "$h" "$1" || echo "raven-session-hooks: $h $1 failed" >&2
+done
+exit 0

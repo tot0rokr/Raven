@@ -1,4 +1,4 @@
-# vdesk taskbar: window list + clock. A session's ~/.config/tint2/tint2rc overrides this file.
+# raven taskbar: window list + clock. A session's ~/.config/tint2/tint2rc overrides this file.
 
 # Background 1: panel
 rounded = 0

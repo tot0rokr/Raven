@@ -1,13 +1,13 @@
 #!/bin/sh
 # Openbox pipe menu: menu rules first, then .desktop applications.
-# usage: vdesk-menu [--list]
+# usage: raven-menu [--list]
 set -u
 
 mode=xml
 [ "${1:-}" != --list ] || mode=list
 
-rules=$(cat /etc/vdesk/menu.d/*.conf "/etc/vdesk/menu.d/${VDESK_WM:-openbox}"/*.conf \
-    "$HOME/.config/vdesk/menu.conf" 2>/dev/null)
+rules=$(cat /etc/raven/menu.d/*.conf "/etc/raven/menu.d/${RAVEN_WM:-openbox}"/*.conf \
+    "$HOME/.config/raven/menu.conf" 2>/dev/null)
 
 # Same file name in a later directory overrides an earlier one
 files=$(for d in /usr/share/applications /usr/local/share/applications "$HOME/.local/share/applications"; do
@@ -80,7 +80,7 @@ BEGIN { if (mode == "xml") print "<openbox_pipe_menu>" }
     if (!eq) next
     label = trim(substr(line, 1, eq - 1)); cmd = trim(substr(line, eq + 1))
     # Host entry: send only the label; the host looks the command up in its own menu.conf
-    if (cmd ~ /^@/) cmd = "vdesk-host " shquote(label)
+    if (cmd ~ /^@/) cmd = "raven-host " shquote(label)
     if (label in pos) { mcmd[pos[label]] = cmd; next }
     n++; kind[n] = "item"; mlabel[n] = label; mcmd[n] = cmd; pos[label] = n
     next

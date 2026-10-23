@@ -1,6 +1,6 @@
-# kime: start with the session; restart when vdesk copied a changed ~/.config/kime
+# kime: start with the session; restart when raven copied a changed ~/.config/kime
 config_sum() { find "$HOME/.config/kime" -type f -exec cksum {} + 2>/dev/null | sort; }
-state=/tmp/vdesk-kime.sum
+state=/tmp/raven-kime.sum
 uid=$(id -u)
 
 case "$1" in
@@ -20,7 +20,7 @@ case "$1" in
 esac
 
 config_sum > "$state"
-setsid kime > /tmp/vdesk-kime.log 2>&1 < /dev/null &
+setsid kime > /tmp/raven-kime.log 2>&1 < /dev/null &
 # XIM clients look for the server only when they start, and the session command starts next.
 # The root property outlives a stopped server, so wait for the process as well.
 i=0

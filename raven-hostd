@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Host relay: lets a vdesk session start the host entries of the host's menu.conf.
+"""Host relay: lets a raven session start the host entries of the host's menu.conf.
 
-A session connects to the abstract socket @vdesk-host-<host uid> (containers share
+A session connects to the abstract socket @raven-host-<host uid> (containers share
 the host network namespace) and sends "<session id> <label>". Session users have
 their own uid, so the peer is identified by the container it runs in: only a process
 inside this user's container of that session is served. Only a label crosses the
-boundary: the command is looked up on the host by `vdesk run -t <id> @<label>` in the
-"LABEL = @COMMAND" rules of the host's ~/.config/vdesk/menu.conf.
+boundary: the command is looked up on the host by `raven run -t <id> @<label>` in the
+"LABEL = @COMMAND" rules of the host's ~/.config/raven/menu.conf.
 
-usage: vdesk-hostd VDESK_CLI
+usage: raven-hostd RAVEN_CLI
 """
 import os
 import pwd
@@ -19,9 +19,9 @@ import struct
 import subprocess
 import sys
 
-VDESK = sys.argv[1]
-ADDRESS = "\0vdesk-host-%d" % os.getuid()
-# The vdesk.user label, made like the CLI does from the login name
+RAVEN = sys.argv[1]
+ADDRESS = "\0raven-host-%d" % os.getuid()
+# The raven.user label, made like the CLI does from the login name
 USER = re.sub(r"[^A-Za-z0-9_.-]", "_", pwd.getpwuid(os.getuid()).pw_name)
 UCRED = struct.Struct("3i")
 REQUEST = re.compile(r"(\d+) ([^\x00-\x1f\x7f]{1,200})")
@@ -38,7 +38,7 @@ def session_of(pid):
     if not m:
         return None
     r = subprocess.run(["docker", "inspect", "-f",
-                        '{{index .Config.Labels "vdesk.user"}} {{index .Config.Labels "vdesk.id"}}',
+                        '{{index .Config.Labels "raven.user"}} {{index .Config.Labels "raven.id"}}',
                         m.group(1) or m.group(2)], capture_output=True, text=True)
     owner, _, sid = r.stdout.strip().partition(" ")
     return sid if r.returncode == 0 and owner == USER else None
@@ -53,9 +53,9 @@ class Handler(socketserver.StreamRequestHandler):
             return self.reply("error: bad request")
         if session_of(pid) != m.group(1):
             return self.reply("error: permission denied")
-        r = subprocess.run([VDESK, "run", "-t", m.group(1), "@" + m.group(2)],
+        r = subprocess.run([RAVEN, "run", "-t", m.group(1), "@" + m.group(2)],
                            capture_output=True, text=True)
-        err = r.stderr.strip().removeprefix("vdesk: ")
+        err = r.stderr.strip().removeprefix("raven: ")
         self.reply("ok" if r.returncode == 0 else "error: " + (err or "failed"))
 
     def reply(self, msg):

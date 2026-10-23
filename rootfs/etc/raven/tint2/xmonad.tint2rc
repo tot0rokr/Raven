@@ -1,4 +1,4 @@
-# vdesk taskbar for xmonad: menu button, one group per workspace, clock.
+# raven taskbar for xmonad: menu button, one group per workspace, clock.
 # A session's ~/.config/tint2/tint2rc overrides this file.
 
 # Background 1: panel
@@ -45,10 +45,10 @@ disable_transparency = 1
 font_shadow = 0
 mouse_effects = 1
 
-# Button: vdesk menu (same as Alt+p)
+# Button: raven menu (same as Alt+p)
 button = new
 button_text = menu
-button_lclick_command = vdesk-launcher
+button_lclick_command = raven-launcher
 button_font = Noto Sans KR Bold 9
 button_font_color = #dddddd 100
 button_padding = 10 2

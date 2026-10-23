@@ -5,18 +5,18 @@
 pgrep -u "$(id -u)" -x tint2 >/dev/null && exit 0
 rc=${XDG_CONFIG_HOME:-$HOME/.config}/tint2/tint2rc
 if [ ! -f "$rc" ]; then
-    case "${VDESK_WM:-openbox}" in
-        xmonad) rc=/etc/vdesk/tint2/xmonad.tint2rc ;;
+    case "${RAVEN_WM:-openbox}" in
+        xmonad) rc=/etc/raven/tint2/xmonad.tint2rc ;;
         *) rc=/etc/xdg/tint2/tint2rc ;;
     esac
-    # Addon buttons (/etc/vdesk/panel.d/*.tint2rc) go after the default config.
+    # Addon buttons (/etc/raven/panel.d/*.tint2rc) go after the default config.
     # Each P in panel_items shows the next button, so add one P per button before the clock.
-    set -- /etc/vdesk/panel.d/*.tint2rc
+    set -- /etc/raven/panel.d/*.tint2rc
     if [ -f "$1" ]; then
         p=$(cat "$@" | grep -c '^button = new')
         p=$(printf "%${p}s" '' | tr ' ' P)
-        { sed "/^panel_items = /{ /C/ s/C/${p}C/; /C/! s/\$/$p/; }" "$rc"; cat "$@"; } > /tmp/vdesk-tint2rc
-        rc=/tmp/vdesk-tint2rc
+        { sed "/^panel_items = /{ /C/ s/C/${p}C/; /C/! s/\$/$p/; }" "$rc"; cat "$@"; } > /tmp/raven-tint2rc
+        rc=/tmp/raven-tint2rc
     fi
 fi
 exec tint2 -c "$rc"

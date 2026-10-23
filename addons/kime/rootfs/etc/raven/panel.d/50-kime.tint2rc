@@ -3,7 +3,7 @@
 button = new
 button_text = 한/A
 button_tooltip = 한/영 전환 (kime)
-button_lclick_command = vdesk-kime-toggle
+button_lclick_command = raven-kime-toggle
 button_font = Noto Sans KR Bold 9
 button_font_color = #dddddd 100
 button_padding = 10 2

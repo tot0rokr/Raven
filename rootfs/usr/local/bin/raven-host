@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Start a host entry ("LABEL = @COMMAND" in the host's menu.conf) on this session's display.
 
-usage: vdesk-host LABEL
+usage: raven-host LABEL
 """
 import os
 import socket
@@ -10,7 +10,7 @@ import sys
 
 
 def fail(msg):
-    msg = "vdesk-host: " + msg
+    msg = "raven-host: " + msg
     print(msg, file=sys.stderr)
     subprocess.run(["xmessage", "-center", "-timeout", "15", msg], stderr=subprocess.DEVNULL)
     sys.exit(1)
@@ -18,18 +18,18 @@ def fail(msg):
 
 def main():
     if len(sys.argv) != 2:
-        fail("usage: vdesk-host LABEL")
+        fail("usage: raven-host LABEL")
     # The relay belongs to the host user, whose uid differs from the session user's
-    host_uid = os.environ.get("VDESK_HOST_UID", "")
+    host_uid = os.environ.get("RAVEN_HOST_UID", "")
     if not host_uid.isdigit():
-        fail("VDESK_HOST_UID is not set; recreate the session with vdesk recreate")
+        fail("RAVEN_HOST_UID is not set; recreate the session with raven recreate")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(20)
     try:
-        sock.connect("\0vdesk-host-%s" % host_uid)
+        sock.connect("\0raven-host-%s" % host_uid)
     except OSError:
-        fail("host relay is not running. Run on the host: vdesk hostd start")
-    sock.sendall(("%s %s\n" % (os.environ.get("VDESK_ID", ""), sys.argv[1])).encode())
+        fail("host relay is not running. Run on the host: raven hostd start")
+    sock.sendall(("%s %s\n" % (os.environ.get("RAVEN_ID", ""), sys.argv[1])).encode())
     try:
         reply = sock.makefile().readline().strip()
     except OSError:

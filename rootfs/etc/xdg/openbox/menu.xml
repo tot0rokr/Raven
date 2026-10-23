@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
-  <!-- Generated on every open by vdesk-menu; see docs/menu.md -->
-  <menu id="root-menu" label="vdesk" execute="vdesk-menu" />
+  <!-- Generated on every open by raven-menu; see docs/menu.md -->
+  <menu id="root-menu" label="raven" execute="raven-menu" />
 </openbox_menu>

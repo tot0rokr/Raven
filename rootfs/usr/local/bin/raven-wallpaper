@@ -1,12 +1,12 @@
 #!/bin/sh
-# Paint the desktop background from ~/.config/vdesk. The session's own setting
-# (wallpaper.local.*) wins over the host-wide one copied in by vdesk (wallpaper.*).
+# Paint the desktop background from ~/.config/raven. The session's own setting
+# (wallpaper.local.*) wins over the host-wide one copied in by raven (wallpaper.*).
 # Settings files are "key=value" lines: type=image|color, mode=<xwallpaper mode>, color=<X color>.
 set -u
-dir=$HOME/.config/vdesk
+dir=$HOME/.config/raven
 mkdir -p "$dir"
 
-# The entrypoint and vdesk can run this at the same moment; whoever runs last reads the newest files
+# The entrypoint and raven can run this at the same moment; whoever runs last reads the newest files
 exec 9>"$dir/.wallpaper.lock"
 flock 9
 
@@ -38,7 +38,7 @@ if [ -n "$conf" ]; then
 else
     key=none
 fi
-current=$(xprop -root -notype _VDESK_WALLPAPER 2>/dev/null | sed -n 's/^_VDESK_WALLPAPER = "\(.*\)"$/\1/p')
+current=$(xprop -root -notype _RAVEN_WALLPAPER 2>/dev/null | sed -n 's/^_RAVEN_WALLPAPER = "\(.*\)"$/\1/p')
 if [ "$key" = "$current" ]; then
     [ -n "$conf" ] && [ "$(get "$conf" type)" = image ] || exit 0
     pgrep -u "$(id -u)" -x xwallpaper >/dev/null && exit 0
@@ -56,4 +56,4 @@ else
     # "Kill clients only once"), leaving the background at the size of that resize.
     xwallpaper --daemon --no-atoms "--$(get "$conf" mode)" "${conf%.conf}.img" 9>&-
 fi
-xprop -root -f _VDESK_WALLPAPER 8s -set _VDESK_WALLPAPER "$key"
+xprop -root -f _RAVEN_WALLPAPER 8s -set _RAVEN_WALLPAPER "$key"

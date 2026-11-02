@@ -1,0 +1,2 @@
+-r requirements.in
+daphne>=4.2,<4.3

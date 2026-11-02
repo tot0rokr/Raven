@@ -1,0 +1,130 @@
+{% load static %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>워크스페이스 · Raven</title>
+  <link rel="stylesheet" href="{% static 'style.css' %}">
+  <script type="module" src="{% static 'app.js' %}"></script>
+</head>
+<body class="workspace-page">
+  <header class="app-header">
+    <a class="wordmark" href="/" aria-label="Raven 워크스페이스">raven<span class="wordmark-dot" aria-hidden="true"></span></a>
+    <div class="account-controls">
+      <span class="account-name">{{ username }}</span>
+      <form id="logout-form" method="post" action="/logout/">
+        {% csrf_token %}
+        <button class="button-quiet" type="submit">로그아웃</button>
+      </form>
+    </div>
+  </header>
+  <main id="workspace" class="workspace">
+    <div class="workspace-heading">
+      <div>
+        <p class="eyebrow">YOUR WORKSPACE</p>
+        <h1>세션</h1>
+        <p class="muted">브라우저를 닫아도 작업은 계속됩니다.</p>
+      </div>
+      <div class="heading-actions">
+        <button id="refresh-sessions" class="button-secondary" type="button">새로고침</button>
+        <button id="new-session" class="button-primary" type="button">새 세션</button>
+      </div>
+    </div>
+    <p id="workspace-notice" class="notice notice-error" role="alert" hidden></p>
+    <section class="session-section" aria-labelledby="session-list-title">
+      <div class="section-caption">
+        <h2 id="session-list-title">내 데스크톱 <span id="session-count" class="count"></span></h2>
+        <span id="loading-status" class="muted" role="status">세션을 불러오는 중…</span>
+      </div>
+      <div id="session-list" class="session-list"></div>
+      <div id="empty-state" class="empty-state" hidden>
+        <div class="empty-screen" aria-hidden="true"><span></span></div>
+        <h2>아직 세션이 없습니다</h2>
+        <p class="muted">새 데스크톱을 만들고 브라우저에서 작업을 시작하세요.</p>
+        <button id="empty-new-session" class="button-primary" type="button">새 세션 만들기</button>
+      </div>
+    </section>
+  </main>
+  <section id="viewer" class="viewer" aria-labelledby="viewer-title" hidden>
+    <div class="viewer-toolbar">
+      <div class="viewer-title-group">
+        <button id="close-viewer" class="button-secondary" type="button">세션 목록</button>
+        <h2 id="viewer-title"></h2>
+        <span id="connection-status" class="connection-status" role="status">연결 중…</span>
+      </div>
+      <div class="viewer-controls">
+        <label class="checkbox-label"><input id="resize-desktop" type="checkbox" checked> 화면 크기 맞춤</label>
+        <button id="send-ctrl-alt-del" class="button-quiet" type="button" disabled>Ctrl + Alt + Del</button>
+        <button id="fullscreen-viewer" class="button-secondary" type="button">전체 화면</button>
+        <button id="reconnect-viewer" class="button-primary" type="button" hidden>다시 연결</button>
+      </div>
+    </div>
+    <p id="viewer-notice" class="notice notice-error viewer-notice" role="alert" hidden></p>
+    <div id="desktop" class="desktop" tabindex="-1" aria-label="원격 데스크톱"></div>
+  </section>
+  <template id="session-template">
+    <article class="session-card">
+      <div class="session-summary">
+        <div class="session-name-line"><h3 class="session-name"></h3><span class="session-state"></span></div>
+        <p class="session-details"></p>
+        <p class="session-command"></p>
+      </div>
+      <div class="session-actions">
+        <button class="button-primary session-open" type="button">연결</button>
+        <button class="button-secondary" type="button" data-action="run">명령 실행</button>
+        <button class="button-quiet" type="button" data-action="rename">이름 변경</button>
+        <button class="button-quiet danger-text" type="button" data-action="delete">삭제</button>
+      </div>
+    </article>
+  </template>
+  <dialog id="create-dialog" aria-labelledby="create-title">
+    <form id="create-form" class="stack-form dialog-form">
+      <div class="dialog-heading"><h2 id="create-title">새 세션</h2></div>
+      <p id="create-error" class="notice notice-error" role="alert" hidden></p>
+      <label for="session-name">이름</label>
+      <input id="session-name" name="name" autocomplete="off" maxlength="64" pattern="[A-Za-z][A-Za-z0-9_.\-]{0,63}" placeholder="my-workspace" aria-describedby="name-help" required autofocus>
+      <p id="name-help" class="field-help">영문자로 시작하며 영문, 숫자, 점, 밑줄, 하이픈을 사용할 수 있습니다.</p>
+      <div class="form-columns">
+        <div><label for="session-wm">데스크톱</label><select id="session-wm" name="wm"><option value="xmonad">XMonad</option><option value="openbox">Openbox</option></select></div>
+        <div><label for="session-geometry">초기 화면 크기</label><select id="session-geometry" name="geometry"><option value="1600x900">1600 × 900</option><option value="1920x1080">1920 × 1080</option><option value="1280x720">1280 × 720</option><option value="2560x1440">2560 × 1440</option></select></div>
+      </div>
+      <label for="session-command">시작 명령</label>
+      <input id="session-command" name="command" class="command-input" autocomplete="off" spellcheck="false" value="xterm" maxlength="4096" required>
+      <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">만들고 연결</button></div>
+    </form>
+  </dialog>
+  <dialog id="rename-dialog" aria-labelledby="rename-title">
+    <form id="rename-form" class="stack-form dialog-form">
+      <h2 id="rename-title">세션 이름 변경</h2>
+      <p class="muted"><span id="rename-session-name"></span> 세션의 이름을 변경합니다.</p>
+      <p id="rename-error" class="notice notice-error" role="alert" hidden></p>
+      <label for="rename-name">새 이름</label>
+      <input id="rename-name" name="name" autocomplete="off" maxlength="64" pattern="[A-Za-z][A-Za-z0-9_.\-]{0,63}" required autofocus>
+      <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">저장</button></div>
+    </form>
+  </dialog>
+  <dialog id="run-dialog" aria-labelledby="run-title">
+    <form id="run-form" class="stack-form dialog-form">
+      <h2 id="run-title">세션에서 명령 실행</h2>
+      <p class="muted"><span id="run-session-name"></span> 세션 안에서 명령을 실행합니다.</p>
+      <p id="run-error" class="notice notice-error" role="alert" hidden></p>
+      <label for="run-command">명령</label>
+      <input id="run-command" name="command" class="command-input" autocomplete="off" spellcheck="false" placeholder="xterm" maxlength="4096" required autofocus>
+      <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">실행</button></div>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <form id="delete-form" class="stack-form dialog-form">
+      <h2 id="delete-title">세션을 삭제할까요?</h2>
+      <p id="delete-description"><strong id="delete-session-name"></strong> 세션을 종료하고 홈 볼륨의 파일을 영구 삭제합니다. 이 작업은 되돌릴 수 없습니다.</p>
+      <p id="delete-error" class="notice notice-error" role="alert" hidden></p>
+      <label for="delete-name">확인을 위해 위 세션 이름을 입력하세요.</label>
+      <input id="delete-name" name="name" autocomplete="off" spellcheck="false" required>
+      <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog autofocus>취소</button><button id="confirm-delete" type="button" class="button-danger">영구 삭제</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

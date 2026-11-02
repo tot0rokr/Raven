@@ -1,6 +1,6 @@
 # 설치와 준비
 
-Raven은 서버(Linux 호스트) 한 대와 클라이언트(X 서버가 있는 PC)로 동작한다. 서버에서 세션 컨테이너가 돌고, 클라이언트에는 뷰어 창만 뜬다. 사용법은 [usage.md](./usage.md).
+Raven은 서버(Linux 호스트) 한 대와 클라이언트로 동작한다. 서버에서 세션 컨테이너가 돌고, 클라이언트는 HTTPS 브라우저 또는 X11 뷰어로 접속한다. 브라우저 접속의 계정·인증서·포트·서버 자원은 [web.md](./web.md), CLI 사용법은 [usage.md](./usage.md)을 따른다. 아래 그림은 기존 X11 접속 경로다.
 
 ```
 client (Windows + VcXsrv)          server (Linux + Docker)
@@ -50,7 +50,7 @@ macOS(XQuartz)와 Linux 데스크톱 클라이언트, rootless Docker, 다른 �
 
 ### sshd
 
-`/etc/ssh/sshd_config`에서 X11 forwarding을 켠다. Ubuntu 기본값은 켜져 있다.
+X11 뷰어를 쓸 경우 `/etc/ssh/sshd_config`에서 X11 forwarding을 켠다. Ubuntu 기본값은 켜져 있다. HTTPS 브라우저 접속은 X11 forwarding이 필요 없으며 Raven 웹 계정은 기존 SSH 로그인 정책을 바꾸지 않는다.
 
 ```
 X11Forwarding yes
@@ -78,7 +78,8 @@ X11UseLocalhost yes
 ### 네트워크
 
 - 빌드할 때 인터넷이 필요하다: Docker Hub(`ubuntu:24.04`), Ubuntu apt 저장소, GitHub(Noto Sans KR 글꼴, kime `.deb`), packages.microsoft.com(Edge).
-- 실행 중에는 바깥에 여는 포트가 없다. VNC는 `127.0.0.1:15900`부터, X 화면은 host network namespace의 abstract socket(`@/tmp/.X11-unix/X100`부터)이고 MIT 쿠키를 건다. 방화벽 설정은 필요 없다.
+- 기본 X11 경로는 바깥에 여는 포트가 없다. VNC는 `127.0.0.1:15900`부터, X 화면은 host network namespace의 abstract socket(`@/tmp/.X11-unix/X100`부터)이고 MIT 쿠키를 건다.
+- 웹 경로는 기본적으로 `127.0.0.1:8443`의 HTTPS를 SSH 터널로 이용한다. `raven web start --listen`으로 외부 주소에 직접 열 때는 해당 포트의 네트워크 접근 정책과 TLS 인증서를 준비한다. 웹 이미지 빌드는 Docker Hub, PyPI, GitHub(noVNC)에 접근한다.
 
 ### 지역 설정
 
@@ -90,6 +91,8 @@ X11UseLocalhost yes
 세션 컨테이너는 `--restart unless-stopped`로 만들어진다. Docker 서비스가 부팅 때 뜨게 되어 있으면(`systemctl is-enabled docker`) 재부팅 뒤 세션도 다시 뜬다. 세션 안의 앱은 다시 시작된다.
 
 ## 클라이언트 준비
+
+브라우저 접속에는 VcXsrv·Xming·XQuartz가 필요 없다. [web.md](./web.md)의 HTTPS 설정을 따른다. 아래 항목은 X11 뷰어용이다.
 
 ### Windows
 
@@ -165,7 +168,9 @@ raven kill t
 
 ## Raven이 만들고 바꾸는 것
 
-Raven이 서버에 남기는 것은 아래가 전부다. `/etc` 같은 시스템 설정은 바꾸지 않는다.
+웹 기능을 켜면 별도 웹 이미지·컨테이너·인증 데이터 volume과 소유자 전용 호스트 중계가 추가된다. 정확한 이름·경로와 제거 범위는 [웹 서버 자원](./web.md#서버-자원과-제거)을 확인한다. 호스트 패키지와 sshd 설정은 변경하지 않는다.
+
+아래 표는 데스크톱 기능이 서버에 남기는 파일이다. `/etc` 같은 시스템 설정은 바꾸지 않는다.
 
 | 위치                               | 내용                                                                    | 만드는 때                                 |
 | ---------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------- |

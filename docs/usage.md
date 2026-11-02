@@ -6,6 +6,8 @@
 
 서버와 클라이언트에 필요한 것, 설치, 제거는 [install.md](./install.md).
 
+웹 접속은 [브라우저 접속](./web.md)을 따른다. `raven web init`으로 별도 단일 계정을 만들고 HTTPS에서 세션 생성·이름 변경·삭제·명령 실행과 화면 접속을 한다. 아래 준비는 X11 뷰어를 사용할 때만 필요하다.
+
 - 클라이언트에 X 서버를 띄운다. Windows는 VcXsrv를 권장한다. Xming 6.9도 되지만 뷰어 창 크기가 고정된다 ([뷰어](#뷰어)).
 - X11 forwarding을 켜고 서버에 접속한다.
   - OpenSSH: `ssh -Y user@server`. Windows OpenSSH는 먼저 `DISPLAY`를 정한다 (cmd: `set DISPLAY=127.0.0.1:0.0`, PowerShell: `$env:DISPLAY="127.0.0.1:0.0"`).
@@ -30,6 +32,7 @@
 | `raven menu`              | 메뉴 규칙 편집, 반영, 확인                                |
 | `raven home`              | 개인 설정 파일(`~/.config/raven/home`)을 세션 홈에 복사   |
 | `raven hostd`             | 호스트 중계 상태, 시작, 중지                              |
+| `raven web`               | HTTPS 웹 접속, 설정 저장, 상태 확인, 비밀번호 변경        |
 | `raven wallpaper`         | 배경화면 지정, 해제, 확인                                 |
 | `raven doctor`            | 서버 준비 상태 점검 (아무것도 바꾸지 않음)                |
 | `raven uninstall`         | 이 사용자의 세션, 홈, Raven 파일 제거                     |
@@ -74,7 +77,7 @@ raven a -d 0                           # 다른 뷰어를 끊고 attach
 ```
 
 - 뷰어 창을 닫으면 detach다. 세션 안의 앱은 계속 실행된다.
-- 한 세션에 뷰어 여러 개가 동시에 붙을 수 있다. `-d`는 나머지 뷰어를 끊는다.
+- 한 세션에 뷰어 여러 개가 동시에 붙을 수 있다. `-d`는 나머지 X11 뷰어를 끊으며 브라우저 연결에는 적용하지 않는다.
 - 멈춘 세션은 `attach`, `run`, `shell` 때 자동으로 켠다.
 
 ### 목록과 이름
@@ -90,7 +93,7 @@ ID   NAME             STATE    WM       DISPLAY  PORT   VIEWERS  CMD
 1    ob               exited   openbox  :101     15901  -        xterm
 ```
 
-- `VIEWERS`는 지금 붙어 있는 뷰어 수다. 멈춘 세션은 `-`.
+- `VIEWERS`는 지금 붙어 있는 X11 뷰어 수이며 브라우저 연결은 포함하지 않는다. 멈춘 세션은 `-`.
 - 창 관리자를 고를 수 있기 전에 만든 세션은 `WM`이 openbox다.
 
 ### 앱 실행과 셸

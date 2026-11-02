@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""Build, provision and run the single-account Raven web gateway."""
+
+import argparse
+import fcntl
+import http.client
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shlex
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import time
+from urllib.parse import urlsplit
+
+from raven_web_host import MAX_REQUEST, RequestError, private_directory
+
+SOURCE = Path(__file__).resolve().parent
+USER = re.sub(r"[^A-Za-z0-9_.-]", "_", pwd.getpwuid(os.getuid()).pw_name)
+IMAGE = os.environ.get("RAVEN_WEB_IMAGE", "raven-web:latest")
+INSTANCE = os.environ.get("RAVEN_WEB_INSTANCE", "web")
+NAME = f"raven-{USER}-{INSTANCE}"
+VOLUME = NAME + "-data"
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"raven-web-{os.getuid()}-{INSTANCE}"
+ADDRESS = RUNTIME / "broker.sock"
+LABEL = "raven.web.uid"
+START_TIMEOUT = 15
+
+
+def docker(*arguments, capture=True, check=True, input=None):
+    try:
+        return subprocess.run(["docker", *arguments], check=check, text=True,
+                              capture_output=capture, input=input)
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or "").strip()
+        if not detail:
+            detail = f"Docker {arguments[0]} failed (exit {error.returncode})"
+        raise RequestError(detail) from error
+
+
+def inspect_owned(kind, name):
+    result = docker(kind, "inspect", name, check=False)
+    if result.returncode:
+        if re.search(r"no such (container|volume|object)", result.stderr, re.IGNORECASE):
+            return None
+        raise RequestError(result.stderr.strip() or f"Docker {kind} inspection failed")
+    item = json.loads(result.stdout)[0]
+    labels = item.get("Labels") if kind == "volume" else item["Config"].get("Labels")
+    if (labels or {}).get(LABEL) != str(os.getuid()):
+        raise RequestError(f"Refusing to use {name}: owner label does not match")
+    return item
+
+
+def container_args(readonly=False):
+    return ["--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--pids-limit", "256",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount",
+            f"type=volume,src={VOLUME},dst=/data" + (",readonly" if readonly else "")]
+
+
+def configuration(action="read", config=None, revision=None):
+    payload = None if config is None else json.dumps({"config": config, "revision": revision})
+    result = docker("run", "--rm", "-i", "--pull", "never", "--network", "none",
+                    *container_args(readonly=action != "write"), "--mount",
+                    f"type=bind,src={SOURCE / 'web/raven_web/service_config.py'},dst=/app/raven_config.py,readonly",
+                    IMAGE, "python", "/app/raven_config.py", action, input=payload)
+    result = json.loads(result.stdout)
+    if result.get("warning"):
+        print(f"raven web: {result['warning']}", file=sys.stderr)
+    return result
+
+
+def binding(current):
+    if not current:
+        return None
+    ports = current["HostConfig"].get("PortBindings") or {}
+    published = ports.get("8443/tcp") or []
+    if len(published) != 1:
+        raise RequestError("Expected exactly one published HTTPS port; inspect the gateway container")
+    return {"listen": published[0]["HostIp"] or "0.0.0.0", "port": int(published[0]["HostPort"])}
+
+
+def origin_snapshot(current):
+    for entry in current["Config"].get("Env", []):
+        if entry.startswith("RAVEN_WEB_ORIGIN="):
+            return entry.split("=", 1)[1]
+    return None
+
+
+def running_origin(current, config):
+    return origin_snapshot(current) or config["origin"]
+
+
+def desired_configuration(saved, current, args=None):
+    config = {"listen": "127.0.0.1", "port": 8443}
+    if current:
+        if origin_snapshot(current) is None or current["State"]["Running"]:
+            config.update(binding(current) or {})
+    config.update(saved)
+    if args:
+        for key in ("listen", "port", "origin", "ssh_target", "ssh_port"):
+            value = getattr(args, key, None)
+            if value is not None:
+                config[key] = str(value) if key == "listen" else value
+    return config
+
+
+def check_port(config, current):
+    requested = {key: config[key] for key in ("listen", "port")}
+    if current and current["State"]["Running"] and binding(current) == requested:
+        return
+    address = ipaddress.ip_address(config["listen"])
+    family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if address.version == 6:
+            probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        try:
+            probe.bind((str(address), config["port"]))
+        except OSError as error:
+            raise RequestError(f"Cannot bind {address}:{config['port']}: {error.strerror}") from error
+
+
+def configure(args):
+    require_data()
+    current = inspect_owned("container", NAME)
+    saved = configuration()
+    config = desired_configuration(saved["config"], current, args)
+    if (current and current["State"]["Running"] and origin_snapshot(current) is None
+            and config["origin"] != saved["config"]["origin"]):
+        raise RequestError("Stop the legacy gateway before changing its origin: raven web stop, "
+                           "then raven web configure, then raven web start")
+    configuration("validate", config, saved["revision"])
+    check_port(config, current)
+    result = configuration("write", config, saved["revision"])
+    print(f"Saved: {config['listen']}:{config['port']}, browser {config['origin']}")
+    if result.get("backup"):
+        print(f"Previous configuration: {VOLUME}:{result['backup']}")
+    if current and current["State"]["Running"]:
+        print("The running gateway is unchanged. Apply with raven web stop, then raven web start.")
+
+
+def wait_for_https(config, certificate):
+    origin = urlsplit(config["origin"])
+    address = ipaddress.ip_address(config["listen"])
+    host = ("::1" if address.version == 6 else "127.0.0.1") if address.is_unspecified else str(address)
+    context = ssl.create_default_context(cadata=certificate)
+    deadline = time.monotonic() + START_TIMEOUT
+    detail = "no response"
+    while time.monotonic() < deadline:
+        current = inspect_owned("container", NAME)
+        if not current or not current["State"]["Running"] or current["State"].get("Restarting"):
+            raise RequestError(f"Gateway exited during startup; inspect docker logs {NAME}")
+        try:
+            with socket.create_connection((host, config["port"]), timeout=1) as connection:
+                with context.wrap_socket(connection, server_hostname=origin.hostname) as secure:
+                    secure.sendall(f"GET /login/ HTTP/1.1\r\nHost: {origin.netloc}\r\nConnection: close\r\n\r\n".encode())
+                    response = http.client.HTTPResponse(secure)
+                    response.begin()
+                    if response.status == 200:
+                        return
+                    detail = f"HTTP {response.status}"
+        except (OSError, http.client.HTTPException) as error:
+            detail = str(error)
+        time.sleep(0.2)
+    raise RequestError(f"Gateway HTTPS startup failed: {detail}; inspect docker logs {NAME}")
+
+
+def broker_request(action):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(5)
+        connection.connect(str(ADDRESS))
+        connection.sendall(json.dumps({"action": action}).encode() + b"\n")
+        with connection.makefile("rb") as stream:
+            result = json.loads(stream.readline(MAX_REQUEST))
+    if not result.get("ok"):
+        raise RequestError("Broker request failed")
+    return result.get("data")
+
+
+def broker_status():
+    try:
+        return broker_request("ping")
+    except (FileNotFoundError, ConnectionRefusedError):
+        return None
+
+
+def start_broker():
+    current = broker_status()
+    if current:
+        if current["raven"] != str(SOURCE / "raven"):
+            raise RequestError("Broker uses another checkout; run raven web stop first")
+        return
+    if ADDRESS.exists():
+        info = ADDRESS.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+            raise RequestError("Refusing to replace an unknown broker socket")
+        ADDRESS.unlink()
+    descriptor = os.open(RUNTIME / "broker.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "ab") as log:
+        process = subprocess.Popen([sys.executable, str(SOURCE / "raven_web_host.py"),
+                                    str(SOURCE / "raven"), str(ADDRESS)],
+                                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    deadline = time.monotonic() + START_TIMEOUT
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        if broker_status():
+            return
+        time.sleep(0.1)
+    raise RequestError(f"Broker did not start; inspect {RUNTIME / 'broker.log'}")
+
+
+def stop_broker():
+    if not broker_status():
+        return
+    broker_request("shutdown")
+    deadline = time.monotonic() + START_TIMEOUT
+    while ADDRESS.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if ADDRESS.exists():
+        raise RequestError("Broker did not stop")
+
+
+def initialize(args):
+    current = inspect_owned("container", NAME)
+    if current and current["State"]["Running"]:
+        raise RequestError("Stop the web gateway before provisioning")
+    if not inspect_owned("volume", VOLUME):
+        docker("volume", "create", "--label", f"{LABEL}={os.getuid()}", VOLUME)
+        docker("run", "--rm", "--network", "none", "--user", "0", "--read-only",
+               "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+               "--security-opt", "no-new-privileges", "--mount", f"type=volume,src={VOLUME},dst=/data",
+               IMAGE, "python", "manage.py", "init-data", "--uid", str(os.getuid()), "--gid", str(os.getgid()))
+    docker("run", "--rm", "-it", "--network", "none", *container_args(), IMAGE,
+           "python", "manage.py", "setup", "--username", args.username, "--origin", args.origin,
+           capture=False)
+
+
+def require_data():
+    if not inspect_owned("volume", VOLUME):
+        raise RequestError("Run raven web init --username NAME first")
+
+
+def password(args):
+    require_data()
+    docker("run", "--rm", "-it", "--network", "none", *container_args(), IMAGE,
+           "python", "manage.py", "change-password", "--username", args.username, capture=False)
+
+
+def start(args):
+    require_data()
+    current = inspect_owned("container", NAME)
+    saved = configuration()
+    config = desired_configuration(saved["config"], current, args)
+    configuration("validate", config, saved["revision"])
+    if current and current["State"]["Running"]:
+        actual = {**binding(current), "origin": running_origin(current, saved["config"])}
+        if any(config[key] != value for key, value in actual.items()):
+            raise RequestError("The gateway is running with different settings; run raven web stop first")
+        start_broker()
+        wait_for_https(config, saved["certificate"])
+        configuration("write", config, saved["revision"])
+        print(f"Web gateway is running: {NAME}")
+        return
+    check_port(config, current)
+    start_broker()
+    previous_name = None
+    if current:
+        previous_name = NAME + "-previous-" + current["Id"][:12]
+        docker("container", "rename", NAME, previous_name)
+    address = ipaddress.ip_address(config["listen"])
+    published = f"[{address}]" if address.version == 6 else str(address)
+    try:
+        docker("run", "-d", "--name", NAME, "--init", "--restart", "unless-stopped",
+               "--label", f"{LABEL}={os.getuid()}", "--network", "bridge",
+               "--publish", f"{published}:{config['port']}:8443", *container_args(),
+               "--mount", f"type=bind,src={RUNTIME},dst=/run/raven,readonly",
+               "--env", "RAVEN_WEB_BROKER=/run/raven/broker.sock",
+               "--env", f"RAVEN_WEB_ORIGIN={config['origin']}", IMAGE)
+        wait_for_https(config, saved["certificate"])
+        configuration("write", config, saved["revision"])
+    except (RequestError, OSError, ValueError):
+        failed = inspect_owned("container", NAME)
+        if failed:
+            docker("container", "stop", "--time", "10", NAME, check=False)
+        if previous_name:
+            if failed:
+                failed_name = NAME + "-failed-" + failed["Id"][:12]
+                docker("container", "rename", NAME, failed_name)
+                print(f"Failed gateway retained for inspection: docker logs {failed_name}", file=sys.stderr)
+            docker("container", "rename", previous_name, NAME)
+            print("Previous stopped gateway restored; saved settings unchanged.", file=sys.stderr)
+        raise
+    if previous_name:
+        docker("container", "rm", previous_name)
+    print(f"Web gateway started: {NAME}, HTTPS port {config['listen']}:{config['port']}")
+    print(f"Browser URL: {config['origin']}")
+
+
+def stop():
+    current = inspect_owned("container", NAME)
+    if current and current["State"]["Running"]:
+        docker("container", "stop", "--time", "10", NAME)
+    stop_broker()
+    print("Web gateway stopped; desktop sessions are still running.")
+
+
+def status():
+    current = inspect_owned("container", NAME)
+    print(f"Gateway: {current['State']['Status'] if current else 'not created'}")
+    if current:
+        state = current["State"]
+        if state.get("Error"):
+            print(f"Gateway error: {state['Error']}")
+        if state.get("Status") in ("exited", "dead"):
+            print(f"Gateway exit code: {state.get('ExitCode')}")
+    try:
+        broker = broker_status()
+        print(f"Broker: {'running' if broker else 'stopped'}")
+    except (OSError, ValueError, RequestError) as error:
+        print(f"Broker: unavailable ({error})")
+    print(f"Server hostname: {socket.gethostname()} (not a verified SSH destination)")
+    print(f"Data volume: {VOLUME}")
+    print(f"Broker log: {RUNTIME / 'broker.log'}")
+    if current:
+        print(f"Image: {current['Config']['Image']} ({current['Image']})")
+        print(f"Gateway log: docker logs {NAME}")
+        actual = binding(current)
+        label = "Active" if current["State"]["Running"] else "Last container"
+        print(f"{label} listen: {actual['listen']}:{actual['port']} -> container HTTPS 8443")
+    if not inspect_owned("volume", VOLUME):
+        print("Configuration: not initialized; run raven web init --username NAME")
+        return
+    try:
+        saved = configuration()["config"]
+    except RequestError as error:
+        print(f"Configuration: unavailable ({error})")
+        return
+    desired = desired_configuration(saved, current)
+    source = "saved" if "listen" in saved and "port" in saved else "legacy container/default; not yet saved"
+    print(f"Next start ({source}): {desired['listen']}:{desired['port']}, {desired['origin']}")
+    effective = desired
+    if current and current["State"]["Running"]:
+        effective = {**desired, **binding(current), "origin": running_origin(current, saved)}
+        if any(effective[key] != desired[key] for key in ("listen", "port", "origin")):
+            print("Pending settings: run raven web stop, then raven web start to apply")
+    print(f"Browser URL ({'active' if current and current['State']['Running'] else 'next start'}): {effective['origin']}")
+    print_connection(effective)
+
+
+def print_connection(config):
+    target = config.get("ssh_target")
+    print(f"SSH destination: {target or 'not configured; use raven web configure --ssh-target USER@HOST'}")
+    if target:
+        user, separator, host = target.rpartition("@")
+        if host.startswith("[") and host.endswith("]"):
+            target = user + separator + host[1:-1]
+    origin = urlsplit(config["origin"])
+    try:
+        local_browser = ipaddress.ip_address(origin.hostname).is_loopback
+    except ValueError:
+        local_browser = origin.hostname == "localhost"
+    if not local_browser:
+        print("Access: direct HTTPS; check DNS and network access for the browser URL")
+        return
+    address = ipaddress.ip_address(config["listen"])
+    host = ("::1" if address.version == 6 else "127.0.0.1") if address.is_unspecified else str(address)
+    destination = f"[{host}]" if ":" in host else host
+    client_host = "127.0.0.1" if origin.hostname == "localhost" else origin.hostname
+    client_bind = f"[{client_host}]" if ":" in client_host else client_host
+    command = ["ssh", "-N", "-o", "ExitOnForwardFailure=yes"]
+    if config.get("ssh_port"):
+        command.extend(["-p", str(config["ssh_port"])])
+    command.extend(["-L", f"{client_bind}:{origin.port or 443}:{destination}:{config['port']}", target or "USER@HOST"])
+    print(f"SSH tunnel{' template' if not target else ''} (run on the client PC): {shlex.join(command)}")
+
+
+def arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="action", required=True)
+    commands.add_parser("build", help="build the separate web image")
+    setup = commands.add_parser("init", help="create the single account and HTTPS certificate")
+    setup.add_argument("--username", required=True)
+    setup.add_argument("--origin", default="https://localhost:8443")
+    launch = commands.add_parser("start", help="start the private broker and HTTPS gateway")
+    configure_parser = commands.add_parser("configure", help="save validated settings for the next start")
+    for command in (launch, configure_parser):
+        command.add_argument("--listen", type=ipaddress.ip_address)
+        command.add_argument("--port", type=int)
+        command.add_argument("--origin")
+        command.add_argument("--ssh-target", help="SSH destination used in the printed tunnel command")
+        command.add_argument("--ssh-port", type=int, help="SSH port used in the printed tunnel command")
+    commands.add_parser("stop", help="stop web access without stopping desktop sessions")
+    commands.add_parser("status", help="show gateway and broker status")
+    change = commands.add_parser("password", help="change the account password and revoke logins")
+    change.add_argument("--username", required=True)
+    commands.add_parser("certificate", help="print the public HTTPS certificate")
+    return parser.parse_args()
+
+
+def main():
+    args = arguments()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", INSTANCE):
+        raise RequestError("RAVEN_WEB_INSTANCE must start with a letter and use lowercase letters, digits or hyphens")
+    if os.getuid() == 0:
+        raise RequestError("Run Raven web as your normal host account")
+    os.umask(0o077)
+    if args.action == "build":
+        docker("build", "-f", str(SOURCE / "web/Dockerfile"), "-t", IMAGE, str(SOURCE), capture=False)
+        return
+    if getattr(args, "port", None) is not None and not 1024 <= args.port <= 65535:
+        raise RequestError("Port must be between 1024 and 65535")
+    current = inspect_owned("container", NAME)
+    global RUNTIME, ADDRESS
+    if current:
+        mounts = [item["Source"] for item in current.get("Mounts", [])
+                  if item["Destination"] == "/run/raven" and item["Type"] == "bind"]
+        if mounts:
+            RUNTIME = Path(mounts[0])
+            ADDRESS = RUNTIME / "broker.sock"
+    if args.action == "status":
+        status()
+        return
+    private_directory(RUNTIME)
+    descriptor = os.open(RUNTIME / "manager.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.action == "init":
+            initialize(args)
+        elif args.action == "start":
+            start(args)
+        elif args.action == "configure":
+            configure(args)
+        elif args.action == "stop":
+            stop()
+        elif args.action == "password":
+            password(args)
+        elif args.action == "certificate":
+            require_data()
+            docker("run", "--rm", "--network", "none", *container_args(),
+                   IMAGE, "cat", "/data/tls.crt", capture=False)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RequestError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"raven web: {error}", file=sys.stderr)
+        sys.exit(1)

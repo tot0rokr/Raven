@@ -1,5 +1,5 @@
 #!/bin/sh
-# tmux-like persistent X desktops: Xvnc sessions in Docker, viewed over X11.
+# tmux-like persistent X desktops: Xvnc sessions in Docker, viewed over X11 or HTTPS.
 set -eu
 
 self=$(readlink -f "$0")
@@ -34,6 +34,7 @@ usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        raven menu edit | show [-t TARGET] | sync
        raven home sync [-t TARGET]                     copy ~/.config/raven/home into running sessions
        raven hostd [status | start | stop]             host relay for "LABEL = @COMMAND" menu entries
+       raven web COMMAND [OPTIONS]                    HTTPS/noVNC gateway (web --help for commands)
        raven wallpaper set [-t TARGET] [-m MODE] FILE | color [-t TARGET] '#rrggbb' | clear [-t TARGET] | show
        raven doctor                                    check what the server needs (read only)
        raven uninstall [-y] [-n] [--config] [--images] remove this user's sessions, homes and raven files
@@ -1140,6 +1141,7 @@ case "$1" in
     menu) shift; cmd_menu "$@" ;;
     home) shift; cmd_home "$@" ;;
     hostd) shift; cmd_hostd "$@" ;;
+    web) shift; exec python3 "$srcdir/raven-web" "$@" ;;
     wallpaper) shift; cmd_wallpaper "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     uninstall) shift; cmd_uninstall "$@" ;;

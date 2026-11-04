@@ -100,6 +100,7 @@ def verify_private_socket(environment, runtime):
         "\nraise SystemExit('Another UID could access the broker')"
     )
     run(["docker", "run", "--rm", "--network", "none", "--user", "65534:65534",
+         "--memory", "128m", "--memory-swap", "128m", "--cpus", "1", "--pids-limit", "32",
          "--mount", f"type=bind,src={runtime},dst=/broker,readonly",
          WEB_IMAGE, "python", "-c", probe], environment)
 
@@ -203,6 +204,7 @@ def main():
         browser_image = environment.get("RAVEN_WEB_BROWSER_IMAGE")
         if browser_image:
             browser = run(["docker", "run", "--rm", "-i", "--init", "--network", "host",
+                           "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
                            "--user", f"{os.getuid()}:{os.getgid()}", "--security-opt", "seccomp=unconfined",
                            "--shm-size", "1g", "--env", "HOME=/tmp", "--read-only",
                            "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m",

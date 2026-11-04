@@ -9,9 +9,10 @@ WORKDIR /app
 COPY web/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY web /app
-COPY --from=novnc /tmp/noVNC-1.7.0/core /app/static/novnc/core
-COPY --from=novnc /tmp/noVNC-1.7.0/vendor /app/static/novnc/vendor
-COPY --from=novnc /tmp/noVNC-1.7.0/LICENSE.txt /app/static/novnc/LICENSE.txt
+COPY --from=novnc /tmp/noVNC-1.7.0/core /app/static/novnc-1.7.0-raven1/core
+COPY --from=novnc /tmp/noVNC-1.7.0/vendor /app/static/novnc-1.7.0-raven1/vendor
+COPY --from=novnc /tmp/noVNC-1.7.0/LICENSE.txt /app/static/novnc-1.7.0-raven1/LICENSE.txt
+COPY web/novnc/browser.js /app/static/novnc-1.7.0-raven1/core/util/browser.js
 
 FROM backend AS test
 RUN pip install --no-cache-dir --require-hashes -r requirements-test.txt

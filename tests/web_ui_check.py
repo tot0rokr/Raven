@@ -20,11 +20,13 @@ print(render_to_string('index.html', {'username': 'preview', 'csrf_token': 'ui-f
 """
 page = subprocess.run(
     ["docker", "run", "--rm", "--network", "none", "--read-only", "--user", f"{os.getuid()}:{os.getgid()}",
+     "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
      "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", web_image, "python", "-c", render],
     capture_output=True, check=True, timeout=60,
 )
 result = subprocess.run(
     ["docker", "run", "--rm", "-i", "--init", "--network", "none", "--read-only",
+     "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
      "--user", f"{os.getuid()}:{os.getgid()}", "--security-opt", "seccomp=unconfined",
      "--shm-size", "1g", "--env", "HOME=/tmp", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m",
      "--mount", f"type=bind,src={source},dst=/source,readonly",

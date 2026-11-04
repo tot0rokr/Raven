@@ -122,6 +122,8 @@ raven web status
 
 ## 화면 사용
 
+- 모바일 Chrome에서도 로그인 후 세션 목록과 데스크톱 화면을 연다. SSH 터널은 같은 휴대폰의 Termux에서 유지하고 브라우저 주소를 설정된 origin과 맞춘다.
+- 목록은 화면 모듈과 독립적으로 불러온다. 브라우저의 선택적 영상 지원 검사가 2초 안에 끝나지 않으면 일반 VNC 인코딩으로 진행한다. 화면 모듈 파일을 10초 안에 불러오지 못하면 다시 연결하도록 안내한다.
 - 로그인 후 세션의 연결 버튼을 누른다. 중지된 세션은 기존 CLI의 접속 절차로 시작한다.
 - 화면 크기 맞춤을 켜면 데스크톱 해상도가 브라우저 영역을 따라 바뀐다. 같은 세션을 보는 다른 뷰어에도 반영된다.
 - 전체 화면, Ctrl + Alt + Del, 연결 종료 후 재연결을 지원한다.
@@ -227,6 +229,8 @@ python3 tests/web_e2e.py
 화면 통합 시험에는 기존 `raven:latest` 세션 이미지가 필요하다. 서로 다른 서버·브라우저 포트를 로컬 TCP 전달기로 연결해 HTTPS 로그인과 WSS/RFB 화면 수신을 확인한다. 이는 실제 접속 PC의 SSH 인증 시험과 구분한다. 웹 서비스 stop/start 후 인증서와 데스크톱 ID가 유지되는지, HTTPS API로 별도 시험 세션을 생성·변경·삭제하고 명령이 시험 컨테이너 안에서 실행되는지 확인한다. 화면 캡처는 출력에 나온 임시 디렉터리에 남긴다. `RAVEN_WEB_BROWSER_IMAGE=headless-browser:1.63.0`을 지정하면 로그인 전 화면과 noVNC JavaScript 로딩도 브라우저에서 검사한다. 브라우저 자동 로그인은 수행하지 않는다.
 
 `python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
+
+`python3 tests/web_module_loading.py`는 실제 noVNC module graph에 WebCodecs API 누락·예외·미완료 상태를 주입한다. 목록을 먼저 표시하는지, 모듈 로딩이 제한 시간 안에 완료되는지, decoder가 정리되는지와 정상 H.264 지원을 검사한다. 시험용 HTML·API 응답을 사용하며 실제 로그인을 수행하지 않는다. 모바일 크기의 Chromium 시험이며 실제 Android 기기의 확인을 대신하지 않는다. 로컬 호환성 수정의 범위는 [noVNC 브라우저 검사](../web/novnc/README.md)에 기록한다.
 
 메모리 문제는 다음 도구로 재현한다. 시험용 세션 생성은 동시에 실행하지 않는다. Linux cgroup v2와 `/proc` 정보를 사용하며 소유권 때문에 읽을 수 없는 FD 수는 개별 프로세스 기록에서 null로 남긴다.
 

@@ -17,7 +17,7 @@ with sync_playwright() as playwright:
     assert response.status == 200
     assert page.get_by_label("아이디").is_visible()
     assert page.get_by_label("패스워드").is_visible()
-    assert page.evaluate("async () => typeof (await import('/static/novnc/core/rfb.js')).default") == "function"
+    assert page.evaluate("async () => typeof (await import('/static/novnc-1.7.0-raven1/core/rfb.js')).default") == "function"
     output = Path(options["output"])
     page.screenshot(path=str(output / "login-desktop.png"))
     page.set_viewport_size({"width": 390, "height": 844})

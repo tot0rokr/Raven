@@ -1,4 +1,18 @@
-import RFB from "/static/novnc/core/rfb.js";
+const VIEWER_MODULE_TIMEOUT_MS = 10000;
+
+async function loadViewerModule() {
+  let timer;
+  try {
+    return await Promise.race([
+      import("/static/novnc-1.7.0-raven1/core/rfb.js"),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("화면 준비 시간이 초과되었습니다. 다시 연결해 주세요.")), VIEWER_MODULE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const element = (id) => document.getElementById(id);
 const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
@@ -125,6 +139,8 @@ async function openSession(session) {
   notice("viewer-notice", "");
   setConnectionStatus("연결 중…");
   try {
+    const { default: RFB } = await loadViewerModule();
+    if (attempt !== connectionAttempt) return;
     const data = await api(sessionPath(session.id, "open"), "POST");
     if (attempt !== connectionAttempt) return;
     const url = new URL(data.websocket, window.location.origin);

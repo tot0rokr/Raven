@@ -53,7 +53,7 @@ def serve(route):
         asset = SOURCE / "web" / "static" / Path(path).name
         route.fulfill(content_type=assets[path], body=asset.read_text())
         return
-    if path == "/static/novnc/core/rfb.js":
+    if path == "/static/novnc-1.7.0-raven1/core/rfb.js":
         route.fulfill(content_type="text/javascript", body=RFB_FIXTURE)
         return
     if path == "/favicon.ico":

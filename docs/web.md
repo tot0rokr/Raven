@@ -227,3 +227,9 @@ python3 tests/web_e2e.py
 화면 통합 시험에는 기존 `raven:latest` 세션 이미지가 필요하다. 서로 다른 서버·브라우저 포트를 로컬 TCP 전달기로 연결해 HTTPS 로그인과 WSS/RFB 화면 수신을 확인한다. 이는 실제 접속 PC의 SSH 인증 시험과 구분한다. 웹 서비스 stop/start 후 인증서와 데스크톱 ID가 유지되는지, HTTPS API로 별도 시험 세션을 생성·변경·삭제하고 명령이 시험 컨테이너 안에서 실행되는지 확인한다. 화면 캡처는 출력에 나온 임시 디렉터리에 남긴다. `RAVEN_WEB_BROWSER_IMAGE=headless-browser:1.63.0`을 지정하면 로그인 전 화면과 noVNC JavaScript 로딩도 브라우저에서 검사한다. 브라우저 자동 로그인은 수행하지 않는다.
 
 `python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
+
+메모리 문제는 다음 도구로 재현한다. 시험용 세션 생성은 동시에 실행하지 않는다. Linux cgroup v2와 `/proc` 정보를 사용하며 소유권 때문에 읽을 수 없는 FD 수는 개별 프로세스 기록에서 null로 남긴다.
+
+- `python3 tests/web_memory_probe.py`: 고정된 기존 웹 이미지에서 연결·해제 100회, 동시 viewer 8개, 느린 수신자 15초를 시험하고 RSS·FD·thread·OOM 지표를 출력 경로의 `metrics.json`에 저장한다. `--loops 0`은 반복 연결을 생략한다. 동시 burst 접속이 거부되면 그 오류를 기록하고 연결을 하나씩 연 상태를 별도로 측정한다. 두 결과를 같은 성공으로 해석하지 않는다. 시험 종료 후 생성한 게이트웨이·데스크톱만 정리하고 기존 호스트 앱 중계는 유지한다.
+- `python3 tests/desktop_memory_probe.py`: 새 시험 데스크톱에서 800×600과 1920×1080 사이의 resize를 100회 반복한다. `--wallpaper-session ID`를 명시하면 본인 해당 세션의 배경화면 이미지 파일만 읽어 시험 세션에 복사하고 같은 비교를 추가한다. 원본 세션의 해상도·파일은 변경하지 않는다.
+- `tests.probe_accept_disconnect.AcceptDisconnectProbe.test_aborted_accept_does_not_retain_connection`: Docker test 이미지에서 이 이름을 명시해 실행하는 ASGI 경계 시험이다. WebSocket 승인 시 전송 계층 예외를 발생시켜 연결 registry와 socket·FD가 남는지 기록한다. 실제 데스크톱이나 브라우저 계정을 사용하지 않는다.

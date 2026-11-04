@@ -17,6 +17,9 @@ default_cmd=xterm
 default_geometry=1600x900
 default_addons=edge
 default_wm=${RAVEN_WM:-xmonad}
+session_memory=2g
+session_cpus=2
+session_pids=512
 
 usage() {
     cat <<'EOF'
@@ -308,6 +311,8 @@ run_container() {
     shm=$(docker image inspect -f '{{index .Config.Labels "raven.shm-size"}}' "$image")
     uid=$(docker image inspect -f '{{index .Config.Labels "raven.uid"}}' "$image")
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
+    set -- "$@" --memory "$session_memory" --memory-swap "$session_memory" \
+        --cpus "$session_cpus" --pids-limit "$session_pids"
     [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
     [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
     # The session user is not the host user. The host user's group lets it share ~/Downloads,

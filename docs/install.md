@@ -75,6 +75,8 @@ X11UseLocalhost yes
 
 이미지 태그(`RAVEN_IMAGE`)를 사용자별로 나누면 그만큼 이미지가 더 생긴다. 앞쪽 apt 레이어는 공유된다.
 
+데스크톱 컨테이너는 생성 시 각각 메모리 2GiB·CPU 2개·process/thread 512개, 웹 게이트웨이는 메모리 1GiB·CPU 1개·process/thread 256개로 제한한다. 컨테이너의 swap 사용은 차단한다. 세션 수에 따라 전체 허용량이 증가하므로 호스트와 다른 서비스에 필요한 여유를 남긴다. [기존 세션의 제한 적용](./usage.md#재시작과-보존), [웹 자원 제한](./web.md#자원-제한)을 참고한다.
+
 ### 네트워크
 
 - 빌드할 때 인터넷이 필요하다: Docker Hub(`ubuntu:24.04`), Ubuntu apt 저장소, GitHub(Noto Sans KR 글꼴, kime `.deb`), packages.microsoft.com(Edge).

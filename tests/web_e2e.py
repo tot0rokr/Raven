@@ -159,8 +159,22 @@ def main():
         provision(environment, origin, password)
         certificate = run([str(SOURCE / "raven"), "web", "certificate"], environment).stdout.decode()
         run([str(SOURCE / "raven"), "web", "start", "--port", str(port)], environment)
+        gateway_id = run(["docker", "inspect", "--format", "{{.Id}}", gateway], environment).stdout
+        run(["docker", "update", "--memory", "1536m", "--memory-swap", "1536m", "--cpus", "2", gateway], environment)
+        run([str(SOURCE / "raven"), "web", "start"], environment)
+        gateway_state = json.loads(run(["docker", "inspect", gateway], environment).stdout)[0]
+        assert gateway_state["HostConfig"]["Memory"] == 1024 ** 3
+        assert gateway_state["HostConfig"]["MemorySwap"] == 1024 ** 3
+        assert gateway_state["HostConfig"]["NanoCpus"] == 1_000_000_000
+        assert gateway_state["Id"].encode() == gateway_id.strip()
         desktop_id = run(["docker", "inspect", "--format", "{{.Id}}",
                           f"raven-{owner}-{session_id}"], environment).stdout
+        desktop = json.loads(run(["docker", "inspect", f"raven-{owner}-{session_id}"], environment).stdout)[0]
+        resources = desktop["HostConfig"]
+        assert resources["Memory"] == 2 * 1024 ** 3
+        assert resources["MemorySwap"] == resources["Memory"]
+        assert resources["NanoCpus"] == 2_000_000_000
+        assert resources["PidsLimit"] == 512
         run([str(SOURCE / "raven"), "web", "stop"], environment)
         run([str(SOURCE / "raven"), "web", "start"], environment)
         assert run([str(SOURCE / "raven"), "web", "certificate"], environment).stdout.decode() == certificate
@@ -175,6 +189,7 @@ def main():
                    "certificate": certificate, "session_id": session_id, "output": "/output/desktop.png",
                    "management_name": "web-manage-" + suffix}
         client = run(["docker", "run", "--rm", "-i", "--network", "host",
+                      "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "128",
                       "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
                       "--security-opt", "no-new-privileges", "--mount", f"type=bind,src={scratch},dst=/output",
                       "--mount", f"type=bind,src={SOURCE / 'web/tests/live_client.py'},dst=/live_client.py,readonly",

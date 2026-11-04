@@ -165,6 +165,17 @@ raven web start
 - `status`의 현재 주소와 다음 시작 주소가 다르면 변경 적용이 대기 중이다. 컨테이너가 실행 중이어도 중계가 중지되어 있으면 세션 목록을 가져올 수 없다.
 - 웹 이미지를 갱신할 때는 `build`, `stop`, `start` 순서로 실행한다. 계정과 인증서는 유지된다.
 
+## 자원 제한
+
+- 웹 게이트웨이와 설정·계정 도우미 컨테이너의 메모리 상한은 1GiB, CPU 상한은 1개다. 게이트웨이의 process/thread 상한은 256개다.
+- `start`는 새 게이트웨이를 제한과 함께 만들고, 이미 실행 중인 게이트웨이에도 메모리·CPU 제한을 적용한다. 이미지 재빌드는 필요하지 않다.
+- `--memory-swap`을 `--memory`와 같게 설정하므로 컨테이너가 swap을 사용하지 못한다. [Docker 자원 제한](https://docs.docker.com/engine/containers/resource_constraints/#--memory-swap-details)의 의미를 따른다.
+- 메모리 상한은 동시에 수행되는 비밀번호 검증에 필요한 여유를 포함한다. 상한을 초과한 프로세스는 컨테이너 안에서 OOM 종료될 수 있다.
+- 데스크톱 컨테이너는 각각 메모리 2GiB·CPU 2개·process/thread 512개로 별도 제한한다. 기존 데스크톱에 적용하는 방법은 [세션 재시작과 보존](./usage.md#재시작과-보존)을 따른다.
+- 이 제한은 컨테이너별 상한이다. 호스트 중계, `run --host`로 실행한 앱, Docker daemon과 다른 프로젝트의 컨테이너에는 적용하지 않는다. 세션 수가 늘면 전체 메모리 허용량도 늘어난다.
+
+현재 사용량과 상한은 `docker stats --no-stream raven-USER-web`으로 확인한다. `USER`는 `raven web status`에 표시되는 실제 컨테이너 이름에 맞춘다. 누수 여부는 시간에 따른 사용량과 OOM 기록으로 판단한다. 재부팅 직후 메모리가 비어 있거나 컨테이너의 `OOMKilled`가 false라는 사실만으로 이전 호스트 장애의 원인을 배제하지 않는다.
+
 ## 접근 경계
 
 - 웹 로그인은 Argon2id password hash를 사용한다. 전체 서비스에서 로그인 시도 5회마다 마지막 시도부터 1분 동안 추가 시도를 차단한다. 차단 응답은 남은 대기 시간을 알려 주며, 대기 중 재요청해도 차단 시간을 연장하지 않는다.
@@ -204,11 +215,14 @@ python3 -m unittest discover -s tests -p 'test_web_*.py' -v
 docker build -f web/Dockerfile --target test -t raven-web:test .
 docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=256m raven-web:test
 docker build -f web/Dockerfile -t raven-web:dev .
+python3 tests/web_resource_limits.py
 python3 tests/web_config_e2e.py
 python3 tests/web_e2e.py
 ```
 
 설정 통합 시험은 기존 형식의 설정 이전, 실제 포트 충돌, 실행·저장 설정 구분, Docker 재시작 시 origin 유지, 기동 실패 복원, 계정·인증서 보존을 확인한다. 실제 SSH 서버 설정이나 사용자 데스크톱은 변경하지 않는다.
+
+자원 시험은 Linux cgroup v2에서 메모리·swap·CPU·process/thread 상한과 동시에 수행하는 비밀번호 검증 5개의 동작을 확인한다. 임시 컨테이너를 시작하기 전에 Docker 설정의 상한부터 검사하므로 제한 없는 컨테이너에서 부하를 발생시키지 않는다.
 
 화면 통합 시험에는 기존 `raven:latest` 세션 이미지가 필요하다. 서로 다른 서버·브라우저 포트를 로컬 TCP 전달기로 연결해 HTTPS 로그인과 WSS/RFB 화면 수신을 확인한다. 이는 실제 접속 PC의 SSH 인증 시험과 구분한다. 웹 서비스 stop/start 후 인증서와 데스크톱 ID가 유지되는지, HTTPS API로 별도 시험 세션을 생성·변경·삭제하고 명령이 시험 컨테이너 안에서 실행되는지 확인한다. 화면 캡처는 출력에 나온 임시 디렉터리에 남긴다. `RAVEN_WEB_BROWSER_IMAGE=headless-browser:1.63.0`을 지정하면 로그인 전 화면과 noVNC JavaScript 로딩도 브라우저에서 검사한다. 브라우저 자동 로그인은 수행하지 않는다.
 

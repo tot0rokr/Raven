@@ -31,6 +31,12 @@ RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"raven-web-{os.getu
 ADDRESS = RUNTIME / "broker.sock"
 LABEL = "raven.web.uid"
 START_TIMEOUT = 15
+WEB_MEMORY = "1g"
+WEB_CPUS = "1"
+
+
+def resource_args():
+    return ["--memory", WEB_MEMORY, "--memory-swap", WEB_MEMORY, "--cpus", WEB_CPUS]
 
 
 def docker(*arguments, capture=True, check=True, input=None):
@@ -58,7 +64,7 @@ def inspect_owned(kind, name):
 
 
 def container_args(readonly=False):
-    return ["--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
+    return [*resource_args(), "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "256",
             "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount",
             f"type=volume,src={VOLUME},dst=/data" + (",readonly" if readonly else "")]
@@ -233,7 +239,7 @@ def initialize(args):
         raise RequestError("Stop the web gateway before provisioning")
     if not inspect_owned("volume", VOLUME):
         docker("volume", "create", "--label", f"{LABEL}={os.getuid()}", VOLUME)
-        docker("run", "--rm", "--network", "none", "--user", "0", "--read-only",
+        docker("run", "--rm", "--network", "none", *resource_args(), "--user", "0", "--read-only",
                "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
                "--security-opt", "no-new-privileges", "--mount", f"type=volume,src={VOLUME},dst=/data",
                IMAGE, "python", "manage.py", "init-data", "--uid", str(os.getuid()), "--gid", str(os.getgid()))
@@ -263,6 +269,7 @@ def start(args):
         actual = {**binding(current), "origin": running_origin(current, saved["config"])}
         if any(config[key] != value for key, value in actual.items()):
             raise RequestError("The gateway is running with different settings; run raven web stop first")
+        docker("container", "update", *resource_args(), NAME)
         start_broker()
         wait_for_https(config, saved["certificate"])
         configuration("write", config, saved["revision"])

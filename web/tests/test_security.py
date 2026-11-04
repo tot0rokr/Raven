@@ -1,3 +1,4 @@
+import asyncio
 import json
 import socketserver
 import tempfile
@@ -15,10 +16,12 @@ from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
 from django.test import Client, TransactionTestCase, override_settings
 from django.utils import timezone
+from uvicorn.protocols.utils import ClientDisconnected
 
 from raven_web.asgi import application
 from raven_web.broker import BrokerError, decode_password
 from raven_web import throttle
+from raven_web.consumers import MAX_CONNECTIONS, _connections
 
 ORIGIN = "https://localhost:8443"
 PASSWORD = "Several unique test words 987"
@@ -441,6 +444,34 @@ class SecurityTests(TransactionTestCase):
         await connection.send_to(bytes_data=b"client input")
         self.assertEqual(await connection.receive_from(), b"client input")
         await connection.disconnect()
+
+    async def test_disconnect_during_accept_releases_the_connection_slot(self):
+        await sync_to_async(self.authenticate)()
+        cookie = self.client.cookies[settings.SESSION_COOKIE_NAME].value
+        try:
+            for _ in range(MAX_CONNECTIONS):
+                incoming = asyncio.Queue()
+                incoming.put_nowait({"type": "websocket.connect"})
+                scope = {
+                    "type": "websocket", "scheme": "wss", "path": "/ws/sessions/0/",
+                    "query_string": b"", "subprotocols": ["binary"],
+                    "headers": [(b"host", b"localhost:8443"), (b"origin", ORIGIN.encode()),
+                                (b"cookie", f"{settings.SESSION_COOKIE_NAME}={cookie}".encode())],
+                }
+
+                async def send(message):
+                    if message["type"] == "websocket.accept":
+                        raise ClientDisconnected("The client disconnected during upgrade")
+
+                with self.assertRaises(ClientDisconnected):
+                    await asyncio.wait_for(application(scope, incoming.get, send), timeout=5)
+                self.assertEqual(len(_connections), 0)
+            connection = self.websocket()
+            self.assertTrue((await connection.connect())[0])
+            self.assertEqual(await connection.receive_from(), b"RFB 003.008\n")
+            await connection.disconnect()
+        finally:
+            await asyncio.gather(*(connection.cleanup() for connection in list(_connections)))
 
     async def test_logout_closes_existing_websocket(self):
         connection = await self.connected_desktop()

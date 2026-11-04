@@ -75,7 +75,12 @@ class DesktopConsumer(AsyncWebsocketConsumer):
             await self.cleanup()
             await self.close(code=4401)
             return
-        await self.accept(subprotocol="binary" if "binary" in self.scope.get("subprotocols", []) else None)
+        try:
+            await self.accept(subprotocol="binary" if "binary" in self.scope.get("subprotocols", []) else None)
+        except BaseException:
+            self.closing = True
+            await self.cleanup()
+            raise
         self.tasks = [asyncio.create_task(self.forward_screen()), asyncio.create_task(self.watch_session(user.pk))]
 
     def schedule_revocation(self):

@@ -167,7 +167,8 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+q`                                 | xmonad 재시작 (창은 유지)                         |
 | `Alt+Shift+/`                           | 이 단축키 목록 (메뉴의 `Keyboard Shortcuts`)      |
 
-- 세션 안에서 `Alt+Shift+/`나 메뉴의 `Keyboard Shortcuts`로 이 표를 rofi 목록으로 본다. 목록은 이미지의 `/etc/raven/keys/xmonad`다.
+- 세션 안에서 `Alt+Shift+/`나 메뉴의 `Keyboard Shortcuts`로 이 표를 rofi 목록으로 본다. 목록은 이미지의 `/etc/raven/keys/xmonad`다. 바깥을 클릭하거나 Esc로 닫는다. 목록 안의 클릭은 줄을 고르기만 한다.
+- 메뉴(`Alt+p`)에서 단축키가 있는 항목은 라벨 뒤 같은 세로줄에 키를 보인다(`Terminal`, `Keyboard Shortcuts`). 항목과 키의 짝은 이미지의 `/etc/raven/menu-keys/xmonad`(라벨<TAB>키)에 있다. 항목은 더블클릭(더블탭)이나 Enter로 실행한다. 두 번 누르는 간격이 0.2초쯤을 넘으면 항목을 고르기만 한다.
 - `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`도 Windows가 가로챌 수 있어서 레이아웃 전환은 `Alt+\`를 쓴다.
 - `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process` (호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
 - 창 사이와 화면 가장자리에 6px 간격을 둔다. 창이 하나여도 둔다. 배경화면은 이 간격과 빈 작업 공간에서 보인다. `Alt+g`로 끄면 창이 화면을 빈틈없이 채운다. 세션이 다시 뜨면 켜진 상태로 돌아간다.

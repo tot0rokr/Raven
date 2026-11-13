@@ -10,6 +10,8 @@ list=$(awk -F '\t' '
     /^#/ || NF < 2 { next }
     { n++; key[n] = $1; desc[n] = $2; if (length($1) > w) w = length($1) }
     END { for (i = 1; i <= n; i++) printf "%-" w "s   %s\n", key[i], desc[i] }' "$f")
+# Wide enough for the descriptions but never wider than a phone screen. A click inside only selects a
+# row, so the second click of a double click on the menu entry does not close the list it opened.
 printf '%s\n' "$list" | rofi -dmenu -i -no-custom -p "$wm" -l "$(printf '%s\n' "$list" | wc -l)" \
-    -font 'DejaVu Sans Mono 11' >/dev/null
+    -font 'DejaVu Sans Mono 11' -theme-str 'window { width: calc(80ch min 95%); }' >/dev/null
 exit 0

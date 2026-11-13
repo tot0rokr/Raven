@@ -1,0 +1,4 @@
+# Keys that run xmonad menu entries, shown next to the entry by raven-launcher: LABEL<TAB>KEY.
+# Keep in sync with xmonad/xmonad.hs and /etc/raven/keys/xmonad.
+Terminal	Alt+Shift+Enter
+Keyboard Shortcuts	Alt+Shift+/

@@ -10,7 +10,8 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
   - `rootfs/usr/local/bin/raven-entrypoint`: Xvnc, D-Bus 세션 버스, 창 관리자(`RAVEN_WM`: xmonad 또는 openbox), 시작 명령. 버스 주소는 `Dockerfile`의 `ENV DBUS_SESSION_BUS_ADDRESS`로 고정해서 `docker exec` 셸도 같은 버스를 쓴다.
   - `rootfs/usr/local/bin/raven-menu`: 메뉴 생성기 (규칙 + .desktop). openbox pipe menu XML, `--list`는 탭 구분 목록.
   - `rootfs/usr/local/bin/raven-launcher`: xmonad용 메뉴. `raven-menu --list`를 rofi로 고른다.
-  - `rootfs/usr/local/bin/raven-keys`: `/etc/raven/keys/$RAVEN_WM`(키<TAB>설명)을 rofi 목록으로 보여 준다. xmonad의 `Alt+Shift+/`와 메뉴의 `Keyboard Shortcuts`가 부른다.
+  - `rootfs/usr/local/bin/raven-keys`: `/etc/raven/keys/$RAVEN_WM`(키<TAB>설명)을 rofi 목록으로 보여 준다. xmonad의 `Alt+Shift+/`와 메뉴의 `Keyboard Shortcuts`가 부른다. 목록 안 클릭은 줄을 고르기만 해서, 메뉴 항목을 더블클릭한 두 번째 클릭에 목록이 닫히지 않는다.
+  - `raven-launcher`는 `/etc/raven/menu-keys/$RAVEN_WM`(메뉴 라벨<TAB>키)에 있는 항목의 키를 탭 뒤에 붙여 rofi `tab-stops`로 세로줄을 맞추고(공백으로 맞추지 않아 글꼴과 창 너비에 매이지 않는다), 실행 전에 TigerVNC 포인터의 버튼이 떼어질 때까지 기다린다(원격에서 늦게 오는 release가 새 창에 닿지 않게).
   - `rootfs/usr/local/bin/raven-panel`: tint2를 한 번만 띄운다. 창 관리자별 기본 설정에 addon 버튼(`/etc/raven/panel.d/*.tint2rc`)을 붙여 `/tmp/raven-tint2rc`로 띄운다.
   - `rootfs/usr/local/bin/raven-wallpaper`: 세션 홈의 `wallpaper.local.*`, 없거나 쓸 수 없으면 `wallpaper.*`로 배경을 칠한다. 이미지는 `xwallpaper --daemon`(크기 변경 시 다시 맞춤), 단색은 `xsetroot`.
   - `rootfs/usr/local/bin/raven-apply-addon`: 빌드 중 addon 하나를 적용.
@@ -48,7 +49,7 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
 - `attach -g`는 모드를 만들어 출력에 건다. `xrandr --fb`로 바꾸지 않는다(아래 검증 항목과 같은 이유).
 - CLI 명령이나 addon/메뉴 형식을 바꾸면 `docs/usage.md`와 관련 `docs/`를 같이 고친다. README는 기능 목록과 구조가 바뀔 때 고친다.
 - 서버나 클라이언트에 필요한 것, Raven이 서버에 만들거나 바꾸는 것(파일, Docker 객체, 프로세스, 권한)이 바뀌면 `docs/install.md`를 고친다.
-- xmonad 키를 바꾸면 `rootfs/etc/raven/keys/xmonad`(세션 안 목록)와 `docs/usage.md`의 키 표를 같이 고친다.
+- xmonad 키를 바꾸면 `rootfs/etc/raven/keys/xmonad`(세션 안 목록), `rootfs/etc/raven/menu-keys/xmonad`(메뉴 항목 옆 키), `docs/usage.md`의 키 표를 같이 고친다.
 
 ## 검증
 

@@ -2,7 +2,7 @@
 
 메뉴는 열 때마다 `raven-menu`가 새로 만든다. 그래서 규칙을 고치거나 앱을 설치하면 다음에 메뉴를 열 때 바로 반영된다. 여는 방법은 창 관리자마다 다르고, 항목은 같다.
 
-- xmonad 세션: `Alt+p` 또는 작업표시줄의 `menu` 버튼. rofi 목록에서 입력해 거르고 고른다 (`raven-launcher`).
+- xmonad 세션: `Alt+p` 또는 작업표시줄의 `menu` 버튼. rofi 목록에서 입력해 거르고, 더블클릭하거나 Enter로 실행한다 (`raven-launcher`). 단축키가 있는 항목은 라벨 뒤에 키를 보인다.
 - openbox 세션: 바탕화면 우클릭 (openbox pipe menu).
 
 ## 메뉴 구성

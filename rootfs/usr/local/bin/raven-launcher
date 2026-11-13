@@ -9,8 +9,27 @@ if [ $# -gt 0 ]; then
     [ -n "$cmd" ] || { xmessage -center "raven-launcher: no menu entry '$1'" 2>/dev/null & exit 1; }
 else
     [ -n "$menu" ] || exit 0
-    i=$(printf '%s\n' "$menu" | cut -f 1 | rofi -dmenu -i -p raven -format i -font 'Noto Sans KR 11') || exit 0
+    # Entries with a key (/etc/raven/menu-keys/<wm>: LABEL<TAB>KEY) show it after a tab. The tab
+    # stop lies past the longest such label, so the keys line up in a column.
+    keys=/etc/raven/menu-keys/${RAVEN_WM:-openbox}
+    [ -r "$keys" ] || keys=/dev/null
+    rows=$(printf '%s\n' "$menu" | cut -f 1 | awk -F '\t' '
+        FILENAME == ARGV[1] { if ($0 !~ /^#/ && NF == 2 && $2 != "") key[$1] = $2; next }
+        { print ($0 in key) ? $0 "\t" key[$0] : $0 }' "$keys" -)
+    stop=$(printf '%s\n' "$rows" | awk -F '\t' 'NF == 2 && length($1) > n { n = length($1) } END { print n + 3 }')
+    # Half the screen as rofi's default, but wide enough for the keys and never wider than the screen.
+    i=$(printf '%s\n' "$rows" | rofi -dmenu -i -p raven -format i -font 'Noto Sans KR 11' \
+        -theme-str "window { width: calc(50% max 40ch min 95%); } element-text { tab-stops: [${stop}ch]; }") \
+        || exit 0
     [ -n "$i" ] || exit 0
     cmd=$(printf '%s\n' "$menu" | sed -n "$((i + 1))p" | cut -f 2-)
+    # Wait for the button to come up (late over a remote link), so the release does not reach a
+    # window the entry opens, such as another rofi list that closes on clicks outside it.
+    n=0
+    while xinput --query-state 'TigerVNC pointer' 2>/dev/null | grep -q '=down'; do
+        n=$((n + 1))
+        [ "$n" -le 40 ] || break
+        sleep 0.05
+    done
 fi
 exec setsid sh -c "$cmd" >/dev/null 2>&1 </dev/null

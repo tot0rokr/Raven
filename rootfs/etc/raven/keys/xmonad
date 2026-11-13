@@ -1,5 +1,5 @@
 # xmonad key bindings shown by raven-keys: KEY<TAB>DESCRIPTION.
-# Keep in sync with xmonad/xmonad.hs and the key table in docs/usage.md.
+# Keep in sync with xmonad/xmonad.hs, /etc/raven/menu-keys/xmonad and the key table in docs/usage.md.
 Alt+p	메뉴 (작업표시줄의 menu 버튼과 같음)
 Alt+Shift+Enter	메뉴의 Terminal 항목 (기본 xterm)
 Alt+j / Alt+k	다음 / 이전 창으로 포커스

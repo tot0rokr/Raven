@@ -159,6 +159,8 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+h` / `Alt+l`                       | 주 영역 줄이기 / 늘리기                           |
 | `Alt+,` / `Alt+.`                       | 주 영역 창 수 늘리기 / 줄이기                     |
 | `Alt+\`, `Alt+Space`                    | 레이아웃 전환 (좌우 분할, 상하 분할, 전체 화면)   |
+| `Alt+Shift+\`, `Alt+Shift+Space`        | 레이아웃 초기화 (주 영역, 간격도 처음대로)        |
+| `Alt+n`                                 | 창 크기를 레이아웃에 다시 맞춤                    |
 | `Alt+1`..`9`                            | 작업 공간 이동                                    |
 | `Alt+Shift+1`..`9`                      | 포커스된 창을 작업 공간으로 보냄                  |
 | `Alt+t`                                 | 떠 있는 창을 다시 타일로                          |
@@ -171,7 +173,7 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 - 포커스된 창은 파란 테두리, 주 영역(좌우 분할의 왼쪽, 상하 분할의 위쪽) 창은 포커스가 없을 때 주황색 테두리다. 창이 하나면 테두리가 없다.
 - 세션 안에서 `Alt+Shift+/`나 메뉴의 `Keyboard Shortcuts`로 이 표를 rofi 목록으로 본다. 목록은 이미지의 `/etc/raven/keys/xmonad`다. 바깥을 클릭하거나 Esc로 닫는다. 목록 안의 클릭은 줄을 고르기만 한다.
 - 메뉴(`Alt+p`)에서 단축키가 있는 항목은 라벨 뒤 같은 세로줄에 키를 보인다(`Terminal`, `Keyboard Shortcuts`). 항목과 키의 짝은 이미지의 `/etc/raven/menu-keys/xmonad`(라벨<TAB>키)에 있다. 항목은 더블클릭(더블탭)이나 Enter로 실행한다. 두 번 누르는 간격이 0.2초쯤을 넘으면 항목을 고르기만 한다.
-- `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`도 Windows가 가로챌 수 있어서 레이아웃 전환은 `Alt+\`를 쓴다.
+- `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`, `Alt+Shift+Space`는 Windows가 창 메뉴 키로 가로챌 수 있어서(Windows 뷰어, 브라우저 모두) 레이아웃 전환과 초기화는 `Alt+\`, `Alt+Shift+\`를 쓴다.
 - `Alt+Shift+Enter`가 띄우는 터미널은 `menu.conf`의 `Terminal` 항목으로 바꾼다. 예: `Terminal = @wezterm --config 'front_end="WebGpu"' start --always-new-process` (호스트 wezterm). 메뉴의 Terminal도 같이 바뀐다.
 - 창 사이와 화면 가장자리에 6px 간격을 둔다. 창이 하나여도 둔다. 배경화면은 이 간격과 빈 작업 공간에서 보인다. `Alt+g`로 끄면 창이 화면을 빈틈없이 채운다. 세션이 다시 뜨면 켜진 상태로 돌아간다.
 

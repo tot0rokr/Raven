@@ -36,8 +36,10 @@ ravenConfig = def
     [ ("M-p", spawn "raven-launcher")
     -- The default M-q recompiles with GHC, which the image does not have
     , ("M-q", restart "xmonad-x86_64-linux" True)
-    -- Alt+Space may be taken by Windows for the viewer's system menu
+    -- Alt+Space and Alt+Shift+Space may be taken by Windows for the viewer's or browser's window
+    -- menu, so the layout keys also sit on backslash
     , ("M-\\", sendMessage NextLayout)
+    , ("M-S-\\", asks (layoutHook . config) >>= setLayout)
     , ("M-g", toggleScreenSpacingEnabled >> toggleWindowSpacingEnabled)
     -- Replaces the default help, which lists stock bindings; the list is /etc/raven/keys/xmonad
     , ("M-S-/", spawn "raven-keys")

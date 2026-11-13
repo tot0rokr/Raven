@@ -1,10 +1,12 @@
 import json
 from functools import wraps
 
+from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
+from django.middleware import csrf
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
@@ -15,11 +17,41 @@ from .consumers import revoke_session
 from .throttle import login_retry_after
 from .validation import SESSION_ID, session_command, session_generation, session_name, session_options
 
+# Django formats the rejected Origin or Referer into these reasons, so match only the fixed prefix.
+ORIGIN_FAILURES = tuple(reason.split("%s", 1)[0] for reason in (
+    csrf.REASON_BAD_ORIGIN, csrf.REASON_NO_REFERER, csrf.REASON_BAD_REFERER,
+    csrf.REASON_MALFORMED_REFERER, csrf.REASON_INSECURE_REFERER,
+))
+
+
+def error_response(code, message, status, **kwargs):
+    return JsonResponse({"error": message, "code": code}, status=status, **kwargs)
+
+
+def csrf_failure_code(reason):
+    if reason == csrf.REASON_NO_CSRF_COOKIE:
+        return "csrf_cookie_missing"
+    if reason.startswith(ORIGIN_FAILURES):
+        return "csrf_origin_mismatch"
+    return "csrf_token_invalid"
+
 
 def csrf_failure(request, reason=""):
-    if request.path.startswith("/api/"):
-        return JsonResponse({"error": "Invalid CSRF token or origin"}, status=403)
-    return render(request, "login.html", {"error": "The form expired. Please try again."}, status=403)
+    # Never echo the reason: it contains the request's Origin or Referer.
+    code = csrf_failure_code(reason)
+    api = request.path.startswith("/api/")
+    if code == "csrf_cookie_missing":
+        message = f"The security cookie is missing. Allow cookies for this site and open {settings.ORIGIN} exactly."
+    elif code == "csrf_origin_mismatch":
+        sender = "request" if api else "form"
+        message = f"The {sender} came from a different address. Open {settings.ORIGIN} and try again."
+    elif api:
+        message = "The page expired. Reload it and try again."
+    else:
+        message = "The form expired. Please try again."
+    if api:
+        return error_response(code, message, 403)
+    return render(request, "login.html", {"error": message}, status=403)
 
 
 @sensitive_post_parameters("password")
@@ -70,18 +102,19 @@ def api_view(methods):
         @wraps(view)
         def wrapped(request, *args, **kwargs):
             if not request.user.is_authenticated:
-                return JsonResponse({"error": "Authentication required"}, status=401)
+                return error_response("auth_required", "Authentication required", 401)
             if request.method not in methods:
-                return JsonResponse({"error": "Method not allowed"}, status=405, headers={"Allow": ", ".join(methods)})
+                return error_response("method_not_allowed", "Method not allowed", 405,
+                                      headers={"Allow": ", ".join(methods)})
             session_id = kwargs.get("session_id")
             if session_id is not None and not SESSION_ID.fullmatch(session_id):
-                return JsonResponse({"error": "Invalid session ID"}, status=400)
+                return error_response("invalid_request", "Invalid session ID", 400)
             try:
                 return view(request, *args, **kwargs)
             except (ValueError, UnicodeDecodeError, RequestDataTooBig) as error:
-                return JsonResponse({"error": str(error)}, status=400)
+                return error_response("invalid_request", str(error), 400)
             except broker.BrokerError as error:
-                return JsonResponse({"error": str(error)}, status=502)
+                return error_response(error.code, str(error), 502)
         return wrapped
     return decorator
 

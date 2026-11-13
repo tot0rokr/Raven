@@ -1,4 +1,5 @@
 import argparse
+from contextlib import closing
 import datetime
 import fcntl
 import hashlib
@@ -7,15 +8,19 @@ import json
 import os
 import re
 import secrets
+import sqlite3
+import stat
 import sys
 import tempfile
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 
 from raven_web.config import parse_origin
 
 CONFIG_KEYS = {"origin", "port", "listen", "ssh_target", "ssh_port"}
+STATE_FILES = ("config.json", "tls.crt", "tls.key", "secret.key", "db.sqlite3")
 REVISION = re.compile(r"[0-9a-f]{64}\Z")
 SSH_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
@@ -200,8 +205,65 @@ def _write(state, raw, encoded, revision, directory):
     return str(backup), warning
 
 
+def _file_state(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return {"error": error.strerror}
+    return {"uid": info.st_uid, "mode": stat.S_IMODE(info.st_mode), "regular": stat.S_ISREG(info.st_mode),
+            "readable": os.access(path, os.R_OK)}
+
+
+def _certificate_summary(pem):
+    certificate = x509.load_pem_x509_certificate(pem.encode("ascii"))
+    try:
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        san = []
+    else:
+        san = [*names.get_values_for_type(x509.DNSName), *map(str, names.get_values_for_type(x509.IPAddress))]
+    return {"subject": certificate.subject.rfc4514_string(), "san": san,
+            "not_before": certificate.not_valid_before_utc.isoformat(),
+            "not_after": certificate.not_valid_after_utc.isoformat(),
+            "fingerprint": certificate.fingerprint(hashes.SHA256()).hex(":").upper()}
+
+
+def _accounts(path):
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+        total, active = connection.execute("SELECT COUNT(*), COALESCE(SUM(is_active), 0) FROM auth_user").fetchone()
+    return {"total": total, "active": active}
+
+
+def _inspect(state):
+    """Describe the state volume for diagnostics without reading private keys or password hashes."""
+    info = state.stat()
+    result = {"directory": {"uid": info.st_uid, "gid": info.st_gid, "mode": stat.S_IMODE(info.st_mode)},
+              "files": {name: _file_state(state / name) for name in STATE_FILES}}
+    try:
+        certificate = _read_file(state / "tls.crt").decode("ascii")
+        result["certificate_info"] = _certificate_summary(certificate)
+        result["certificate"] = certificate
+    except (OSError, ValueError) as error:
+        result["certificate_error"] = str(error)
+    try:
+        _, snapshot = _snapshot(state)
+        result["config"] = snapshot["config"]
+        _matches_certificate(_origin(snapshot["config"]["origin"]).hostname, snapshot["certificate"])
+    except (OSError, ValueError) as error:
+        result["config_error"] = str(error)
+    try:
+        result["accounts"] = _accounts(state / "db.sqlite3")
+    except (OSError, sqlite3.Error) as error:
+        result["accounts_error"] = str(error)
+    return result
+
+
 def execute(action, payload=None, state=None):
     state = Path(state if state is not None else os.environ.get("RAVEN_WEB_STATE", "/data"))
+    if action == "inspect":
+        return _inspect(state)
     if action in ("read", "validate"):
         _, snapshot = _snapshot(state)
         if action == "validate":
@@ -228,12 +290,12 @@ def execute(action, payload=None, state=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Read, validate or atomically update Raven web configuration")
-    parser.add_argument("action", choices=("read", "validate", "write"))
+    parser = argparse.ArgumentParser(description="Read, validate, inspect or atomically update Raven web configuration")
+    parser.add_argument("action", choices=("read", "validate", "write", "inspect"))
     arguments = parser.parse_args()
     try:
         payload = None
-        if arguments.action != "read":
+        if arguments.action not in ("read", "inspect"):
             data = sys.stdin.read(MAX_CONFIG_BYTES + 1)
             if len(data) > MAX_CONFIG_BYTES:
                 raise ConfigurationError("Configuration request exceeds 64 KiB")

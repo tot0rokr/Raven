@@ -35,6 +35,7 @@ sessions = [{
 mutations = []
 browser_errors = []
 unexpected_requests = []
+failures = {}
 
 
 def serve(route):
@@ -64,6 +65,11 @@ def serve(route):
         assert request.headers.get("x-csrftoken") == CSRF_TOKEN
         if body is not None:
             assert request.headers.get("content-type") == "application/json"
+    failure = failures.pop(f"{request.method} {path}", None)
+    if failure:
+        route.fulfill(status=failure[0], json=failure[1])
+        return
+    if path.startswith("/api/") and request.method != "GET":
         mutations.append({"method": request.method, "path": path, "body": body})
     if path == "/api/sessions/" and request.method == "GET":
         route.fulfill(json={"sessions": sessions})
@@ -186,9 +192,41 @@ with sync_playwright() as playwright:
     ], mutations
     assert not browser_errors, browser_errors
     assert not unexpected_requests, unexpected_requests
+
+    failures["GET /api/sessions/"] = (502, {"error": "The Raven broker is unavailable", "code": "broker_unavailable"})
+    page.locator("#refresh-sessions").click()
+    expect(page.locator("#workspace-notice")).to_have_text(
+        "호스트 중계에 연결할 수 없습니다. 서버에서 raven web doctor로 확인해 주세요.")
+    page.locator(".session-card").filter(has_text="existing").locator("[data-action=rename]").click()
+    page.locator("#rename-name").fill("blocked")
+    error_cases = (
+        (502, {"error": "Session changed; refresh the session list", "code": "session_failed"},
+         "세션 작업에 실패했습니다: Session changed; refresh the session list"),
+        (403, {"error": "The page expired. Reload it and try again.", "code": "csrf_token_invalid"},
+         "페이지가 만료되었습니다. 새로고침한 뒤 다시 시도해 주세요."),
+        (403, {"error": "The security cookie is missing.", "code": "csrf_cookie_missing"},
+         "보안 쿠키가 없습니다. 이 사이트의 쿠키를 허용하고 설정된 주소로 페이지를 다시 열어 주세요."),
+        (403, {"error": "The request came from a different address.", "code": "csrf_origin_mismatch"},
+         "다른 주소에서 보낸 요청으로 판단해 거부했습니다. 설정된 주소로 페이지를 다시 열어 주세요."),
+        (400, {"error": "Invalid request fields", "code": "invalid_request"}, "Invalid request fields"),
+        (502, {"error": "A future failure", "code": "future_code"}, "A future failure"),
+        (500, {}, "요청을 처리하지 못했습니다. 다시 시도해 주세요."),
+    )
+    for status, payload, message in error_cases:
+        failures["POST /api/sessions/41/rename/"] = (status, payload)
+        page.locator("#rename-form button[type=submit]").click()
+        expect(page.locator("#rename-error")).to_have_text(message)
+    page.locator("#rename-dialog [data-close-dialog]").click()
+    expect(page.locator("#rename-dialog")).not_to_be_visible()
+    assert not failures, failures
+    assert len(mutations) == 5, mutations
+    assert not unexpected_requests, unexpected_requests
+    # Chromium logs each fixture error status as a console error; anything else is a page fault.
+    script_errors = [error for error in browser_errors if not error.startswith("Failed to load resource")]
+    assert not script_errors, script_errors
     print(json.dumps({
         "management_ui": "passed", "mutations": len(mutations), "csrf": "checked",
         "delete_confirmation": "checked", "desktop_mobile_layout": "checked",
-        "browser_errors": len(browser_errors),
+        "error_messages": len(error_cases) + 1, "browser_errors": len(script_errors),
     }))
     browser.close()

@@ -1,6 +1,9 @@
+from contextlib import closing
+import datetime
 import hashlib
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -9,8 +12,35 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+
 from raven_web.bootstrap import initialize
 from raven_web.service_config import ConfigurationError, execute
+
+PASSWORD_HASH = "pbkdf2_sha256$1$salt$inspect-must-not-return-this"
+
+
+def write_certificate(state, hostname, not_before, not_after):
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+    certificate = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+        .serial_number(x509.random_serial_number()).not_valid_before(not_before).not_valid_after(not_after)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    (state / "tls.crt").write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+
+
+def write_accounts(state, *active):
+    with closing(sqlite3.connect(state / "db.sqlite3")) as connection, connection:
+        connection.execute("CREATE TABLE auth_user (id INTEGER PRIMARY KEY, username TEXT, password TEXT, "
+                           "is_active BOOL)")
+        connection.executemany("INSERT INTO auth_user (username, password, is_active) VALUES (?, ?, ?)",
+                               [(f"user{index}", PASSWORD_HASH, flag) for index, flag in enumerate(active)])
 
 
 class ServiceConfigurationTests(unittest.TestCase):
@@ -210,6 +240,53 @@ class ServiceConfigurationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("revision", result.stderr)
+
+    def test_inspect_summarizes_state_without_private_material_or_changes(self):
+        write_accounts(self.state, True)
+        before = self.files()
+        environment = {**os.environ, "RAVEN_WEB_STATE": str(self.state)}
+        output = subprocess.run([sys.executable, "-m", "raven_web.service_config", "inspect"],
+                                env=environment, capture_output=True, text=True, check=True).stdout
+        result = json.loads(output)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(result["directory"]["mode"], 0o700)
+        self.assertEqual(set(result["files"]), {"config.json", "tls.crt", "tls.key", "secret.key", "db.sqlite3"})
+        self.assertTrue(all(item["regular"] and item["readable"] for item in result["files"].values()))
+        self.assertEqual(result["accounts"], {"total": 1, "active": 1})
+        self.assertEqual(result["config"], {"origin": "https://localhost:8443"})
+        self.assertNotIn("config_error", result)
+        self.assertEqual(result["certificate_info"]["san"], ["localhost"])
+        self.assertRegex(result["certificate_info"]["fingerprint"], r"\A([0-9A-F]{2}:){31}[0-9A-F]{2}\Z")
+        for secret in ("PRIVATE KEY", PASSWORD_HASH, (self.state / "secret.key").read_text()):
+            self.assertNotIn(secret, output)
+
+    def test_inspect_reports_expired_and_mismatched_certificates(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        write_certificate(self.state, "localhost", now - datetime.timedelta(days=30), now - datetime.timedelta(days=1))
+        result = execute("inspect", state=self.state)
+        self.assertLess(datetime.datetime.fromisoformat(result["certificate_info"]["not_after"]), now)
+        self.assertNotIn("config_error", result)
+        write_certificate(self.state, "other-host", now, now + datetime.timedelta(days=30))
+        result = execute("inspect", state=self.state)
+        self.assertEqual(result["certificate_info"]["san"], ["other-host"])
+        self.assertIn("SAN", result["config_error"])
+
+    def test_inspect_isolates_missing_and_unreadable_files(self):
+        (self.state / "secret.key").unlink()
+        result = execute("inspect", state=self.state)
+        self.assertIsNone(result["files"]["secret.key"])
+        self.assertIsNone(result["files"]["db.sqlite3"])
+        self.assertIn("accounts_error", result)
+        self.assertEqual(result["certificate_info"]["san"], ["localhost"])
+        write_accounts(self.state)
+        self.assertEqual(execute("inspect", state=self.state)["accounts"], {"total": 0, "active": 0})
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses file permissions")
+        (self.state / "tls.crt").chmod(0)
+        result = execute("inspect", state=self.state)
+        self.assertFalse(result["files"]["tls.crt"]["readable"])
+        self.assertIn("certificate_error", result)
+        self.assertIn("config_error", result)
 
 
 if __name__ == "__main__":

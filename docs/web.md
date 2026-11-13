@@ -118,7 +118,63 @@ raven web status
 
 서버 hostname은 접속 PC에서 도달 가능한 SSH 주소라고 보장하지 않는다. SSH 대상이 없으면 `USER@HOST` 자리 표시자와 `configure --ssh-target` 안내를 출력한다. 직접 HTTPS 접속용 origin에는 SSH 터널 대신 직접 접속 안내를 표시한다.
 
-`status`는 서비스·중계를 시작하거나 설정·runtime 파일을 만들지 않는다. 기존 데이터 volume은 네트워크가 차단된 일회성 컨테이너에서 읽기 전용으로 조회한다. 다른 로그인 셸에서 호출해도 기존 게이트웨이에 연결된 runtime 경로를 사용한다. 초기화 전, Docker 접근 실패, 중계 종료, 설정 파일 읽기 실패를 구분한다. HTTPS 응답 등 상세 진단을 수행하는 `raven web doctor`는 M2에서 추가한다.
+`status`는 서비스·중계를 시작하거나 설정·runtime 파일을 만들지 않는다. 기존 데이터 volume은 네트워크가 차단된 일회성 컨테이너에서 읽기 전용으로 조회한다. 다른 로그인 셸에서 호출해도 기존 게이트웨이에 연결된 runtime 경로를 사용한다. 초기화 전, Docker 접근 실패, 중계 종료, 설정 파일 읽기 실패를 구분한다. 실제 HTTPS 응답, 인증서, 중계 연결은 `raven web doctor`로 확인한다.
+
+## 진단
+
+접속이 안 되거나 로그인·세션 목록에서 오류가 나면 서버에서 실행한다.
+
+```bash
+raven web doctor
+```
+
+검사 항목마다 한 줄을 `ok`, `info`, `warn`, `fail`, `skip`으로 시작해 출력한다. `warn`과 `fail`은 `;` 뒤에 다음 조치를 붙이고, Docker가 낸 원본 오류는 그 아래 줄에 둔다. 앞 항목이 실패해 검사할 수 없는 항목은 `skip`과 이유를 표시한다. `fail`이 있으면 종료 코드는 1이다.
+
+| 항목                | 확인 내용                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| `docker`            | CLI 설치, daemon 접근 권한                                                                          |
+| `gateway`           | 웹 컨테이너의 존재와 실행 상태, 종료 코드와 Docker 오류                                              |
+| `image`             | 웹 이미지 존재, 실행 중인 컨테이너가 현재 빌드를 쓰는지                                              |
+| `data volume`       | volume 존재, `/data`의 소유자와 권한, 필수 파일                                                      |
+| `account`           | 계정 초기화, 계정 수, 활성 상태                                                                      |
+| `certificate`       | SAN, 유효 기간(30일 미만이면 `warn`), SHA-256 fingerprint                                            |
+| `settings`          | 저장 설정, origin과 인증서 SAN 일치, 실행 중 설정과 저장 설정의 차이, 멈춘 상태에서 다음 시작 포트 사용 가능 여부 |
+| `broker`            | runtime 디렉터리와 socket의 소유자·권한, 응답 여부, 다른 checkout에서 띄운 중계                       |
+| `gateway -> broker` | 웹 컨테이너가 mount한 `/run/raven`으로 중계에 닿는지                                                 |
+| `HTTPS`             | 실제 서버 포트에 origin의 Host로 `GET /login/`을 보내고 `tls.crt`로 인증서를 검증                     |
+
+doctor는 서비스를 시작·중지하지 않고 설정·계정·runtime 파일을 바꾸지 않으며 로그인을 시도하지 않는다. 데이터 volume은 네트워크가 차단된 일회성 컨테이너에서 읽기 전용으로 조회하고, `tls.key`·`secret.key`·비밀번호 hash는 읽지 않는다. Docker 오류는 원문을 보이되 private key, cookie, password 형태의 값은 가린다.
+
+| 결과                                                     | 원인과 조치                                                                                          |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `broker: stopped`                                        | 중계가 꺼져 있다. `raven web start`                                                                   |
+| `broker: stopped (a stale socket is left behind)`        | 중계 프로세스가 비정상 종료했다. `raven web start`                                                    |
+| `broker: ... mode 0700`                                  | runtime 디렉터리 권한이 바뀌었다. 출력된 `chmod 700` 후 `raven web start`                             |
+| `gateway -> broker: the gateway cannot reach the broker` | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web stop` 후 `raven web start` |
+| `settings: the gateway runs ..., but the next start uses ...` | 저장한 설정이 아직 적용되지 않았다. `raven web stop` 후 `raven web start`                        |
+| `settings: the next start cannot listen`                 | 다른 프로세스가 포트를 쓴다. 그 프로세스를 끄거나 `raven web configure --port`로 바꾼다.               |
+| `certificate ...: expired`, `HTTPS: the served certificate has expired` | 인증서가 만료됐다. 갱신 기능은 아직 없다([M8](./roadmap.md#m8--인증서-상태내보내기갱신)). |
+| `HTTPS: the gateway serves a certificate other than tls.crt` | 실행 중인 컨테이너가 이전 인증서를 쓴다. `raven web stop` 후 `raven web start`                   |
+| `data volume ...: /data belongs to uid N`                | 다른 uid로 만든 volume이다. 출력된 root 도우미 명령으로 소유자를 되돌린다.                             |
+
+doctor는 접속 PC를 볼 수 없다. 브라우저에서는 `info  browser:` 줄의 origin을 정확히 연다. 다른 hostname이나 포트로 열면 HTTP 400이 된다.
+
+## 화면 오류
+
+로그인 화면과 세션 화면은 원인별로 다른 메시지를 보인다.
+
+| 메시지                                                        | 원인과 조치                                                                                   |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `Incorrect username or password.`                             | 아이디나 비밀번호가 틀렸다. 없는 계정도 같은 메시지를 받는다.                                    |
+| `Too many login attempts. Try again in N seconds.`            | 로그인 시도 5회마다 1분 동안 막힌다. 표시된 시간 뒤에 다시 시도한다.                             |
+| `The security cookie is missing...`, 보안 쿠키가 없습니다       | 브라우저가 쿠키를 막았거나 origin과 다른 주소로 열었다. 쿠키를 허용하고 origin을 연다.             |
+| `The form came from a different address...`, 다른 주소에서 보낸 요청 | origin과 다른 주소에서 연 페이지가 요청을 보냈다. origin으로 다시 연다.                       |
+| `The form expired...`, 페이지가 만료되었습니다                  | 페이지를 오래 열어 두어 보안 토큰이 바뀌었다. 새로고침한다.                                       |
+| `Wrong address` 페이지                                        | origin과 다른 hostname이나 포트로 열었다. 페이지에 표시된 주소를 연다.                            |
+| 호스트 중계에 연결할 수 없습니다                               | 중계가 꺼졌거나 웹 컨테이너가 중계에 닿지 못한다. 서버에서 `raven web doctor`를 실행한다.          |
+| 세션 작업에 실패했습니다: ...                                  | 중계가 요청을 거부했다. 뒤의 문장이 원인이다. `Session changed; refresh the session list`면 목록을 새로고침한다. |
+
+API의 오류 응답은 `error` 문장과 함께 고정된 `code`를 준다: `auth_required`, `method_not_allowed`, `invalid_request`, `invalid_host`, `csrf_cookie_missing`, `csrf_origin_mismatch`, `csrf_token_invalid`, `broker_unavailable`, `session_failed`. 상태 코드는 401, 405, 400, 400, 403, 403, 403, 502, 502다. 응답에는 요청의 Host, Origin, Referer, cookie 값을 넣지 않는다.
 
 ## 화면 사용
 
@@ -156,6 +212,7 @@ raven web start --listen 0.0.0.0 --port 8443
 
 ```bash
 raven web status
+raven web doctor
 raven web password --username junho
 raven web stop
 raven web start
@@ -219,10 +276,13 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=256
 docker build -f web/Dockerfile -t raven-web:dev .
 python3 tests/web_resource_limits.py
 python3 tests/web_config_e2e.py
+python3 tests/web_doctor_e2e.py
 python3 tests/web_e2e.py
 ```
 
 설정 통합 시험은 기존 형식의 설정 이전, 실제 포트 충돌, 실행·저장 설정 구분, Docker 재시작 시 origin 유지, 기동 실패 복원, 계정·인증서 보존을 확인한다. 실제 SSH 서버 설정이나 사용자 데스크톱은 변경하지 않는다.
+
+doctor 통합 시험은 정상 설치, 적용 대기 설정, 다음 시작 포트 충돌, 인증서와 맞지 않는 origin, 중계 중지·비정상 종료·runtime 디렉터리 교체, 만료 인증서, runtime 디렉터리 권한, Docker 접근 실패, 다른 uid 소유의 데이터 volume을 차례로 만들고 진단 결과와 종료 코드를 확인한다. doctor 실행 전후의 데이터 volume 파일, 컨테이너 ID·시작 시각, runtime 디렉터리가 같은지, 출력과 게이트웨이·중계 로그에 시험 비밀번호·`secret.key`·개인 키·cookie가 없는지도 확인한다.
 
 자원 시험은 Linux cgroup v2에서 메모리·swap·CPU·process/thread 상한과 동시에 수행하는 비밀번호 검증 5개의 동작을 확인한다. 임시 컨테이너를 시작하기 전에 Docker 설정의 상한부터 검사하므로 제한 없는 컨테이너에서 부하를 발생시키지 않는다.
 

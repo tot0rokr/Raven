@@ -8,12 +8,25 @@ from Crypto.Cipher import DES
 from django.conf import settings
 
 MAX_HEADER = 64 * 1024
+MAX_FAILURE_MESSAGE = 200
 BROKER_TIMEOUT = 120
 CONNECT_TIMEOUT = 10
 
 
 class BrokerError(Exception):
-    pass
+    """A broker failure; code is broker_unavailable or session_failed."""
+
+    def __init__(self, message, code="broker_unavailable"):
+        super().__init__(message)
+        self.code = code
+
+
+def _failure_message(message):
+    # The host broker replies with static English messages; anything else is replaced.
+    if (isinstance(message, str) and 0 < len(message) <= MAX_FAILURE_MESSAGE
+            and message.isascii() and message.isprintable()):
+        return message
+    return "The session operation failed"
 
 
 def _response(line):
@@ -23,15 +36,19 @@ def _response(line):
         result = json.loads(line)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BrokerError("Invalid broker response") from error
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        raise BrokerError("The session operation failed")
+    if not isinstance(result, dict):
+        raise BrokerError("Invalid broker response")
+    if result.get("ok") is False:
+        raise BrokerError(_failure_message(result.get("error")), "session_failed")
+    if result.get("ok") is not True:
+        raise BrokerError("Invalid broker response")
     return result.get("data")
 
 
 def request(action, **arguments):
     payload = json.dumps({"action": action, **arguments}).encode() + b"\n"
     if len(payload) > MAX_HEADER:
-        raise BrokerError("The request is too large")
+        raise ValueError("The request is too large")
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(BROKER_TIMEOUT)

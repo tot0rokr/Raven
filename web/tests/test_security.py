@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import socketserver
 import tempfile
 import threading
@@ -41,12 +42,25 @@ MANAGEMENT_REQUESTS = (
     ("post", "/api/sessions/0/run/", {"command": "true", "generation": SESSION["generation"]}),
     ("delete", "/api/sessions/0/", {"confirm": "0", "generation": SESSION["generation"]}),
 )
+ATTACKER = "https://attacker.example"
+LOGIN_ERROR = re.compile(rb'<p class="notice notice-error" role="alert">(.*?)</p>')
+CSRF_INPUT = re.compile(rb'(name="csrfmiddlewaretoken" value=)"[^"]*"')
+EXPIRED_FORM = "The form expired. Please try again."
+EXPIRED_PAGE = "The page expired. Reload it and try again."
+COOKIE_MISSING = f"The security cookie is missing. Allow cookies for this site and open {ORIGIN} exactly."
+FOREIGN_FORM = f"The form came from a different address. Open {ORIGIN} and try again."
+FOREIGN_REQUEST = f"The request came from a different address. Open {ORIGIN} and try again."
+GENERIC_FAILURE = "The session operation failed"
+INVALID_RESPONSE = "Invalid broker response"
 
 
 class BrokerHandler(socketserver.StreamRequestHandler):
     def handle(self):
         request = json.loads(self.rfile.readline())
         self.server.calls.append(request)
+        if self.server.reply is not None:
+            self.wfile.write(self.server.reply)
+            return
         action = request["action"]
         if action in ("rename", "run", "delete"):
             session = self.server.sessions.get(request["id"])
@@ -104,6 +118,7 @@ class SecurityTests(TransactionTestCase):
         self.socket_path = str(Path(self.temporary.name) / "broker.sock")
         self.server = FakeBroker(self.socket_path, BrokerHandler)
         self.server.calls = []
+        self.server.reply = None
         self.server.started = []
         self.server.sessions = {SESSION["id"]: SESSION.copy()}
         self.server.next_id = 1
@@ -134,12 +149,162 @@ class SecurityTests(TransactionTestCase):
             path, data=json.dumps(payload), content_type="application/json", secure=True, **headers,
         )
 
+    def browser(self, origin=ORIGIN, cookie=True):
+        headers = {"HTTP_ORIGIN": origin} if origin else {}
+        client = Client(enforce_csrf_checks=True, HTTP_HOST="localhost:8443", **headers)
+        if not cookie:
+            return client, self.csrf
+        client.get("/login/", secure=True)
+        return client, client.cookies[settings.CSRF_COOKIE_NAME].value
+
+    def login_error(self, response):
+        match = LOGIN_ERROR.search(response.content)
+        self.assertIsNotNone(match, "The login page did not show an error")
+        return match[1].decode()
+
+    def assert_api_error(self, response, status, code, message):
+        self.assertEqual(response.status_code, status)
+        self.assertEqual(response.json(), {"error": message, "code": code})
+
     def test_anonymous_requests_never_reach_broker(self):
         response = self.client.get("/api/sessions/", secure=True)
-        self.assertEqual(response.status_code, 401)
+        self.assert_api_error(response, 401, "auth_required", "Authentication required")
         response = self.client.post("/api/sessions/0/open/", secure=True, HTTP_X_CSRFTOKEN=self.csrf)
-        self.assertEqual(response.status_code, 401)
+        self.assert_api_error(response, 401, "auth_required", "Authentication required")
         self.assertEqual(self.server.calls, [])
+
+    def test_api_errors_carry_stable_codes(self):
+        self.authenticate()
+        response = self.client.get("/api/sessions/0/open/", secure=True)
+        self.assert_api_error(response, 405, "method_not_allowed", "Method not allowed")
+        self.assertEqual(response["Allow"], "POST")
+        response = self.management_request("post", "/api/sessions/", {"name": "1desktop"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "invalid_request")
+        self.assertEqual(self.server.calls, [])
+
+    def test_login_form_csrf_failures_are_distinguished(self):
+        cases = (
+            ("cookie missing", self.browser(cookie=False), {}, COOKIE_MISSING),
+            ("foreign origin", self.browser(ATTACKER), {}, FOREIGN_FORM),
+            ("opaque origin", self.browser("null"), {}, FOREIGN_FORM),
+            ("foreign referer", self.browser(None), {"HTTP_REFERER": ATTACKER + "/login/"}, FOREIGN_FORM),
+            ("missing referer", self.browser(None), {}, FOREIGN_FORM),
+            ("token missing", self.browser(), {"csrfmiddlewaretoken": None}, EXPIRED_FORM),
+            ("token incorrect", self.browser(), {"csrfmiddlewaretoken": "x" * 64}, EXPIRED_FORM),
+            ("token malformed", self.browser(), {"csrfmiddlewaretoken": "!"}, EXPIRED_FORM),
+        )
+        for name, (client, token), extra, message in cases:
+            with self.subTest(name):
+                form = {"username": "owner", "password": PASSWORD, "csrfmiddlewaretoken": token}
+                headers = {key: value for key, value in extra.items() if key.startswith("HTTP_")}
+                form.update({key: value for key, value in extra.items() if not key.startswith("HTTP_")})
+                form = {key: value for key, value in form.items() if value is not None}
+                response = client.post("/login/", form, secure=True, **headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(self.login_error(response), message)
+                self.assertNotIn(b"attacker.example", response.content)
+                self.assertNotIn(PASSWORD.encode(), response.content)
+                self.assertNotIn(settings.SESSION_COOKIE_NAME, response.cookies)
+
+    def test_api_csrf_failures_are_distinguished(self):
+        self.authenticate()
+        path = "/api/sessions/0/open/"
+        cases = (
+            ("token missing", {}, "csrf_token_invalid", EXPIRED_PAGE),
+            ("token incorrect", {"HTTP_X_CSRFTOKEN": "x" * 64}, "csrf_token_invalid", EXPIRED_PAGE),
+            ("token malformed", {"HTTP_X_CSRFTOKEN": "!"}, "csrf_token_invalid", EXPIRED_PAGE),
+            ("foreign origin", {"HTTP_X_CSRFTOKEN": self.csrf, "HTTP_ORIGIN": ATTACKER},
+             "csrf_origin_mismatch", FOREIGN_REQUEST),
+            ("opaque origin", {"HTTP_X_CSRFTOKEN": self.csrf, "HTTP_ORIGIN": "null"},
+             "csrf_origin_mismatch", FOREIGN_REQUEST),
+        )
+        for name, headers, code, message in cases:
+            with self.subTest(name):
+                response = self.client.post(path, secure=True, **headers)
+                self.assert_api_error(response, 403, code, message)
+                self.assertNotIn(b"attacker.example", response.content)
+                self.assertNotIn(self.csrf.encode(), response.content)
+        del self.client.cookies[settings.CSRF_COOKIE_NAME]
+        response = self.client.post(path, secure=True, HTTP_X_CSRFTOKEN=self.csrf)
+        self.assert_api_error(response, 403, "csrf_cookie_missing", COOKIE_MISSING)
+        self.assertNotIn(self.csrf.encode(), response.content)
+        self.assertEqual(self.server.calls, [])
+
+    def test_unknown_user_and_wrong_password_are_indistinguishable(self):
+        password = "Distinctive wrong password 314"
+        bodies = []
+        headers = []
+        for username in ("owner", "nobody"):
+            with self.subTest(username=username):
+                response = self.client.post("/login/", {
+                    "username": username, "password": password, "csrfmiddlewaretoken": self.csrf,
+                }, secure=True)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(self.login_error(response), "Incorrect username or password.")
+                self.assertNotIn(password.encode(), response.content)
+                self.assertNotIn(username.encode(), response.content)
+                bodies.append(CSRF_INPUT.sub(rb'\1""', response.content))
+                headers.append(sorted(response.headers))
+        self.assertEqual(bodies[0], bodies[1])
+        self.assertEqual(headers[0], headers[1])
+
+    def test_wrong_host_names_the_configured_origin(self):
+        for host in ("127.0.0.1:9444", "localhost:9444", "localhost:9999"):
+            with self.subTest(host=host):
+                response = self.client.get("/login/", secure=True, HTTP_HOST=host)
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(response["Content-Type"].startswith("text/html"))
+                self.assertIn(f'<a href="{ORIGIN}/">{ORIGIN}</a>'.encode(), response.content)
+                self.assertNotIn(host.encode(), response.content)
+                for path in ("/api/sessions/", "/ws/sessions/0/"):
+                    response = self.client.get(path, secure=True, HTTP_HOST=host)
+                    self.assert_api_error(response, 400, "invalid_host", "Invalid host")
+                response = self.client.get("/static/style.css", secure=True, HTTP_HOST=host)
+                self.assertEqual(response.status_code, 400)
+                response.close()
+        response = self.client.get("/static/style.css", secure=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("text/css"))
+        response.close()
+        self.assertEqual(self.server.calls, [])
+
+    def test_unreachable_broker_is_reported(self):
+        self.authenticate()
+        with override_settings(RAVEN_BROKER=str(Path(self.temporary.name) / "missing.sock")):
+            response = self.client.get("/api/sessions/", secure=True)
+        self.assert_api_error(response, 502, "broker_unavailable", "The Raven broker is unavailable")
+        self.server.shutdown()
+        self.server.server_close()
+        response = self.client.get("/api/sessions/", secure=True)
+        self.assert_api_error(response, 502, "broker_unavailable", "The Raven broker is unavailable")
+
+    def test_broker_failures_keep_only_safe_host_messages(self):
+        self.authenticate()
+        changed = "Session changed; refresh the session list"
+        cases = (
+            ({"ok": False, "error": changed}, "session_failed", changed),
+            ({"ok": False, "error": "x" * 200}, "session_failed", "x" * 200),
+            ({"ok": False}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": ""}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": "x" * 201}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": "Colored \x1b[31m text"}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": "Line\nbreak"}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": "세션 오류"}, "session_failed", GENERIC_FAILURE),
+            ({"ok": False, "error": [changed]}, "session_failed", GENERIC_FAILURE),
+            ({"ok": "false"}, "broker_unavailable", INVALID_RESPONSE),
+            (["ok"], "broker_unavailable", INVALID_RESPONSE),
+        )
+        replies = [(json.dumps(reply).encode() + b"\n", code, message) for reply, code, message in cases]
+        replies += [(raw, "broker_unavailable", INVALID_RESPONSE) for raw in (b"not json\n", b'{"ok": true}', b"")]
+        for reply, code, message in replies:
+            with self.subTest(reply=reply):
+                self.server.reply = reply
+                response = self.management_request(
+                    "post", "/api/sessions/0/rename/", {"name": "renamed", "generation": SESSION["generation"]},
+                )
+                self.assert_api_error(response, 502, code, message)
+        self.assertEqual(self.server.sessions[SESSION["id"]]["name"], SESSION["name"])
 
     def test_csrf_and_cross_origin_requests_are_rejected(self):
         self.authenticate()
@@ -155,7 +320,7 @@ class SecurityTests(TransactionTestCase):
     def test_invalid_session_id_never_reaches_broker(self):
         self.authenticate()
         response = self.client.post("/api/sessions/--help/open/", secure=True, HTTP_X_CSRFTOKEN=self.csrf)
-        self.assertEqual(response.status_code, 400)
+        self.assert_api_error(response, 400, "invalid_request", "Invalid session ID")
         self.assertEqual(self.server.calls, [])
 
     def test_authenticated_owner_lists_and_opens_desktop(self):
@@ -350,14 +515,9 @@ class SecurityTests(TransactionTestCase):
         for method, path, payload in MANAGEMENT_REQUESTS[1:]:
             with self.subTest(path=path):
                 response = self.management_request(method, path, payload)
-                self.assertEqual(response.status_code, 502)
+                self.assert_api_error(response, 502, "session_failed", GENERIC_FAILURE)
                 self.assertEqual(self.server.sessions, {SESSION["id"]: replacement})
         self.assertEqual(self.server.started, [])
-
-    def test_unconfigured_host_is_rejected(self):
-        response = self.client.get("/api/sessions/", secure=True, HTTP_HOST="localhost:9999")
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self.server.calls, [])
 
     def test_vnc_password_file_is_validated(self):
         self.assertEqual(decode_password("29g8/XJ6FFg="), "password")

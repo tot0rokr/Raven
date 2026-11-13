@@ -146,6 +146,13 @@ async def run(config):
     stage = "anonymous access"
     assert request("/api/sessions/")[0] == 401, "Anonymous API access was accepted"
     await denied()
+    stage = "wrong host"
+    wrong_host = "127.0.0.1:" + origin.rsplit(":", 1)[1]
+    status, page = request("/login/", headers={"Host": wrong_host})
+    assert status == 400 and origin.encode() in page, "Wrong host page did not name the origin"
+    assert wrong_host.encode() not in page, "Wrong host page echoed the request host"
+    status, data = request("/api/sessions/", headers={"Host": wrong_host})
+    assert status == 400 and json.loads(data)["code"] == "invalid_host", "Wrong API host was not rejected"
     stage = "login"
     status, page = request("/login/")
     assert status == 200, "Login page was unavailable"
@@ -191,10 +198,13 @@ async def run(config):
         assert created["geometry"] == "800x600" and created["wm"] == "openbox", "Session options were lost"
         stage = "rename session"
         renamed = config["management_name"] + "-renamed"
-        status, _ = management_request(f"/api/sessions/{management_id}/rename/", {
+        status, data = management_request(f"/api/sessions/{management_id}/rename/", {
             "name": renamed, "generation": different_generation(management_generation),
         })
         assert status == 502, "Rename accepted a stale generation"
+        assert json.loads(data) == {
+            "error": "Session changed; refresh the session list", "code": "session_failed",
+        }, "Stale rename did not report the host message"
         status, data = request("/api/sessions/")
         assert status == 200 and any(
             str(session["id"]) == management_id and session["name"] == config["management_name"]

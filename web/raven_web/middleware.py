@@ -1,5 +1,14 @@
 from django.conf import settings
-from django.http import JsonResponse
+from django.core.exceptions import DisallowedHost
+from django.http import HttpResponse, JsonResponse
+from django.template.loader import render_to_string
+
+
+def exact_host(request):
+    try:
+        return request.get_host() == settings.ORIGIN_PARTS.netloc
+    except DisallowedHost:
+        return False
 
 
 class ExactHostMiddleware:
@@ -7,9 +16,12 @@ class ExactHostMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.get_host() != settings.ORIGIN_PARTS.netloc:
-            return JsonResponse({"error": "Invalid host"}, status=400)
-        return self.get_response(request)
+        if exact_host(request):
+            return self.get_response(request)
+        if request.path.startswith(("/api/", "/ws/")):
+            return JsonResponse({"error": "Invalid host", "code": "invalid_host"}, status=400)
+        # A browser opened another address; name the configured one without echoing the request's Host.
+        return HttpResponse(render_to_string("wrong_host.html", {"origin": settings.ORIGIN}), status=400)
 
 
 class SecurityHeadersMiddleware:

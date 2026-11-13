@@ -45,7 +45,7 @@ raven web start
 raven web status
 ```
 
-서버 포트와 브라우저 주소는 `raven web configure`로 저장한다. 이후 `start`는 저장된 값을 사용하며 `status`에서 현재 주소와 SSH 터널 명령을 확인한다.
+서버 포트와 브라우저 주소는 `raven web configure`로 저장한다. 이후 `start`는 저장된 값을 사용하며 `status`에서 현재 주소와 SSH 터널 명령을 확인한다. 접속이 안 되면 `raven web doctor`로 원인과 조치를 확인한다.
 
 기존 X11 접속도 유지한다.
 

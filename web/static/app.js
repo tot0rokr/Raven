@@ -29,6 +29,22 @@ function notice(id, message) {
   target.hidden = !message;
 }
 
+const ERROR_MESSAGES = new Map([
+  ["broker_unavailable", "호스트 중계에 연결할 수 없습니다. 서버에서 raven web doctor로 확인해 주세요."],
+  ["csrf_cookie_missing", "보안 쿠키가 없습니다. 이 사이트의 쿠키를 허용하고 설정된 주소로 페이지를 다시 열어 주세요."],
+  ["csrf_origin_mismatch", "다른 주소에서 보낸 요청으로 판단해 거부했습니다. 설정된 주소로 페이지를 다시 열어 주세요."],
+  ["csrf_token_invalid", "페이지가 만료되었습니다. 새로고침한 뒤 다시 시도해 주세요."],
+  ["invalid_host", "설정된 주소로 접속하지 않았습니다. 설정된 주소로 페이지를 다시 열어 주세요."],
+]);
+
+function errorMessage(data) {
+  const known = ERROR_MESSAGES.get(data.code);
+  if (known) return known;
+  if (typeof data.error !== "string") return "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
+  if (data.code === "session_failed") return `세션 작업에 실패했습니다: ${data.error}`;
+  return data.error;
+}
+
 async function api(path, method = "GET", body) {
   const headers = { Accept: "application/json" };
   const options = { method, headers, credentials: "same-origin", cache: "no-store" };
@@ -45,9 +61,7 @@ async function api(path, method = "GET", body) {
   }
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {};
-  if (!response.ok) {
-    throw new Error(typeof data.error === "string" ? data.error : "요청을 처리하지 못했습니다. 다시 시도해 주세요.");
-  }
+  if (!response.ok) throw new Error(errorMessage(data));
   return data;
 }
 

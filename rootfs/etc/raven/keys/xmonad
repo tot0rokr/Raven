@@ -4,7 +4,8 @@ Alt+p	메뉴 (작업표시줄의 menu 버튼과 같음)
 Alt+Shift+Enter	메뉴의 Terminal 항목 (기본 xterm)
 Alt+j / Alt+k	다음 / 이전 창으로 포커스
 Alt+Shift+j / Alt+Shift+k	포커스된 창을 다음 / 이전 자리와 바꿈
-Alt+Enter	포커스된 창을 주 영역으로
+Alt+Enter	포커스된 창을 주 영역으로 (주 영역 창은 주황색 테두리)
+Alt+m	주 영역 창으로 포커스
 Alt+h / Alt+l	주 영역 줄이기 / 늘리기
 Alt+, / Alt+.	주 영역 창 수 늘리기 / 줄이기
 Alt+\ / Alt+Space	레이아웃 전환 (좌우 분할, 상하 분할, 전체 화면)

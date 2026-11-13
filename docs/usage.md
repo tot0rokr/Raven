@@ -155,6 +155,7 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+j` / `Alt+k`                       | 다음 / 이전 창으로 포커스                         |
 | `Alt+Shift+j` / `Alt+Shift+k`           | 포커스된 창을 다음 / 이전 자리와 바꿈             |
 | `Alt+Enter`                             | 포커스된 창을 주 영역으로                         |
+| `Alt+m`                                 | 주 영역 창으로 포커스                             |
 | `Alt+h` / `Alt+l`                       | 주 영역 줄이기 / 늘리기                           |
 | `Alt+,` / `Alt+.`                       | 주 영역 창 수 늘리기 / 줄이기                     |
 | `Alt+\`, `Alt+Space`                    | 레이아웃 전환 (좌우 분할, 상하 분할, 전체 화면)   |
@@ -167,6 +168,7 @@ Windows가 Win 키를 가로채므로 조작 키(mod)는 Alt다.
 | `Alt+q`                                 | xmonad 재시작 (창은 유지)                         |
 | `Alt+Shift+/`                           | 이 단축키 목록 (메뉴의 `Keyboard Shortcuts`)      |
 
+- 포커스된 창은 파란 테두리, 주 영역(좌우 분할의 왼쪽, 상하 분할의 위쪽) 창은 포커스가 없을 때 주황색 테두리다. 창이 하나면 테두리가 없다.
 - 세션 안에서 `Alt+Shift+/`나 메뉴의 `Keyboard Shortcuts`로 이 표를 rofi 목록으로 본다. 목록은 이미지의 `/etc/raven/keys/xmonad`다. 바깥을 클릭하거나 Esc로 닫는다. 목록 안의 클릭은 줄을 고르기만 한다.
 - 메뉴(`Alt+p`)에서 단축키가 있는 항목은 라벨 뒤 같은 세로줄에 키를 보인다(`Terminal`, `Keyboard Shortcuts`). 항목과 키의 짝은 이미지의 `/etc/raven/menu-keys/xmonad`(라벨<TAB>키)에 있다. 항목은 더블클릭(더블탭)이나 Enter로 실행한다. 두 번 누르는 간격이 0.2초쯤을 넘으면 항목을 고르기만 한다.
 - `Alt+Tab`은 Windows가 가로챈다. 창 이동은 `Alt+j`/`Alt+k`를 쓴다. `Alt+Space`도 Windows가 가로챌 수 있어서 레이아웃 전환은 `Alt+\`를 쓴다.

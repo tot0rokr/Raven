@@ -1,6 +1,8 @@
 -- raven xmonad config, compiled into the image as xmonad-x86_64-linux (no GHC at runtime).
 -- Alt is the mod key: the Windows side keeps the Win key for itself.
+import qualified Data.Map as M
 import XMonad
+import qualified XMonad.StackSet as W
 import XMonad.Hooks.EwmhDesktops (ewmh, ewmhFullscreen)
 import XMonad.Hooks.ManageDocks (avoidStruts, docks)
 import XMonad.Hooks.ManageHelpers (doCenterFloat, isDialog)
@@ -25,6 +27,7 @@ ravenConfig = def
                          . spacingRaw False (Border 3 3 3 3) True (Border 3 3 3 3) True
                          $ layoutHook def
     , manageHook         = ravenManage <+> manageHook def
+    , logHook            = markMaster
     , startupHook        = do
         spawn "raven-panel"
         spawnOnce "f=$HOME/.config/raven/autostart; [ -f \"$f\" ] && sh \"$f\""
@@ -45,3 +48,16 @@ ravenManage = composeAll
     [ isDialog --> doCenterFloat
     , className =? "Xmessage" --> doCenterFloat
     ]
+
+-- Border of the master window while another window has the focus, so the master area stays visible
+masterBorderColor :: String
+masterBorderColor = "#d0a050"
+
+-- xmonad repaints every border on each change and then runs the logHook, so recolour the master here
+markMaster :: X ()
+markMaster = withWindowSet $ \ws ->
+    case filter (`M.notMember` W.floating ws) (W.index ws) of
+        master : _ : _ | Just master /= W.peek ws -> withDisplay $ \display -> do
+            pixel <- io (initColor display masterBorderColor)
+            whenJust pixel (io . setWindowBorder display master)
+        _ -> return ()

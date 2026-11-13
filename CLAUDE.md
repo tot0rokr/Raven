@@ -19,7 +19,7 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
   - `rootfs/etc/raven/menu.d/00-core.conf`, `rootfs/etc/raven/menu.d/xmonad/00-core.conf`(창 관리자별 규칙), `rootfs/etc/raven/Xresources`, `rootfs/etc/xdg/openbox/menu.xml`.
   - `rootfs/etc/xdg/openbox/autostart`: openbox가 뜰 때 `raven-panel`을 부른다.
   - `rootfs/etc/xdg/tint2/tint2rc` (openbox), `rootfs/etc/raven/tint2/xmonad.tint2rc` (xmonad): 작업표시줄 기본 설정. tint2는 `-c`로 실행해서 세션 홈에 복사본을 만들지 않게 한다.
-- `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다. `XMonad.Layout.Spacing`으로 창 사이와 화면 가장자리에 6px 간격(각 3px)을 두고 `Alt+g`로 끈다.
+- `xmonad/xmonad.hs`: xmonad 설정. mod는 Alt(Windows가 Win 키를 가로챔). EWMH와 docks로 tint2와 연동한다. `XMonad.Layout.Spacing`으로 창 사이와 화면 가장자리에 6px 간격(각 3px)을 두고 `Alt+g`로 끈다. 주 영역 창은 포커스가 없을 때 `logHook`(`markMaster`)이 주황색 테두리로 다시 칠한다.
 - `raven-hostd`: 호스트 중계 (python3). abstract socket `@raven-host-<호스트 uid>`로 세션의 요청(세션 id + 라벨)을 받아 `raven run -t ID @LABEL`로 넘긴다. 요청한 프로세스의 cgroup에서 컨테이너를 찾아 label(`raven.user`, `raven.id`)이 그 사용자의 그 세션일 때만 받는다. 시작한 `raven`의 경로와 환경 변수를 물려받는다.
   - `rootfs/usr/local/bin/raven-host`: 세션 쪽 요청 프로그램 (python3). 실패하면 `xmessage`로 알린다.
 - `addons/<name>/`: 기본 제공 addon. `edge`(기본으로 켜짐), `kime`(한글 입력기, upstream .deb를 버전과 sha256 고정. 기본 설정 `/etc/xdg/kime/config.yaml`은 두벌식과 Shift+Space 전환. VcXsrv가 한/영 키를 왼쪽 Alt로 보내서 작업표시줄 `한/A` 버튼이 `xdotool`로 Hangul 키를 보낸다), `files`(PCManFM. 공유 `~/Downloads`에 `.Trash-60000`이 생기지 않게 `post-install`이 휴지통을 끄고 삭제 확인은 유지한다. `/etc/xdg/mimeapps.list`로 디렉터리를 열고, `xdg-open`이 파일 종류를 알도록 `file`을 넣는다).

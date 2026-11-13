@@ -120,7 +120,8 @@ Raven web: running
 
 Service
   Gateway   running since 2026-11-13 15:11
-  Broker    running, pid 696825
+  Broker    running, pid 696825 (systemd)
+  Autostart enabled; starts at boot
   Listen    127.0.0.1:9444 -> container 8443
   Image     raven-web:latest 26e4765c66d8
 
@@ -131,7 +132,7 @@ Where
   Server    vm-seg01 (server hostname; your PC may use another address)
   Volume    raven-junho-web-data
   Logs      docker logs raven-junho-web
-            /run/user/1000/raven-web-1000-web/broker.log
+            journalctl --user -u raven-web.service
 
 Problems? raven web doctor
 ```
@@ -151,7 +152,7 @@ Problems? raven web doctor
 raven web doctor
 ```
 
-아래 10개 항목을 항상 같은 순서로 한 줄씩 출력한다. 줄은 `ok`, `warn`, `fail`, `skip` 중 하나로 시작한다. `warn`과 `fail`은 다음 줄에 `->`로 다음 조치를 보이고, Docker가 낸 원본 오류는 그 아래 `docker:` 줄에 둔다. 앞 항목이 실패해 검사할 수 없는 항목은 `skip`과 이유를 표시한다. 끝에 브라우저 주소와 인증서 fingerprint, 결과 요약을 출력한다. `fail`이 있으면 종료 코드는 1이다. 색과 줄바꿈은 `status`와 같은 규칙을 따른다.
+아래 11개 항목을 항상 같은 순서로 한 줄씩 출력한다. 줄은 `ok`, `warn`, `fail`, `skip` 중 하나로 시작한다. `warn`과 `fail`은 다음 줄에 `->`로 다음 조치를 보이고, Docker가 낸 원본 오류는 그 아래 `docker:` 줄에 둔다. 앞 항목이 실패해 검사할 수 없는 항목은 `skip`과 이유를 표시한다. 끝에 브라우저 주소와 인증서 fingerprint, 결과 요약을 출력한다. `fail`이 있으면 종료 코드는 1이다. 색과 줄바꿈은 `status`와 같은 규칙을 따른다.
 
 ```text
 Raven web doctor
@@ -165,6 +166,7 @@ Raven web doctor
   ok    Settings         127.0.0.1:9444 for https://localhost:8443
   fail  Broker           stopped (no socket)
                          -> raven web start
+  ok    Autostart        off (optional: raven web enable starts the service at boot)
   skip  Gateway->broker  needs a running broker
   ok    HTTPS            127.0.0.1:9444 answers for localhost:8443
 
@@ -184,6 +186,7 @@ Raven web doctor
 | `Certificate`     | SAN, 유효 기간(30일 미만이면 `warn`), SHA-256 fingerprint                                            |
 | `Settings`        | 저장 설정, origin과 인증서 SAN 일치, 실행 중 설정과 저장 설정의 차이, 멈춘 상태에서 다음 시작 포트 사용 가능 여부 |
 | `Broker`          | runtime 디렉터리와 socket의 소유자·권한, 응답 여부, 다른 checkout에서 띄운 중계                       |
+| `Autostart`       | systemd 사용자 unit의 설치·실행 상태, 재시작 한도 초과, linger(부팅 때 기동) 여부                      |
 | `Gateway->broker` | 웹 컨테이너가 mount한 `/run/raven`으로 중계에 닿는지                                                 |
 | `HTTPS`           | 실제 서버 포트에 origin의 Host로 `GET /login/`을 보내고 `tls.crt`로 인증서를 검증                     |
 
@@ -191,12 +194,12 @@ doctor는 서비스를 시작·중지하지 않고 설정·계정·runtime 파�
 
 | 결과                                                     | 원인과 조치                                                                                          |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 결과                                                     | 원인과 조치                                                                                          |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `Broker  stopped`                                        | 중계가 꺼져 있다. `raven web start`                                                                   |
 | `Broker  stopped; a stale socket is left behind`         | 중계 프로세스가 비정상 종료했다. `raven web start`                                                    |
 | `Broker  ... mode 0700`                                  | runtime 디렉터리 권한이 바뀌었다. 출력된 `chmod 700` 후 `raven web start`                             |
-| `Gateway->broker  the gateway cannot reach the broker`   | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web stop` 후 `raven web start` |
+| `Autostart  ... failed (start-limit-hit)`                | 중계가 5분 안에 5번 넘게 죽어 systemd가 재시작을 멈췄다. `journalctl --user -u raven-web`로 원인을 보고 `raven web start` |
+| `Autostart  enabled, but linger is off`                  | 로그인해야 서비스가 뜬다. 부팅 때 뜨게 하려면 `loginctl enable-linger`                                |
+| `Gateway->broker  the gateway cannot reach the broker`   | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web start`가 컨테이너를 다시 만든다. |
 | `Settings  saved settings are not applied yet`           | 저장한 설정이 아직 적용되지 않았다. `raven web stop` 후 `raven web start`                             |
 | `Settings  the next start cannot listen`                 | 다른 프로세스가 포트를 쓴다. 그 프로세스를 끄거나 `raven web configure --port`로 바꾼다.               |
 | `Certificate  ... expired`, `HTTPS  the served certificate has expired` | 인증서가 만료됐다. 갱신 기능은 아직 없다([M8](./roadmap.md#m8--인증서-상태내보내기갱신)). |
@@ -219,6 +222,10 @@ doctor는 접속 PC를 볼 수 없다. 브라우저에서는 `Browser` 줄의 or
 | `Wrong address` 페이지                                        | origin과 다른 hostname이나 포트로 열었다. 페이지에 표시된 주소를 연다.                            |
 | 호스트 중계에 연결할 수 없습니다                               | 중계가 꺼졌거나 웹 컨테이너가 중계에 닿지 못한다. 서버에서 `raven web doctor`를 실행한다.          |
 | 세션 작업에 실패했습니다: ...                                  | 중계가 요청을 거부했다. 뒤의 문장이 원인이다. `Session changed; refresh the session list`면 목록을 새로고침한다. |
+| 다시 연결 중 (n/10, s초 후)                                     | 화면 연결이 끊겨 자동으로 다시 연결하는 중이다. 기다리거나 `다시 연결`로 바로 시도한다.             |
+| 화면에 다시 연결하지 못했습니다                                 | 자동 재접속 10번이 모두 실패했다. 서버에서 `raven web doctor`를 실행하고 `다시 연결`을 누른다.        |
+| 세션이 중지되어 자동으로 다시 연결하지 않습니다                   | 세션이 멈췄다. 자동 재접속은 데스크톱을 켜지 않는다. `다시 연결`을 누르면 세션을 시작한다.            |
+| 세션이 삭제되었거나 다시 만들어졌습니다                           | 같은 번호의 세션이 지워졌거나 새로 만들어졌다. 세션 목록에서 다시 고른다.                          |
 
 API의 오류 응답은 `error` 문장과 함께 고정된 `code`를 준다: `auth_required`, `method_not_allowed`, `invalid_request`, `invalid_host`, `csrf_cookie_missing`, `csrf_origin_mismatch`, `csrf_token_invalid`, `broker_unavailable`, `session_failed`. 상태 코드는 401, 405, 400, 400, 403, 403, 403, 502, 502다. 응답에는 요청의 Host, Origin, Referer, cookie 값을 넣지 않는다.
 
@@ -229,6 +236,8 @@ API의 오류 응답은 `error` 문장과 함께 고정된 `code`를 준다: `au
 - 로그인 후 세션의 연결 버튼을 누른다. 중지된 세션은 기존 CLI의 접속 절차로 시작한다.
 - 화면 크기 맞춤을 켜면 데스크톱 해상도가 브라우저 영역을 따라 바뀐다. 같은 세션을 보는 다른 뷰어에도 반영된다.
 - 전체 화면, Ctrl + Alt + Del, 연결 종료 후 재연결을 지원한다.
+- 사용자가 끊지 않은 연결이 끊기면 1, 2, 4, 8, 15초, 그 뒤 30초 간격으로 최대 10번 다시 연결한다. 시도할 때마다 로그인과 세션 목록을 다시 확인하고 새 VNC 접속 정보를 받는다. 로그인이 만료됐거나, 세션이 지워졌거나 다시 만들어졌거나, 멈췄으면 다시 연결하지 않는다. 세션 목록으로 돌아가기, 로그아웃, 페이지 닫기는 재접속을 취소한다. 브라우저가 다시 온라인이 되면 기다리던 시도를 바로 한다.
+- `raven a -d`로 다른 뷰어를 끊어도 브라우저 뷰어는 끊긴 연결로 보고 다시 붙는다. 브라우저에서 계속 떼어 두려면 세션 목록으로 돌아간다.
 - 세션 목록으로 돌아가면 해당 화면 연결만 끊는다. 로그아웃하면 같은 로그인 세션으로 연 다른 탭의 화면 연결도 닫는다.
 - 새 세션에서 이름, 창 관리자, 초기 해상도, 시작 명령을 정한다. 생성이 끝나면 화면에 연결한다. 이름은 영문자로 시작하는 64자 이하의 영문·숫자·`_`·`.`·`-` 조합이다.
 - 이름 변경은 실행 중인 앱에 영향을 주지 않는다. 명령 실행은 선택한 세션 컨테이너 안에서 shell 명령을 시작한다. 명령은 4096자 이하이며 호스트 직접 실행 옵션은 제공하지 않는다.
@@ -266,9 +275,24 @@ raven web start
 
 - 비밀번호를 바꾸면 기존 웹 로그인은 모두 무효화되고 열린 화면은 2초 이내에 닫힌다.
 - `stop`은 웹 컨테이너와 웹 중계만 중지한다. 데스크톱 세션과 기존 호스트 앱 중계는 계속 실행된다.
-- SSH 로그인 셸을 닫아도 웹 중계는 실행된다. 서버를 재부팅하면 `raven web start`로 호스트 중계를 다시 시작해야 한다.
 - `status`의 현재 주소와 다음 시작 주소가 다르면 변경 적용이 대기 중이다. 컨테이너가 실행 중이어도 중계가 중지되어 있으면 세션 목록을 가져올 수 없다.
 - 웹 이미지를 갱신할 때는 `build`, `stop`, `start` 순서로 실행한다. 계정과 인증서는 유지된다.
+- runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있으면 `start`가 컨테이너를 다시 만든다.
+
+## 자동 기동
+
+```bash
+raven web enable          # systemd 사용자 unit을 설치하고 지금 시작한다
+loginctl enable-linger    # 로그인하지 않아도 부팅 때 뜨게 한다 (한 번만)
+raven web disable         # unit을 지운다. 실행 중인 게이트웨이는 그대로 둔다
+```
+
+- `enable`은 `~/.config/systemd/user/raven-web.service`를 만들고 켠 뒤 시작한다. unit은 `raven web serve`를 실행한다. serve는 Docker가 응답할 때까지 최대 180초 기다리고, 게이트웨이가 꺼져 있거나 이전 runtime 디렉터리를 보고 있으면 다시 만든 뒤 중계로 바뀐다. 그래서 systemd가 중계 프로세스를 직접 감독한다. 이미 따로 떠 있던 중계는 넘겨받으며 끝낸다.
+- 중계가 죽으면 systemd가 3초 뒤 다시 시작한다. 5분 안에 5번을 넘기면 멈추고 `status`와 `doctor`에 `failed`로 나온다. 원인은 `journalctl --user -u raven-web`로 보고, `raven web start`가 실패 상태를 지우고 다시 시작한다.
+- linger가 꺼져 있으면 서비스는 로그인할 때 뜬다. 마지막 로그아웃 때 `/run/user/<uid>`가 지워지면 중계 socket도 사라진다. 부팅 직후나 로그아웃 뒤에도 접속하려면 linger를 켠다. Raven은 linger를 바꾸지 않는다.
+- unit은 `enable`을 실행한 셸의 `HOME`, `PATH`, `XDG_*` 디렉터리, `DOCKER_*`, `RAVEN_*` 환경 변수를 그대로 쓴다. checkout 경로나 이 값들이 바뀌면 `enable`을 다시 실행한다.
+- 자동 기동을 켠 상태의 `stop`은 unit도 멈추지만, 다음 부팅 때 다시 뜬다. 계속 끄려면 `disable`한다.
+- 자동 복구는 웹 게이트웨이와 중계만 다룬다. 데스크톱 세션은 시작하거나 다시 시작하지 않는다.
 
 ## 자원 제한
 
@@ -301,8 +325,9 @@ raven web start
 - 이미지: `raven-web:latest`. `RAVEN_WEB_IMAGE`로 변경한다. 데스크톱 이미지와 별도로 빌드한다.
 - 컨테이너: `raven-<user>-web`. 웹 전용 `raven.web.uid` label을 사용하며 기존 `raven ls`에는 나타나지 않는다.
 - 데이터 volume: `raven-<user>-web-data`. `/data`의 `db.sqlite3`, `secret.key`, `config.json`, 설정 변경 전 백업, `tls.crt`, `tls.key`를 보관한다. NFS 홈을 사용하지 않는다.
-- 호스트 runtime 디렉터리: `${XDG_RUNTIME_DIR:-/tmp}/raven-web-<uid>-web`. `broker.sock`, `broker.log`, `manager.lock`을 둔다.
+- 호스트 runtime 디렉터리: `${XDG_RUNTIME_DIR:-/tmp}/raven-web-<uid>-web`. `broker.sock`, `broker.log`, `manager.lock`, 디렉터리 교체를 알아보는 `runtime.id`를 둔다.
 - 프로세스: `raven_web_host.py`와 웹 컨테이너. 호스트에 Python 패키지를 설치하지 않는다.
+- systemd 사용자 unit: `~/.config/systemd/user/raven-web.service`. `enable`이 만들고 `disable`이 지운다. instance를 바꾸면 `raven-<instance>.service`다.
 
 `raven uninstall`은 기존 데스크톱 자원을 제거하며 웹 컨테이너·데이터 volume·웹 이미지는 별도로 남는다. 먼저 `raven web stop`을 실행한다. 웹 데이터를 더 이상 보관하지 않을 때 아래의 `<user>`를 실제 `raven web status`에 나온 이름으로 바꿔 제거한다. 데이터 volume을 지우면 웹 계정과 인증서도 삭제된다.
 
@@ -323,6 +348,7 @@ docker build -f web/Dockerfile -t raven-web:dev .
 python3 tests/web_resource_limits.py
 python3 tests/web_config_e2e.py
 python3 tests/web_doctor_e2e.py
+python3 tests/web_autostart_e2e.py
 python3 tests/web_e2e.py
 ```
 
@@ -330,11 +356,13 @@ python3 tests/web_e2e.py
 
 doctor 통합 시험은 정상 설치, 적용 대기 설정, 다음 시작 포트 충돌, 인증서와 맞지 않는 origin, 중계 중지·비정상 종료·runtime 디렉터리 교체, 만료 인증서, runtime 디렉터리 권한, Docker 접근 실패, 다른 uid 소유의 데이터 volume을 차례로 만들고 진단 결과와 종료 코드를 확인한다. doctor 실행 전후의 데이터 volume 파일, 컨테이너 ID·시작 시각, runtime 디렉터리가 같은지, 출력과 게이트웨이·중계 로그에 시험 비밀번호·`secret.key`·개인 키·cookie가 없는지도 확인한다.
 
+자동 기동 통합 시험은 시험 instance의 unit을 사용자 systemd의 runtime 영역(`/run/user/<uid>/systemd/user`)에 두어 재부팅 뒤 남지 않게 한다. 따로 떠 있던 중계를 넘겨받는지, 강제 종료한 중계를 systemd가 다시 띄우는지, runtime 디렉터리를 지운 재부팅 상황과 runtime 디렉터리 교체에서 게이트웨이가 복구되는지, 재시작 한도 초과 뒤 `start`로 회복하는지, `stop`·`start`·`disable`이 맞게 동작하는지 확인한다. 시험 전후 이 계정의 데스크톱 컨테이너 시작 시각이 같아야 한다. 실제 서버 재부팅은 하지 않는다.
+
 자원 시험은 Linux cgroup v2에서 메모리·swap·CPU·process/thread 상한과 동시에 수행하는 비밀번호 검증 5개의 동작을 확인한다. 임시 컨테이너를 시작하기 전에 Docker 설정의 상한부터 검사하므로 제한 없는 컨테이너에서 부하를 발생시키지 않는다.
 
 화면 통합 시험에는 기존 `raven:latest` 세션 이미지가 필요하다. 서로 다른 서버·브라우저 포트를 로컬 TCP 전달기로 연결해 HTTPS 로그인과 WSS/RFB 화면 수신을 확인한다. 이는 실제 접속 PC의 SSH 인증 시험과 구분한다. 웹 서비스 stop/start 후 인증서와 데스크톱 ID가 유지되는지, HTTPS API로 별도 시험 세션을 생성·변경·삭제하고 명령이 시험 컨테이너 안에서 실행되는지 확인한다. 화면 캡처는 출력에 나온 임시 디렉터리에 남긴다. `RAVEN_WEB_BROWSER_IMAGE=headless-browser:1.63.0`을 지정하면 로그인 전 화면과 noVNC JavaScript 로딩도 브라우저에서 검사한다. 브라우저 자동 로그인은 수행하지 않는다.
 
-`python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
+`python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 이어서 가짜 noVNC 모듈과 멈춘 페이지 시계로 자동 재접속의 지연 간격, 매 시도의 새 접속 정보, 10번 한도, 로그인 만료·세션 삭제·세션 중지·사용자 종료·로그아웃에서 멈추는지를 검사한다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
 
 `python3 tests/web_module_loading.py`는 실제 noVNC module graph에 WebCodecs API 누락·예외·미완료 상태를 주입한다. 목록을 먼저 표시하는지, 모듈 로딩이 제한 시간 안에 완료되는지, decoder가 정리되는지와 정상 H.264 지원을 검사한다. 시험용 HTML·API 응답을 사용하며 실제 로그인을 수행하지 않는다. 모바일 크기의 Chromium 시험이며 실제 Android 기기의 확인을 대신하지 않는다. 로컬 호환성 수정의 범위는 [noVNC 브라우저 검사](../web/novnc/README.md)에 기록한다.
 

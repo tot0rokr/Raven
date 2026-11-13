@@ -147,7 +147,7 @@ with sync_playwright() as playwright:
         else:
             expect(page.locator("#session-count")).to_have_text("1", timeout=IMPORT_TIMEOUT_MS)
             assert len(api_requests) == 1 and not vendor_requests
-            assert len(app_requests) == 1 and urlparse(app_requests[0]).query == "v=2"
+            assert len(app_requests) == 1 and urlparse(app_requests[0]).query == "v=3"
             assert page.evaluate("window.decoderProbe.supportCalls === 0 && window.decoderProbe.created === 0")
             imported = page.evaluate("""async ({prefix, timeout}) => {
               const started = performance.now();

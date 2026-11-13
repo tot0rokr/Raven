@@ -8,6 +8,7 @@ import secrets
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -160,10 +161,10 @@ def main():
             row("ok", "Data volume", f"{volume}, uid {os.getuid()}, mode 0700, all files present"),
             row("ok", "Account", "initialized"), row("ok", "Certificate", "localhost, valid until"),
             row("ok", "Settings", f"127.0.0.1:{server_port} for {origin}"), row("ok", "Broker", "pid"),
-            row("ok", "Gateway->broker", "reachable"),
+            row("ok", "Autostart", "off"), row("ok", "Gateway->broker", "reachable"),
             row("ok", "HTTPS", f"127.0.0.1:{server_port} answers for localhost:{browser_port}"),
             f"  Browser   {origin} (SSH tunnel -L {browser_port}:127.0.0.1:{server_port}", "  SHA-256   ",
-            "All 10 checks passed."])
+            "All 11 checks passed."])
         assert "\033[" not in output, output
         assert "Problems? raven web doctor" in cli(environment, "status")
 
@@ -209,11 +210,18 @@ def main():
         cli(environment, "start")
         shutdown_broker(runtime)
         runtime.rename(scratch / "replaced-runtime")
-        cli(environment, "start")
+        runtime.mkdir(mode=0o700)
+        subprocess.Popen([sys.executable, str(SOURCE / "raven_web_host.py"), str(SOURCE / "raven"),
+                          str(runtime / "broker.sock")], env=environment, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + READY_TIMEOUT
+        while not (runtime / "broker.sock").exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
         doctor.run(1, [row("ok", "Broker", "pid"), row("fail", "Gateway->broker", "the gateway cannot reach the "
-                       "broker through /run/raven" + NEXT + "raven web stop, then raven web start")])
-        cli(environment, "stop")
+                       "broker through /run/raven" + NEXT + "raven web start (recreates a gateway")])
+        stale_gateway = inspect(environment, gateway)["Id"]
         cli(environment, "start")
+        assert inspect(environment, gateway)["Id"] != stale_gateway, "start did not recreate the stale gateway"
         doctor.run(0, [row("ok", "Gateway->broker", "reachable")])
 
         print("Checking an expired certificate", flush=True)
@@ -255,7 +263,8 @@ def main():
 
         print("Checking logs for credentials", flush=True)
         logs = run(["docker", "logs", gateway], environment)
-        broker_log = (runtime / "broker.log").read_bytes()
+        broker_log = b"".join(path.read_bytes() for path in (runtime / "broker.log", scratch / "replaced-runtime"
+                                                             / "broker.log") if path.exists())
         for secret in doctor.forbidden[:1] + doctor.forbidden[-1:]:
             for text in (logs.stdout, logs.stderr, broker_log):
                 assert secret.encode() not in text, "A credential appeared in the gateway or broker log"

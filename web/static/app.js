@@ -1,4 +1,9 @@
 const VIEWER_MODULE_TIMEOUT_MS = 10000;
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+const RECONNECT_MAX_ATTEMPTS = 10;
+const RETRYABLE_CLIENT_STATUSES = new Set([408, 429]);
+const RECONNECT_NOTICE = "화면 연결이 끊어졌습니다. 자동으로 다시 연결합니다.";
+const AUTHENTICATION_FAILED = "데스크톱 인증에 실패했습니다. 다시 연결해 주세요.";
 
 async function loadViewerModule() {
   let timer;
@@ -21,6 +26,9 @@ const viewer = element("viewer");
 let activeSession = null;
 let connection = null;
 let connectionAttempt = 0;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let countdownTimer = null;
 let operationSession = null;
 
 function notice(id, message) {
@@ -61,7 +69,11 @@ async function api(path, method = "GET", body) {
   }
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {};
-  if (!response.ok) throw new Error(errorMessage(data));
+  if (!response.ok) {
+    const error = new Error(errorMessage(data));
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -131,8 +143,16 @@ function setConnectionStatus(text, connected = false) {
   element("send-ctrl-alt-del").disabled = !connected;
 }
 
+function clearReconnectTimers() {
+  clearTimeout(reconnectTimer);
+  clearInterval(countdownTimer);
+  reconnectTimer = null;
+  countdownTimer = null;
+}
+
 function disconnect() {
   connectionAttempt += 1;
+  clearReconnectTimers();
   if (connection) {
     const previous = connection;
     connection = null;
@@ -142,10 +162,112 @@ function disconnect() {
   setConnectionStatus("연결 종료");
 }
 
+function endConnection(message, { status = "연결 종료", retry = true } = {}) {
+  setConnectionStatus(status);
+  element("reconnect-viewer").hidden = !retry;
+  notice("viewer-notice", message);
+}
+
+function scheduleReconnect(message) {
+  if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+    endConnection("화면에 다시 연결하지 못했습니다. 네트워크와 서버 상태를 확인한 뒤 다시 연결해 주세요.", { status: "연결 실패" });
+    return;
+  }
+  const next = reconnectAttempts + 1;
+  const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+  const deadline = Date.now() + delay;
+  const showCountdown = () => {
+    const seconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+    setConnectionStatus(`다시 연결 중 (${next}/${RECONNECT_MAX_ATTEMPTS}, ${seconds}초 후)`);
+  };
+  showCountdown();
+  countdownTimer = setInterval(showCountdown, 1000);
+  reconnectTimer = setTimeout(reconnectNow, delay);
+  element("reconnect-viewer").hidden = false;
+  notice("viewer-notice", message);
+}
+
+// Every attempt rechecks the login and the session first: open would start a stopped desktop.
+async function reconnectNow() {
+  clearReconnectTimers();
+  const attempt = connectionAttempt;
+  const session = activeSession;
+  reconnectAttempts += 1;
+  setConnectionStatus(`다시 연결 중 (${reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
+  try {
+    const { sessions } = await api("/api/sessions/");
+    if (attempt !== connectionAttempt) return;
+    const current = sessions.find((item) => item.id === session.id);
+    if (!current || current.generation !== session.generation) {
+      endConnection("세션이 삭제되었거나 다시 만들어졌습니다. 세션 목록에서 다시 선택해 주세요.", { retry: false });
+      return;
+    }
+    if (current.state !== "running") {
+      endConnection("세션이 중지되어 자동으로 다시 연결하지 않습니다. 다시 연결하면 세션을 시작합니다.");
+      return;
+    }
+    activeSession = current;
+    element("viewer-title").textContent = sessionName(current);
+    await connectViewer(current, attempt);
+  } catch (error) {
+    if (attempt !== connectionAttempt) return;
+    if (error.status >= 400 && error.status < 500 && !RETRYABLE_CLIENT_STATUSES.has(error.status)) {
+      endConnection(error.message, { status: "연결 실패" });
+      return;
+    }
+    // fetch rejects with a TypeError when the network or the gateway is unreachable.
+    scheduleReconnect(error instanceof TypeError ? RECONNECT_NOTICE : error.message);
+  }
+}
+
+async function connectViewer(session, attempt) {
+  const { default: RFB } = await loadViewerModule();
+  if (attempt !== connectionAttempt) return;
+  const data = await api(sessionPath(session.id, "open"), "POST");
+  if (attempt !== connectionAttempt) return;
+  const url = new URL(data.websocket, window.location.origin);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/ws/sessions/")) {
+    throw new Error("화면 연결 주소가 올바르지 않습니다.");
+  }
+  url.protocol = "wss:";
+  const remote = new RFB(element("desktop"), url.href, { credentials: { password: data.password } });
+  data.password = "";
+  connection = remote;
+  let authenticationFailed = false;
+  remote.scaleViewport = true;
+  remote.resizeSession = element("resize-desktop").checked;
+  remote.background = "#0c1012";
+  remote.addEventListener("connect", () => {
+    if (connection !== remote) return;
+    reconnectAttempts = 0;
+    element("reconnect-viewer").hidden = true;
+    notice("viewer-notice", "");
+    setConnectionStatus("연결됨", true);
+    remote.focus();
+  });
+  remote.addEventListener("disconnect", () => {
+    if (connection !== remote) return;
+    connection = null;
+    if (authenticationFailed) endConnection(AUTHENTICATION_FAILED);
+    else scheduleReconnect(RECONNECT_NOTICE);
+  });
+  remote.addEventListener("securityfailure", () => {
+    if (connection !== remote) return;
+    authenticationFailed = true;
+    notice("viewer-notice", AUTHENTICATION_FAILED);
+  });
+  remote.addEventListener("credentialsrequired", () => {
+    if (connection !== remote) return;
+    disconnect();
+    endConnection("데스크톱 인증 정보를 확인하지 못했습니다. 다시 연결해 주세요.");
+  });
+}
+
 async function openSession(session) {
   disconnect();
   const attempt = connectionAttempt;
   activeSession = session;
+  reconnectAttempts = 0;
   workspace.hidden = true;
   viewer.hidden = false;
   element("viewer-title").textContent = sessionName(session);
@@ -153,52 +275,10 @@ async function openSession(session) {
   notice("viewer-notice", "");
   setConnectionStatus("연결 중…");
   try {
-    const { default: RFB } = await loadViewerModule();
-    if (attempt !== connectionAttempt) return;
-    const data = await api(sessionPath(session.id, "open"), "POST");
-    if (attempt !== connectionAttempt) return;
-    const url = new URL(data.websocket, window.location.origin);
-    if (url.origin !== window.location.origin || !url.pathname.startsWith("/ws/sessions/")) {
-      throw new Error("화면 연결 주소가 올바르지 않습니다.");
-    }
-    url.protocol = "wss:";
-    const remote = new RFB(element("desktop"), url.href, { credentials: { password: data.password } });
-    data.password = "";
-    connection = remote;
-    remote.scaleViewport = true;
-    remote.resizeSession = element("resize-desktop").checked;
-    remote.background = "#0c1012";
-    remote.addEventListener("connect", () => {
-      if (connection !== remote) return;
-      setConnectionStatus("연결됨", true);
-      remote.focus();
-    });
-    remote.addEventListener("disconnect", async () => {
-      if (connection !== remote) return;
-      connection = null;
-      setConnectionStatus("연결 종료");
-      element("reconnect-viewer").hidden = false;
-      notice("viewer-notice", "화면 연결이 종료되었습니다. 다시 연결할 수 있습니다.");
-      try {
-        await api("/api/sessions/");
-      } catch (error) {
-        notice("viewer-notice", error.message);
-      }
-    });
-    remote.addEventListener("securityfailure", () => {
-      if (connection === remote) notice("viewer-notice", "데스크톱 인증에 실패했습니다. 다시 연결해 주세요.");
-    });
-    remote.addEventListener("credentialsrequired", () => {
-      if (connection !== remote) return;
-      disconnect();
-      element("reconnect-viewer").hidden = false;
-      notice("viewer-notice", "데스크톱 인증 정보를 확인하지 못했습니다. 다시 연결해 주세요.");
-    });
+    await connectViewer(session, attempt);
   } catch (error) {
     if (attempt !== connectionAttempt) return;
-    setConnectionStatus("연결 실패");
-    element("reconnect-viewer").hidden = false;
-    notice("viewer-notice", error.message);
+    endConnection(error.message, { status: "연결 실패" });
   }
 }
 
@@ -301,6 +381,9 @@ document.addEventListener("fullscreenchange", () => {
 });
 element("logout-form").addEventListener("submit", disconnect);
 window.addEventListener("pagehide", disconnect);
+window.addEventListener("online", () => {
+  if (reconnectTimer !== null) reconnectNow();
+});
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) window.location.reload();
 });

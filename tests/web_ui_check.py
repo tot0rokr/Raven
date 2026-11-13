@@ -1,4 +1,4 @@
-"""Run management UI component checks with isolated Docker fixtures."""
+"""Run management and reconnect UI component checks with isolated Docker fixtures."""
 
 import json
 import os
@@ -24,15 +24,15 @@ page = subprocess.run(
      "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", web_image, "python", "-c", render],
     capture_output=True, check=True, timeout=60,
 )
-result = subprocess.run(
-    ["docker", "run", "--rm", "-i", "--init", "--network", "none", "--read-only",
-     "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
-     "--user", f"{os.getuid()}:{os.getgid()}", "--security-opt", "seccomp=unconfined",
-     "--shm-size", "1g", "--env", "HOME=/tmp", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m",
-     "--mount", f"type=bind,src={source},dst=/source,readonly",
-     "--mount", f"type=bind,src={output},dst=/output", browser_image,
-     "python3", "/source/tests/web_management_ui.py"],
-    input=json.dumps({"html": page.stdout.decode(), "output": "/output"}).encode(), timeout=120,
-)
-print(f"UI artifacts: {output}")
-result.check_returncode()
+print(f"UI artifacts: {output}", flush=True)
+for script in ("web_management_ui.py", "web_reconnect_ui.py"):
+    subprocess.run(
+        ["docker", "run", "--rm", "-i", "--init", "--network", "none", "--read-only",
+         "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
+         "--user", f"{os.getuid()}:{os.getgid()}", "--security-opt", "seccomp=unconfined",
+         "--shm-size", "1g", "--env", "HOME=/tmp", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m",
+         "--mount", f"type=bind,src={source},dst=/source,readonly",
+         "--mount", f"type=bind,src={output},dst=/output", browser_image,
+         "python3", f"/source/tests/{script}"],
+        input=json.dumps({"html": page.stdout.decode(), "output": "/output"}).encode(), timeout=300, check=True,
+    )

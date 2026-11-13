@@ -25,12 +25,23 @@ def verb(argv):
     return argv[1] if argv[1] in ("version", "run", "exec") else " ".join(argv[1:3])
 
 
+UNIT_ABSENT = "LoadState=not-found\nUnitFileState=\nActiveState=inactive\nResult=success\nNRestarts=0\nMainPID=0\n"
+
+
 class FakeDocker:
-    def __init__(self, **responses):
+    """Answer docker calls from a table and record them; systemd reports an absent unit unless told otherwise."""
+
+    def __init__(self, unit=UNIT_ABSENT, linger="no", **responses):
         self.calls = []
+        self.unit = unit
+        self.linger = linger
         self.responses = responses
 
     def __call__(self, argv, **kwargs):
+        if argv[0] == "systemctl":
+            return subprocess.CompletedProcess(argv, 0, self.unit, "")
+        if argv[0] == "loginctl":
+            return subprocess.CompletedProcess(argv, 0, self.linger + "\n", "")
         self.calls.append(argv)
         response = self.responses[verb(argv).replace(" ", "_")]
         if isinstance(response, BaseException):
@@ -205,6 +216,47 @@ class DoctorTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_autostart_levels(self):
+        def unit(file_state, active, result="success", restarts=0):
+            return (f"LoadState=loaded\nUnitFileState={file_state}\nActiveState={active}\nResult={result}\n"
+                    f"NRestarts={restarts}\nMainPID=0\n")
+
+        name = GLOBALS["UNIT"]
+        cases = ((UNIT_ABSENT, "no", "  ok    Autostart        off"),
+                 (unit("enabled", "active"), "yes", f"  ok    Autostart        {name} enabled and running"),
+                 (unit("enabled-runtime", "active"), "no", "  warn  Autostart        enabled, but linger is off"),
+                 (unit("enabled", "failed", "start-limit-hit", 5), "yes",
+                  f"  fail  Autostart        {name} failed (start-limit-hit) after 5 restarts"),
+                 (unit("enabled", "inactive"), "yes", f"  warn  Autostart        {name} is enabled but inactive"))
+        for state, lingering, expected in cases:
+            with self.subTest(expected=expected):
+                with patch("subprocess.run", side_effect=FakeDocker(unit=state, linger=lingering)):
+                    _, output, _ = call(manager["check_autostart"])
+                self.assertIn(expected, output)
+
+
+class AutostartTests(unittest.TestCase):
+    def test_unit_runs_serve_with_the_cli_environment_quoted_for_systemd(self):
+        environment = {"HOME": "/home/u", "PATH": "/usr/bin", "XDG_RUNTIME_DIR": "/tmp/r 1",
+                       "RAVEN_WEB_INSTANCE": "web", "RAVEN_X": 'a"b%c\\d', "DISPLAY": ":0", "XDG_SESSION_ID": "3"}
+        with patch.dict(os.environ, environment, clear=True):
+            text = manager["unit_text"]()
+        self.assertIn('Environment="RAVEN_X=a\\"b%%c\\\\d"\n', text)
+        self.assertIn('Environment="XDG_RUNTIME_DIR=/tmp/r 1"\n', text)
+        self.assertNotIn("DISPLAY", text)
+        self.assertNotIn("XDG_SESSION_ID", text)
+        self.assertIn('/raven-web" "serve"\n', text)
+        for line in ("Type=exec", "Restart=on-failure", "StartLimitBurst=5", "WantedBy=default.target"):
+            self.assertIn(line + "\n", text)
+
+    def test_serve_waits_for_a_late_docker_daemon(self):
+        results = iter([subprocess.CompletedProcess([], 1, "", "Cannot connect to the Docker daemon"),
+                        subprocess.CompletedProcess([], 0, "29.1.3\n", "")])
+        with patch("subprocess.run", side_effect=lambda *args, **kwargs: next(results)), \
+                patch("time.sleep") as sleep:
+            manager["wait_for_docker"]()
+        sleep.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 """Build, provision and run the single-account Raven web gateway."""
 
 import argparse
+import contextlib
 import fcntl
 import http.client
 import ipaddress
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -43,7 +45,18 @@ MIN_WRAP_WIDTH = 30
 GREEN, YELLOW, RED, DIM, BOLD = "32", "33", "31", "2", "1"
 LEVEL_COLORS = {"ok": GREEN, "warn": YELLOW, "fail": RED, "skip": DIM}
 DOCTOR_ITEMS = ("Docker", "Gateway", "Image", "Data volume", "Account", "Certificate", "Settings",
-                "Broker", "Gateway->broker", "HTTPS")
+                "Broker", "Autostart", "Gateway->broker", "HTTPS")
+UNIT = f"raven-{INSTANCE}.service"
+MANAGER_RUNTIME = f"/run/user/{os.getuid()}"
+UNIT_DIRECTORY = Path(os.environ.get("RAVEN_WEB_UNIT_DIR")
+                      or Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config/systemd/user")
+UNIT_ENVIRONMENT = ("HOME", "PATH", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                    "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT")
+RUNTIME_ID = "runtime.id"
+DOCKER_WAIT = 180
+RESTART_DELAY = 3
+RESTART_BURST = 5
+RESTART_WINDOW = 300
 WEB_MEMORY = "1g"
 WEB_CPUS = "1"
 # Verify codes from OpenSSL's x509_vfy.h
@@ -306,6 +319,187 @@ def stop_broker():
         raise RequestError("Broker did not stop")
 
 
+def wait_for_broker(timeout=START_TIMEOUT):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            current = broker_status()
+        except (OSError, ValueError, RequestError):
+            current = None
+        if current:
+            return current
+        time.sleep(0.2)
+    raise RequestError(f"The broker did not answer; read journalctl --user -u {UNIT}")
+
+
+@contextlib.contextmanager
+def manager_lock():
+    private_directory(RUNTIME)
+    descriptor = os.open(RUNTIME / "manager.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def runtime_id():
+    """A token naming this runtime directory, so a gateway still mounting a replaced one can be found."""
+    path = RUNTIME / RUNTIME_ID
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return path.read_text().strip()
+    token = secrets.token_hex(16)
+    with os.fdopen(descriptor, "w") as output:
+        output.write(token)
+    return token
+
+
+def runtime_current(current):
+    try:
+        result = docker("exec", NAME, "cat", f"/run/raven/{RUNTIME_ID}", check=False, timeout=PROBE_TIMEOUT * 3)
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == runtime_id()
+
+
+def systemctl(*arguments, check=False):
+    """Run systemctl against this account's user manager, whatever XDG_RUNTIME_DIR the CLI uses."""
+    try:
+        result = subprocess.run(["systemctl", "--user", *arguments], capture_output=True, text=True,
+                                env={**os.environ, "XDG_RUNTIME_DIR": MANAGER_RUNTIME}, timeout=START_TIMEOUT * 2)
+    except FileNotFoundError as error:
+        raise RequestError("systemctl is not available; autostart needs systemd") from error
+    if check and result.returncode:
+        raise RequestError(result.stderr.strip() or f"systemctl --user {arguments[0]} failed")
+    return result
+
+
+def autostart():
+    """The unit's state from systemd, or None when the user manager cannot be reached."""
+    try:
+        result = systemctl("show", UNIT, *(f"--property={name}" for name in (
+            "LoadState", "UnitFileState", "ActiveState", "Result", "NRestarts", "MainPID")))
+    except (RequestError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    state["enabled"] = state.get("UnitFileState", "").startswith("enabled")
+    return state
+
+
+def linger():
+    """True or False when loginctl knows whether this account's services run without a login, else None."""
+    try:
+        result = subprocess.run(["loginctl", "show-user", pwd.getpwuid(os.getuid()).pw_name, "--property=Linger",
+                                 "--value"], capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() == "yes" if result.returncode == 0 else None
+
+
+def unit_runtime_flag():
+    return ["--runtime"] if str(UNIT_DIRECTORY).startswith(MANAGER_RUNTIME + "/") else []
+
+
+def unit_text():
+    def quote(value):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+    names = sorted(name for name in os.environ if name in UNIT_ENVIRONMENT or name.startswith("RAVEN_"))
+    environment = "".join(f"Environment={quote(f'{name}={os.environ[name]}')}\n" for name in names)
+    command = " ".join(quote(part) for part in (sys.executable, str(SOURCE / "raven-web"), "serve"))
+    return (f"# Written by raven web enable; remove it with raven web disable.\n"
+            f"[Unit]\nDescription=Raven web gateway and broker ({INSTANCE})\n"
+            f"StartLimitIntervalSec={RESTART_WINDOW}\nStartLimitBurst={RESTART_BURST}\n\n"
+            f"[Service]\nType=exec\n{environment}ExecStart={command}\nRestart=on-failure\n"
+            f"RestartSec={RESTART_DELAY}\nTimeoutStartSec={DOCKER_WAIT + 60}\nTimeoutStopSec=20\n\n"
+            f"[Install]\nWantedBy=default.target\n")
+
+
+def wait_for_docker():
+    deadline = time.monotonic() + DOCKER_WAIT
+    while True:
+        try:
+            result = docker("version", "--format", "{{.Server.Version}}", check=False, timeout=PROBE_TIMEOUT * 3)
+            if result.returncode == 0:
+                return
+            detail = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            detail = "the daemon did not answer"
+        if time.monotonic() > deadline:
+            raise RequestError(f"Docker is not available after {DOCKER_WAIT} seconds: {detail}")
+        time.sleep(2)
+
+
+def release_socket():
+    """Make room for the supervised broker: stop one started outside systemd, remove a stale socket."""
+    if broker_status():
+        stop_broker()
+    elif ADDRESS.exists():
+        info = ADDRESS.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+            raise RequestError("Refusing to replace an unknown broker socket")
+        ADDRESS.unlink()
+
+
+def serve():
+    """Entry point of the systemd unit: keep the gateway up, then become the broker."""
+    wait_for_docker()
+    adopt_runtime(inspect_owned("container", NAME))
+    with manager_lock():
+        current = inspect_owned("container", NAME)
+        if not (current and current["State"]["Running"] and runtime_current(current)):
+            start(None, launch_broker=False)
+        release_socket()
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, str(SOURCE / "raven_web_host.py"), str(SOURCE / "raven"),
+                              str(ADDRESS)])
+
+
+def enable():
+    require_data()
+    UNIT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = UNIT_DIRECTORY / UNIT
+    temporary = path.with_name(f".{UNIT}.{secrets.token_hex(4)}")
+    temporary.write_text(unit_text())
+    temporary.chmod(0o644)
+    temporary.replace(path)
+    systemctl("daemon-reload", check=True)
+    systemctl("enable", *unit_runtime_flag(), UNIT, check=True)
+    systemctl("reset-failed", UNIT)
+    systemctl("restart", UNIT, check=True)
+    broker = wait_for_broker(DOCKER_WAIT)
+    print(f"Autostart enabled: {UNIT} (broker pid {broker['pid']})")
+    if linger() is False:
+        print("Linger is off, so the service starts when you log in, not at boot. "
+              "To start it at boot: loginctl enable-linger")
+
+
+def disable():
+    path = UNIT_DIRECTORY / UNIT
+    state = autostart()
+    if state and state.get("LoadState") != "not-found":
+        systemctl("disable", *unit_runtime_flag(), UNIT)
+        systemctl("stop", UNIT)
+    path.unlink(missing_ok=True)
+    systemctl("daemon-reload")
+    systemctl("reset-failed", UNIT)
+    current = inspect_owned("container", NAME)
+    if current and current["State"]["Running"]:
+        with manager_lock():
+            start_broker()
+        print(f"Autostart disabled: {UNIT}. The gateway keeps running with a broker outside systemd.")
+    else:
+        print(f"Autostart disabled: {UNIT}.")
+
+
+def start_unit():
+    systemctl("reset-failed", UNIT)
+    systemctl("start", UNIT, check=True)
+    wait_for_broker(DOCKER_WAIT)
+
+
 def initialize(args):
     current = inspect_owned("container", NAME)
     if current and current["State"]["Running"]:
@@ -332,9 +526,13 @@ def password(args):
            "python", "manage.py", "change-password", "--username", args.username, capture=False)
 
 
-def start(args):
+def start(args, launch_broker=True):
     require_data()
     current = inspect_owned("container", NAME)
+    if current and current["State"]["Running"] and not runtime_current(current):
+        print("The gateway mounts a replaced runtime directory; recreating it")
+        docker("container", "stop", "--time", "10", NAME)
+        current = inspect_owned("container", NAME)
     saved = configuration()
     config = desired_configuration(saved["config"], current, args)
     configuration("validate", config, saved["revision"])
@@ -343,13 +541,16 @@ def start(args):
         if any(config[key] != value for key, value in actual.items()):
             raise RequestError("The gateway is running with different settings; run raven web stop first")
         docker("container", "update", *resource_args(), NAME)
-        start_broker()
+        if launch_broker:
+            start_broker()
         wait_for_https(config, saved["certificate"])
         configuration("write", config, saved["revision"])
         print(f"Web gateway is running: {NAME}")
         return
     check_port(config, current)
-    start_broker()
+    runtime_id()
+    if launch_broker:
+        start_broker()
     previous_name = None
     if current:
         previous_name = NAME + "-previous-" + current["Id"][:12]
@@ -387,8 +588,13 @@ def stop():
     current = inspect_owned("container", NAME)
     if current and current["State"]["Running"]:
         docker("container", "stop", "--time", "10", NAME)
+    state = autostart()
+    if state and state.get("ActiveState") in ("active", "activating", "reloading"):
+        systemctl("stop", UNIT, check=True)
     stop_broker()
     print("Web gateway stopped; desktop sessions are still running.")
+    if state and state["enabled"]:
+        print("Autostart is still enabled, so the service starts again at the next boot; raven web disable turns it off.")
 
 
 def gateway_state(current):
@@ -434,7 +640,11 @@ def status():
             term.row(label, value, wrap)
     term.section("Service")
     term.row("Gateway", gateway_state(current))
+    unit = autostart()
+    if broker and unit and unit.get("MainPID") == str(broker["pid"]):
+        broker_text += " (systemd)"
     term.row("Broker", broker_text)
+    term.row("Autostart", *autostart_summary(unit))
     if running:
         published = binding(current)
         term.row("Listen", f"{published['listen']}:{published['port']} -> container 8443")
@@ -456,9 +666,26 @@ def status():
     term.row("Server", f"{socket.gethostname()} (server hostname; your PC may use another address)")
     term.row("Volume", VOLUME)
     term.row("Logs", f"docker logs {NAME}", wrap=False)
-    term.row("", str(RUNTIME / "broker.log"), wrap=False)
+    if unit and unit.get("LoadState") == "loaded":
+        term.row("", f"journalctl --user -u {UNIT}", wrap=False)
+    else:
+        term.row("", str(RUNTIME / "broker.log"), wrap=False)
     print()
     print(f"Problems? {term.paint('raven web doctor', BOLD)}")
+
+
+def autostart_summary(unit):
+    """(text, wrap, color) for the status Autostart row."""
+    if unit is None:
+        return "unknown; the systemd user manager is not reachable", True, None
+    if not unit["enabled"]:
+        return "off; raven web enable starts the service at boot", True, None
+    if unit.get("ActiveState") == "failed":
+        return f"failed ({unit.get('Result')}); journalctl --user -u {UNIT}, then raven web start", True, RED
+    restarts = f", restarted {unit['NRestarts']} times" if unit.get("NRestarts", "0") != "0" else ""
+    if linger() is False:
+        return f"enabled{restarts}; starts at login only (linger is off: loginctl enable-linger)", True, YELLOW
+    return f"enabled{restarts}; starts at boot", True, None
 
 
 def connection_rows(config):
@@ -756,6 +983,24 @@ def check_broker(report):
     return True
 
 
+def check_autostart(report):
+    unit = autostart()
+    if unit is None:
+        report.add("skip", "Autostart", "the systemd user manager is not reachable")
+    elif not unit["enabled"]:
+        report.add("ok", "Autostart", "off (optional: raven web enable starts the service at boot)")
+    elif unit.get("ActiveState") == "failed":
+        report.add("fail", "Autostart", f"{UNIT} failed ({unit.get('Result')}) after "
+                   f"{unit.get('NRestarts', '0')} restarts", f"journalctl --user -u {UNIT}, then raven web start")
+    elif unit.get("ActiveState") != "active":
+        report.add("warn", "Autostart", f"{UNIT} is enabled but {unit.get('ActiveState')}", "raven web start")
+    elif linger() is False:
+        report.add("warn", "Autostart", "enabled, but linger is off: the service starts at login, not at boot",
+                   "loginctl enable-linger")
+    else:
+        report.add("ok", "Autostart", f"{UNIT} enabled and running")
+
+
 def check_gateway_broker(report):
     try:
         result = docker("exec", NAME, "python", "-c", PING_FROM_GATEWAY, check=False, timeout=PROBE_TIMEOUT * 3)
@@ -764,7 +1009,8 @@ def check_gateway_broker(report):
     if result.returncode:
         lines = result.stderr.strip().splitlines()
         report.add("fail", "Gateway->broker", "the gateway cannot reach the broker through /run/raven",
-                   "raven web stop, then raven web start", lines[-1] if lines else None)
+                   "raven web start (recreates a gateway that mounts a replaced runtime directory)",
+                   lines[-1] if lines else None)
     else:
         report.add("ok", "Gateway->broker", "reachable")
 
@@ -846,6 +1092,7 @@ def doctor():
     else:
         report.skip(DOCTOR_ITEMS[1:7], "needs Docker")
     broker = check_broker(report)
+    check_autostart(report)
     running = current and current["State"]["Running"] and not current["State"].get("Restarting")
     if not docker_available:
         report.skip(["Gateway->broker", "HTTPS"], "needs Docker")
@@ -884,6 +1131,9 @@ def arguments():
     commands.add_parser("stop", help="stop web access without stopping desktop sessions")
     commands.add_parser("status", help="show gateway and broker status")
     commands.add_parser("doctor", help="check the web service and explain failures without changing anything")
+    commands.add_parser("enable", help="start the web service at boot with a systemd user unit, and now")
+    commands.add_parser("disable", help="remove the systemd user unit; the running gateway keeps running")
+    commands.add_parser("serve", help="keep the gateway up and run the broker (used by the systemd unit)")
     change = commands.add_parser("password", help="change the account password and revoke logins")
     change.add_argument("--username", required=True)
     commands.add_parser("certificate", help="print the public HTTPS certificate")
@@ -904,18 +1154,25 @@ def main():
         raise RequestError("Port must be between 1024 and 65535")
     if args.action == "doctor":
         return 1 if doctor() else 0
+    if args.action == "serve":
+        serve()
+        return
     adopt_runtime(inspect_owned("container", NAME))
     if args.action == "status":
         status()
         return
-    private_directory(RUNTIME)
-    descriptor = os.open(RUNTIME / "manager.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    if args.action == "enable":
+        enable()
+        return
+    if args.action == "disable":
+        disable()
+        return
+    managed = args.action == "start" and (autostart() or {}).get("enabled", False)
+    with manager_lock():
         if args.action == "init":
             initialize(args)
         elif args.action == "start":
-            start(args)
+            start(args, launch_broker=not managed)
         elif args.action == "configure":
             configure(args)
         elif args.action == "stop":
@@ -926,6 +1183,8 @@ def main():
             require_data()
             docker("run", "--rm", "--network", "none", *container_args(),
                    IMAGE, "cat", "/data/tls.crt", capture=False)
+    if managed:
+        start_unit()
 
 
 if __name__ == "__main__":

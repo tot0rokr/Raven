@@ -32,7 +32,7 @@
 | `raven menu`              | 메뉴 규칙 편집, 반영, 확인                                |
 | `raven home`              | 개인 설정 파일(`~/.config/raven/home`)을 세션 홈에 복사   |
 | `raven hostd`             | 호스트 중계 상태, 시작, 중지                              |
-| `raven web`               | HTTPS 웹 접속, 설정 저장, 상태 확인, 진단, 비밀번호 변경  |
+| `raven web`               | HTTPS 웹 접속, 설정 저장, 상태 확인, 진단, 자동 기동, 비밀번호 변경 |
 | `raven wallpaper`         | 배경화면 지정, 해제, 확인                                 |
 | `raven doctor`            | 서버 준비 상태 점검 (아무것도 바꾸지 않음)                |
 | `raven uninstall`         | 이 사용자의 세션, 홈, Raven 파일 제거                     |

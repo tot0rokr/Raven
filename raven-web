@@ -11,11 +11,13 @@ from pathlib import Path
 import pwd
 import re
 import shlex
+import shutil
 import socket
 import ssl
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -35,6 +37,13 @@ START_TIMEOUT = 15
 PROBE_TIMEOUT = 5
 CERTIFICATE_WARNING_DAYS = 30
 GATEWAY_BROKER = "/run/raven/broker.sock"
+LABEL_WIDTH = 9
+ITEM_WIDTH = 16
+MIN_WRAP_WIDTH = 30
+GREEN, YELLOW, RED, DIM, BOLD = "32", "33", "31", "2", "1"
+LEVEL_COLORS = {"ok": GREEN, "warn": YELLOW, "fail": RED, "skip": DIM}
+DOCTOR_ITEMS = ("Docker", "Gateway", "Image", "Data volume", "Account", "Certificate", "Settings",
+                "Broker", "Gateway->broker", "HTTPS")
 WEB_MEMORY = "1g"
 WEB_CPUS = "1"
 # Verify codes from OpenSSL's x509_vfy.h
@@ -56,6 +65,43 @@ SECRETS = (
     (re.compile(r"(?i)\b(password|passwd|secret|token|cookie|sessionid|csrftoken)\b(\s*[=:]\s*)\S+"),
      r"\1\2[redacted]"),
 )
+
+
+class Terminal:
+    """Color and wrapping on an interactive terminal; plain, unwrapped lines when piped."""
+
+    def __init__(self):
+        interactive = sys.stdout.isatty()
+        self.color = interactive and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+        self.width = shutil.get_terminal_size().columns if interactive else None
+
+    def paint(self, text, code=None):
+        return f"\033[{code}m{text}\033[0m" if self.color and code else text
+
+    def write(self, prefix, text, indent, wrap=True, code=None):
+        """Print text after prefix, whose visible width is indent; never wrap commands (wrap=False)."""
+        lines = None
+        if wrap and self.width:
+            lines = textwrap.wrap(text, max(self.width - indent, MIN_WRAP_WIDTH),
+                                  break_long_words=False, break_on_hyphens=False)
+        lines = lines or [text]
+        print(prefix + self.paint(lines[0], code))
+        for line in lines[1:]:
+            print(" " * indent + self.paint(line, code))
+
+    def row(self, label, value, wrap=True, code=None):
+        self.write(f"  {label:<{LABEL_WIDTH}} ", value, LABEL_WIDTH + 3, wrap, code)
+
+    def section(self, title, value=None, code=None):
+        print()
+        if value:
+            print(self.paint(f"{title:<{LABEL_WIDTH + 2}}", BOLD) + " " + self.paint(value, code))
+        else:
+            print(self.paint(title, BOLD))
+
+
+def local_time(timestamp):
+    return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def resource_args():
@@ -345,65 +391,90 @@ def stop():
     print("Web gateway stopped; desktop sessions are still running.")
 
 
+def gateway_state(current):
+    if not current:
+        return "not created"
+    state = current["State"]
+    if state["Running"] and not state.get("Restarting"):
+        return f"running since {local_time(state['StartedAt'])}"
+    text = f"{state['Status']}, exit code {state.get('ExitCode')}"
+    return text + (f", error: {state['Error']}" if state.get("Error") else "")
+
+
 def status():
+    term = Terminal()
     current = inspect_owned("container", NAME)
-    print(f"Gateway: {current['State']['Status'] if current else 'not created'}")
-    if current:
-        state = current["State"]
-        if state.get("Error"):
-            print(f"Gateway error: {state['Error']}")
-        if state.get("Status") in ("exited", "dead"):
-            print(f"Gateway exit code: {state.get('ExitCode')}")
+    running = bool(current and current["State"]["Running"] and not current["State"].get("Restarting"))
     try:
         broker = broker_status()
-        print(f"Broker: {'running' if broker else 'stopped'}")
+        broker_text = f"running, pid {broker['pid']}" if broker else "stopped"
     except (OSError, ValueError, RequestError) as error:
-        print(f"Broker: unavailable ({error})")
-    print(f"Server hostname: {socket.gethostname()} (not a verified SSH destination)")
-    print(f"Data volume: {VOLUME}")
-    print(f"Broker log: {RUNTIME / 'broker.log'}")
-    if current:
-        print(f"Image: {current['Config']['Image']} ({current['Image']})")
-        print(f"Gateway log: docker logs {NAME}")
-        actual = binding(current)
-        label = "Active" if current["State"]["Running"] else "Last container"
-        print(f"{label} listen: {actual['listen']}:{actual['port']} -> container HTTPS 8443")
+        broker, broker_text = None, f"unavailable ({error})"
     if not inspect_owned("volume", VOLUME):
-        print("Configuration: not initialized; run raven web init --username NAME")
+        print(f"Raven web: {term.paint('not initialized', RED)}")
+        term.row("Next", "raven web init --username NAME", wrap=False)
         return
     try:
-        saved = configuration()["config"]
+        saved, problem = configuration()["config"], None
     except RequestError as error:
-        print(f"Configuration: unavailable ({error})")
-        return
-    desired = desired_configuration(saved, current)
-    source = "saved" if "listen" in saved and "port" in saved else "legacy container/default; not yet saved"
-    print(f"Next start ({source}): {desired['listen']}:{desired['port']}, {desired['origin']}")
-    effective = desired
-    if current and current["State"]["Running"]:
-        effective = {**desired, **binding(current), "origin": running_origin(current, saved)}
-        if any(effective[key] != desired[key] for key in ("listen", "port", "origin")):
-            print("Pending settings: run raven web stop, then raven web start to apply")
-    print(f"Browser URL ({'active' if current and current['State']['Running'] else 'next start'}): {effective['origin']}")
-    print_connection(effective)
-    print("Diagnose problems: raven web doctor")
+        saved, problem = None, str(error)
+    if running and broker:
+        state, code = "running", GREEN
+    elif running:
+        state, code = "running, broker stopped (pages load, session lists fail)", YELLOW
+    else:
+        state, code = "stopped", RED
+    print(f"Raven web: {term.paint(state, code)}")
+    if saved is not None:
+        desired = desired_configuration(saved, current)
+        effective = {**desired, **binding(current), "origin": running_origin(current, saved)} if running else desired
+        print()
+        term.row("Browser", effective["origin"] + ("" if running else " (after raven web start)"), wrap=False)
+        for label, value, wrap in connection_rows(effective):
+            term.row(label, value, wrap)
+    term.section("Service")
+    term.row("Gateway", gateway_state(current))
+    term.row("Broker", broker_text)
+    if running:
+        published = binding(current)
+        term.row("Listen", f"{published['listen']}:{published['port']} -> container 8443")
+    term.row("Image", f"{current['Config']['Image']} {current['Image'][7:19]}" if current else IMAGE)
+    if problem:
+        term.section("Settings", f"unavailable: {problem}", RED)
+    elif saved is not None:
+        if running and any(effective[key] != desired[key] for key in ("listen", "port", "origin")):
+            term.section("Settings", "pending -> raven web stop, then raven web start", YELLOW)
+            term.row("Running", f"{effective['listen']}:{effective['port']}, {effective['origin']}")
+        else:
+            term.section("Settings", "same as running" if running else "used by the next start")
+        summary = f"{desired['listen']}:{desired['port']}, {desired['origin']}"
+        if "listen" in saved and "port" in saved:
+            term.row("Saved", summary)
+        else:
+            term.row("Next", summary + " (not saved yet; raven web start saves it)")
+    term.section("Where")
+    term.row("Server", f"{socket.gethostname()} (server hostname; your PC may use another address)")
+    term.row("Volume", VOLUME)
+    term.row("Logs", f"docker logs {NAME}", wrap=False)
+    term.row("", str(RUNTIME / "broker.log"), wrap=False)
+    print()
+    print(f"Problems? {term.paint('raven web doctor', BOLD)}")
 
 
-def print_connection(config):
-    target = config.get("ssh_target")
-    print(f"SSH destination: {target or 'not configured; use raven web configure --ssh-target USER@HOST'}")
-    if target:
-        user, separator, host = target.rpartition("@")
-        if host.startswith("[") and host.endswith("]"):
-            target = user + separator + host[1:-1]
+def connection_rows(config):
+    """Rows telling the client PC how to reach the origin; the SSH target is never guessed."""
     origin = urlsplit(config["origin"])
     try:
         local_browser = ipaddress.ip_address(origin.hostname).is_loopback
     except ValueError:
         local_browser = origin.hostname == "localhost"
     if not local_browser:
-        print("Access: direct HTTPS; check DNS and network access for the browser URL")
-        return
+        return [("Access", "direct HTTPS; check DNS and network access for the browser URL", True)]
+    target = config.get("ssh_target")
+    if target:
+        user, separator, host = target.rpartition("@")
+        if host.startswith("[") and host.endswith("]"):
+            target = user + separator + host[1:-1]
     host = probe_host(config["listen"])
     destination = f"[{host}]" if ":" in host else host
     client_host = "127.0.0.1" if origin.hostname == "localhost" else origin.hostname
@@ -412,7 +483,9 @@ def print_connection(config):
     if config.get("ssh_port"):
         command.extend(["-p", str(config["ssh_port"])])
     command.extend(["-L", f"{client_bind}:{origin.port or 443}:{destination}:{config['port']}", target or "USER@HOST"])
-    print(f"SSH tunnel{' template' if not target else ''} (run on the client PC): {shlex.join(command)}")
+    hint = "run on your PC" if target else ("run on your PC after replacing USER@HOST, or save it once: "
+                                            "raven web configure --ssh-target USER@HOST")
+    return [("Tunnel", shlex.join(command), False), ("", hint, True)]
 
 
 def redact(text):
@@ -421,15 +494,56 @@ def redact(text):
     return text
 
 
-class Report:
-    def __init__(self):
-        self.failed = False
+def docker_said(text):
+    return "docker: " + text.strip() if text and text.strip() else None
 
-    def add(self, level, message, action=None, detail=None):
-        print(f"{level:<5} {redact(message)}" + (f"; {action}" if action else ""))
+
+class Report:
+    """One aligned row per doctor item; the next step on a "->" line, raw errors dimmed below."""
+
+    def __init__(self):
+        self.term = Terminal()
+        self.counts = dict.fromkeys(LEVEL_COLORS, 0)
+        self.notes = []
+
+    @property
+    def failed(self):
+        return self.counts["fail"] > 0
+
+    def add(self, level, item, message, action=None, detail=None):
+        self.counts[level] += 1
+        indent = ITEM_WIDTH + 9
+        code = LEVEL_COLORS[level]
+        self.term.write(f"  {self.term.paint(f'{level:<5}', code)} {item:<{ITEM_WIDTH}} ", redact(message), indent)
+        if action:
+            self.term.write(" " * indent + self.term.paint("-> ", code), redact(action), indent + 3, wrap=False)
         for line in redact(detail or "").splitlines():
-            print(f"      {line}")
-        self.failed |= level == "fail"
+            self.term.write(" " * indent, line, indent, code=DIM)
+
+    def skip(self, items, reason):
+        for item in items:
+            self.add("skip", item, reason)
+
+    def note(self, label, text, first=False):
+        self.notes.insert(0 if first else len(self.notes), (label, text))
+
+    def finish(self):
+        if self.notes:
+            print()
+            for label, text in self.notes:
+                self.term.row(label, text, wrap=False)
+        print()
+        counts = self.counts
+        if counts["ok"] == len(DOCTOR_ITEMS):
+            print(self.term.paint(f"All {counts['ok']} checks passed.", GREEN))
+            return
+        parts = [f"{counts['fail']} failed" if counts["fail"] else "",
+                 f"{counts['warn']} warning{'' if counts['warn'] == 1 else 's'}" if counts["warn"] else "",
+                 f"{counts['skip']} skipped" if counts["skip"] else ""]
+        summary = ", ".join(part for part in parts if part) + "."
+        if counts["fail"] or counts["warn"]:
+            summary += ' Fix the "->" items from the top.'
+        print(self.term.paint(summary, RED if counts["fail"] else YELLOW if counts["warn"] else None))
 
 
 def adopt_runtime(current):
@@ -446,18 +560,18 @@ def check_docker(report):
     try:
         result = docker("version", "--format", "{{.Server.Version}}", check=False, timeout=PROBE_TIMEOUT * 3)
     except FileNotFoundError:
-        report.add("fail", "docker: the docker CLI is not installed or not on PATH")
+        report.add("fail", "Docker", "the docker CLI is not installed or not on PATH")
         return False
     except subprocess.TimeoutExpired:
-        report.add("fail", "docker: the daemon did not answer", "check the Docker service")
+        report.add("fail", "Docker", "the daemon did not answer", "check the Docker service")
         return False
     if result.returncode:
         denied = "permission denied" in result.stderr.lower()
-        report.add("fail", "docker: cannot use the daemon",
+        report.add("fail", "Docker", "cannot use the daemon",
                    "add this account to the docker group or fix DOCKER_HOST" if denied
-                   else "start the Docker daemon or fix DOCKER_HOST", result.stderr)
+                   else "start the Docker daemon or fix DOCKER_HOST", docker_said(result.stderr))
         return False
-    report.add("ok", f"docker {result.stdout.strip()}")
+    report.add("ok", "Docker", result.stdout.strip())
     return True
 
 
@@ -465,18 +579,16 @@ def check_gateway(report):
     try:
         current = inspect_owned("container", NAME)
     except RequestError as error:
-        report.add("fail", f"gateway {NAME}: {error}")
+        report.add("fail", "Gateway", str(error))
         return None
     if not current:
-        report.add("fail", f"gateway {NAME}: not created", "run: raven web start")
+        report.add("fail", "Gateway", f"{NAME} is not created", "raven web start")
         return None
     state = current["State"]
     if state["Running"] and not state.get("Restarting"):
-        report.add("ok", f"gateway {NAME} running since {state['StartedAt'][:19]}Z")
+        report.add("ok", "Gateway", gateway_state(current))
     else:
-        detail = f"exit code {state.get('ExitCode')}" + (f", error {state['Error']}" if state.get("Error") else "")
-        report.add("fail", f"gateway {NAME}: {state['Status']} ({detail})",
-                   f"inspect docker logs {NAME}, then run: raven web start")
+        report.add("fail", "Gateway", gateway_state(current), f"docker logs {NAME}, then raven web start")
     return current
 
 
@@ -484,16 +596,16 @@ def check_image(report, current):
     result = docker("image", "inspect", "--format", "{{.Id}}", IMAGE, check=False)
     if result.returncode:
         if re.search(r"no such image", result.stderr, re.IGNORECASE):
-            report.add("fail", f"image {IMAGE}: not built", "run: raven web build")
+            report.add("fail", "Image", f"{IMAGE} is not built", "raven web build")
         else:
-            report.add("fail", f"image {IMAGE}: inspection failed", detail=result.stderr)
+            report.add("fail", "Image", f"cannot inspect {IMAGE}", detail=docker_said(result.stderr))
         return False
     image_id = result.stdout.strip()
     if current and current["Image"] != image_id:
-        report.add("warn", f"image {IMAGE}: the gateway still runs the previous build",
-                   "run: raven web stop, then raven web start")
+        report.add("warn", "Image", f"the gateway still runs the build before {IMAGE} {image_id[7:19]}",
+                   "raven web stop, then raven web start")
     else:
-        report.add("ok", f"image {IMAGE} ({image_id[7:19]})")
+        report.add("ok", "Image", f"{IMAGE} {image_id[7:19]}")
     return True
 
 
@@ -506,18 +618,17 @@ def root_helper(command):
 def check_data(report):
     try:
         if not inspect_owned("volume", VOLUME):
-            report.add("fail", f"data volume {VOLUME}: not found", "run: raven web init --username NAME")
+            report.add("fail", "Data volume", f"{VOLUME} does not exist", "raven web init --username NAME")
             return None
         data = configuration("inspect")
     except (RequestError, ValueError) as error:
-        report.add("fail", f"data volume {VOLUME}: cannot inspect it", detail=str(error))
+        report.add("fail", "Data volume", f"cannot inspect {VOLUME}", detail=docker_said(str(error)))
         return None
     uid, gid = os.getuid(), os.getgid()
     directory = data["directory"]
     if directory["uid"] != uid:
-        report.add("fail", f"data volume {VOLUME}: /data belongs to uid {directory['uid']}, "
-                   f"but the gateway runs as uid {uid}",
-                   "restore ownership: " + root_helper(["chown", "-R", f"{uid}:{gid}", "/data"]))
+        report.add("fail", "Data volume", f"/data belongs to uid {directory['uid']}, but the gateway runs as "
+                   f"uid {uid}", root_helper(["chown", "-R", f"{uid}:{gid}", "/data"]))
         return data
     problems = []
     if directory["mode"] != 0o700:
@@ -532,75 +643,74 @@ def check_data(report):
         elif name in ("tls.key", "secret.key") and item["mode"] & 0o077:
             problems.append(f"{name} has mode {item['mode']:04o}, expected 0600")
     if problems:
-        report.add("fail", f"data volume {VOLUME}: " + "; ".join(problems),
-                   "repair ownership and modes: " + root_helper(["sh", "-c", f"chown -R {uid}:{gid} /data && "
-                                                                 "chmod 700 /data && chmod 600 /data/*"]))
+        report.add("fail", "Data volume", "; ".join(problems),
+                   root_helper(["sh", "-c", f"chown -R {uid}:{gid} /data && chmod 700 /data && chmod 600 /data/*"]))
     else:
-        report.add("ok", f"data volume {VOLUME}: owned by uid {uid}, mode 0700, files present")
+        report.add("ok", "Data volume", f"{VOLUME}, uid {uid}, mode 0700, all files present")
     return data
 
 
 def check_account(report, data):
     if "accounts_error" in data:
-        report.add("fail", f"account: cannot read the account database ({data['accounts_error']})",
-                   "run: raven web init --username NAME if the installation was never initialized")
+        report.add("fail", "Account", f"cannot read the account database ({data['accounts_error']})",
+                   "raven web init --username NAME, if the installation was never initialized")
         return
     accounts = data["accounts"]
     if accounts["total"] == 0:
-        report.add("fail", "account: none exists", "run: raven web init --username NAME")
+        report.add("fail", "Account", "none exists", "raven web init --username NAME")
     elif accounts["active"] == 0:
-        report.add("fail", "account: the only account is disabled")
+        report.add("fail", "Account", "the only account is disabled")
     elif accounts["total"] > 1:
-        report.add("warn", f"account: {accounts['total']} accounts exist; Raven expects exactly one")
+        report.add("warn", "Account", f"{accounts['total']} accounts exist; Raven expects exactly one")
     else:
-        report.add("ok", "account: initialized")
+        report.add("ok", "Account", "initialized")
 
 
 def check_certificate(report, data):
     if "certificate_error" in data:
-        report.add("fail", f"certificate: {data['certificate_error']}")
+        report.add("fail", "Certificate", data["certificate_error"])
         return
     info = data["certificate_info"]
     not_before = datetime.fromisoformat(info["not_before"])
     not_after = datetime.fromisoformat(info["not_after"])
     now = datetime.now(timezone.utc)
     names = ", ".join(info["san"]) or "no SAN"
+    days = (not_after - now).days
+    renewal = "renewal is not available yet (roadmap M8)"
     if now < not_before:
-        report.add("fail", f"certificate for {names}: not valid before {not_before:%Y-%m-%d %H:%M}Z",
+        report.add("fail", "Certificate", f"{names}, not valid before {not_before:%Y-%m-%d %H:%M} UTC",
                    "check the server clock")
     elif now >= not_after:
-        report.add("fail", f"certificate for {names}: expired on {not_after:%Y-%m-%d}",
-                   "Raven cannot renew certificates yet (roadmap M8)")
-    elif (not_after - now).days < CERTIFICATE_WARNING_DAYS:
-        report.add("warn", f"certificate for {names}: expires on {not_after:%Y-%m-%d} "
-                   f"({(not_after - now).days} days left)", "Raven cannot renew certificates yet (roadmap M8)")
+        report.add("fail", "Certificate", f"{names}, expired on {not_after:%Y-%m-%d}", renewal)
+    elif days < CERTIFICATE_WARNING_DAYS:
+        report.add("warn", "Certificate", f"{names}, expires on {not_after:%Y-%m-%d} ({days} days left)", renewal)
     else:
-        report.add("ok", f"certificate for {names}: valid until {not_after:%Y-%m-%d}")
-    report.add("info", f"certificate SHA-256 {info['fingerprint']}")
+        report.add("ok", "Certificate", f"{names}, valid until {not_after:%Y-%m-%d} ({days} days left)")
+    report.note("SHA-256", info["fingerprint"])
 
 
 def check_settings(report, data, current):
     if "config_error" in data:
-        report.add("fail", f"settings: {data['config_error']}")
+        report.add("fail", "Settings", data["config_error"])
         return None
     desired = desired_configuration(data["config"], current)
     running = current and current["State"]["Running"]
     if running:
         active = {**binding(current), "origin": running_origin(current, data["config"])}
         if any(active[key] != desired[key] for key in active):
-            report.add("warn", f"settings: the gateway runs {active['listen']}:{active['port']} for "
-                       f"{active['origin']}, but the next start uses {desired['listen']}:{desired['port']} "
-                       f"for {desired['origin']}", "apply with raven web stop, then raven web start")
+            report.add("warn", "Settings", "saved settings are not applied yet", "raven web stop, then raven web start",
+                       f"running {active['listen']}:{active['port']} for {active['origin']}\n"
+                       f"saved   {desired['listen']}:{desired['port']} for {desired['origin']}")
             return {**desired, **active}
-        report.add("ok", f"settings: {desired['listen']}:{desired['port']} for {desired['origin']}")
+        report.add("ok", "Settings", f"{desired['listen']}:{desired['port']} for {desired['origin']}")
         return desired
     try:
         check_port(desired, current)
     except (RequestError, ValueError) as error:
-        report.add("fail", f"settings: the next start cannot listen ({error})",
-                   "stop the other process or choose a port with raven web configure --port PORT")
+        report.add("fail", "Settings", f"the next start cannot listen ({error})",
+                   "stop the other process, or choose a port: raven web configure --port PORT")
     else:
-        report.add("ok", f"settings: next start on {desired['listen']}:{desired['port']} for {desired['origin']}")
+        report.add("ok", "Settings", f"next start on {desired['listen']}:{desired['port']} for {desired['origin']}")
     return desired
 
 
@@ -609,40 +719,40 @@ def check_broker(report):
     try:
         directory = RUNTIME.lstat()
     except FileNotFoundError:
-        report.add("fail", f"broker: stopped (no {RUNTIME})", "run: raven web start")
+        report.add("fail", "Broker", f"stopped (no {RUNTIME})", "raven web start")
         return False
     if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != uid
             or stat.S_IMODE(directory.st_mode) != 0o700):
-        report.add("fail", f"broker: {RUNTIME} must be a directory owned by uid {uid} with mode 0700 "
+        report.add("fail", "Broker", f"{RUNTIME} must be a directory owned by uid {uid} with mode 0700 "
                    f"(found uid {directory.st_uid}, mode {stat.S_IMODE(directory.st_mode):04o})",
-                   f"fix it with chmod 700 {RUNTIME}, then run: raven web start")
+                   f"chmod 700 {RUNTIME}, then raven web start")
         return False
     try:
         entry = ADDRESS.lstat()
     except FileNotFoundError:
-        report.add("fail", "broker: stopped (no socket)", "run: raven web start")
+        report.add("fail", "Broker", "stopped (no socket)", "raven web start")
         return False
     if not stat.S_ISSOCK(entry.st_mode) or entry.st_uid != uid or stat.S_IMODE(entry.st_mode) != 0o600:
-        report.add("fail", f"broker: {ADDRESS} is not a private socket owned by uid {uid}",
-                   "run: raven web stop, then raven web start")
+        report.add("fail", "Broker", f"{ADDRESS} is not a private socket owned by uid {uid}",
+                   "raven web stop, then raven web start")
         return False
     try:
         data = broker_request("ping")
     except ConnectionRefusedError:
-        report.add("fail", "broker: stopped (a stale socket is left behind)", "run: raven web start")
+        report.add("fail", "Broker", "stopped; a stale socket is left behind", "raven web start")
         return False
     except (TimeoutError, socket.timeout):
-        report.add("fail", f"broker: not answering within {PROBE_TIMEOUT} seconds",
-                   f"inspect {RUNTIME / 'broker.log'}, then run: raven web stop, then raven web start")
+        report.add("fail", "Broker", f"not answering within {PROBE_TIMEOUT} seconds",
+                   f"read {RUNTIME / 'broker.log'}, then raven web stop, then raven web start")
         return False
     except (OSError, ValueError, RequestError) as error:
-        report.add("fail", f"broker: {error}", f"inspect {RUNTIME / 'broker.log'}")
+        report.add("fail", "Broker", str(error), f"read {RUNTIME / 'broker.log'}")
         return False
     if data["raven"] != str(SOURCE / "raven"):
-        report.add("warn", f"broker: pid {data['pid']} runs {data['raven']}, not this checkout",
-                   "run: raven web stop, then raven web start")
+        report.add("warn", "Broker", f"pid {data['pid']} runs {data['raven']}, not this checkout",
+                   "raven web stop, then raven web start")
     else:
-        report.add("ok", f"broker: pid {data['pid']}")
+        report.add("ok", "Broker", f"pid {data['pid']}")
     return True
 
 
@@ -653,10 +763,10 @@ def check_gateway_broker(report):
         result = subprocess.CompletedProcess([], 1, "", "timed out")
     if result.returncode:
         lines = result.stderr.strip().splitlines()
-        report.add("fail", "gateway -> broker: the gateway cannot reach the broker through /run/raven",
-                   "run: raven web stop, then raven web start", lines[-1] if lines else None)
+        report.add("fail", "Gateway->broker", "the gateway cannot reach the broker through /run/raven",
+                   "raven web stop, then raven web start", lines[-1] if lines else None)
     else:
-        report.add("ok", "gateway -> broker: reachable")
+        report.add("ok", "Gateway->broker", "reachable")
 
 
 def https_probe(host, port, origin, certificate):
@@ -693,27 +803,31 @@ def check_https(report, current, settings, certificate):
     origin = urlsplit(settings["origin"])
     status, problem = https_probe(host, published["port"], origin, certificate)
     if problem:
-        report.add("fail", f"HTTPS: {problem}", f"inspect docker logs {NAME}, then run: raven web stop, "
-                   "then raven web start")
+        report.add("fail", "HTTPS", problem, f"docker logs {NAME}, then raven web stop, then raven web start")
     elif status == 200:
-        report.add("ok", f"HTTPS: {host}:{published['port']} answers for {origin.netloc} with tls.crt")
+        report.add("ok", "HTTPS", f"{host}:{published['port']} answers for {origin.netloc}")
     elif status == 400:
-        report.add("fail", f"HTTPS: the gateway rejects the host {origin.netloc} (HTTP 400)",
-                   "run: raven web stop, then raven web start")
+        report.add("fail", "HTTPS", f"the gateway rejects the host {origin.netloc} (HTTP 400)",
+                   "raven web stop, then raven web start")
     else:
-        report.add("fail", f"HTTPS: GET /login/ returned HTTP {status}", f"inspect docker logs {NAME}")
+        report.add("fail", "HTTPS", f"GET /login/ returned HTTP {status}", f"docker logs {NAME}")
+
+
+def browser_note(report, settings):
+    origin = urlsplit(settings["origin"])
     port = origin.port or 443
-    if origin.hostname in ("localhost", "127.0.0.1", "::1") and port != published["port"]:
-        tunnel = f"-L {port}:{host}:{published['port']}"
-        report.add("info", f"browser: open exactly {settings['origin']} through an SSH tunnel ({tunnel}); "
-                   "other addresses get HTTP 400")
+    if origin.hostname in ("localhost", "127.0.0.1", "::1") and port != settings["port"]:
+        tunnel = f"-L {port}:{probe_host(settings['listen'])}:{settings['port']}"
+        report.note("Browser", f"{settings['origin']} (SSH tunnel {tunnel}; other addresses get HTTP 400)", True)
     else:
-        report.add("info", f"browser: open exactly {settings['origin']}; other addresses get HTTP 400")
+        report.note("Browser", f"{settings['origin']} (other addresses get HTTP 400)", True)
 
 
 def doctor():
     """Check the web service without starting, stopping or changing anything; return True on failure."""
     report = Report()
+    print(report.term.paint("Raven web doctor", BOLD))
+    print()
     current = data = settings = None
     docker_available = check_docker(report)
     if docker_available:
@@ -721,28 +835,34 @@ def doctor():
         adopt_runtime(current)
         if check_image(report, current):
             data = check_data(report)
+        else:
+            report.skip(["Data volume"], "needs the web image")
         if data and data["directory"]["uid"] == os.getuid():
             check_account(report, data)
             check_certificate(report, data)
             settings = check_settings(report, data, current)
         else:
-            report.add("skip", "account, certificate and settings: need the web image and a readable data volume")
+            report.skip(["Account", "Certificate", "Settings"], "needs a readable data volume")
     else:
-        report.add("skip", "gateway, image, data volume, account, certificate, settings and HTTPS: need Docker")
+        report.skip(DOCTOR_ITEMS[1:7], "needs Docker")
     broker = check_broker(report)
+    running = current and current["State"]["Running"] and not current["State"].get("Restarting")
     if not docker_available:
-        return report.failed
-    if not (current and current["State"]["Running"] and not current["State"].get("Restarting")):
-        report.add("skip", "gateway -> broker and HTTPS: the gateway is not running; doctor never starts it")
-        return report.failed
-    if broker:
-        check_gateway_broker(report)
+        report.skip(["Gateway->broker", "HTTPS"], "needs Docker")
+    elif not running:
+        report.skip(["Gateway->broker", "HTTPS"], "the gateway is not running; doctor never starts it")
     else:
-        report.add("skip", "gateway -> broker: needs a running broker")
-    if settings and "certificate" in data:
-        check_https(report, current, settings, data["certificate"])
-    else:
-        report.add("skip", "HTTPS: needs readable settings and tls.crt")
+        if broker:
+            check_gateway_broker(report)
+        else:
+            report.skip(["Gateway->broker"], "needs a running broker")
+        if settings and "certificate" in data:
+            check_https(report, current, settings, data["certificate"])
+        else:
+            report.skip(["HTTPS"], "needs readable settings and tls.crt")
+    if settings:
+        browser_note(report, settings)
+    report.finish()
     return report.failed
 
 

@@ -129,35 +129,52 @@ class PortTests(unittest.TestCase):
 
 
 class ConnectionInstructionsTests(unittest.TestCase):
-    def output(self, config):
-        stream = io.StringIO()
-        with redirect_stdout(stream):
-            manager["print_connection"](config)
-        return stream.getvalue()
+    def rows(self, config):
+        return manager["connection_rows"](config)
 
     def test_tunnel_distinguishes_browser_server_and_ssh_ports(self):
-        output = self.output({"origin": "https://localhost:9443", "listen": "0.0.0.0", "port": 18443,
-                              "ssh_target": "owner@example.test", "ssh_port": 2222})
-        command = shlex.split(output.split("(run on the client PC): ", 1)[1])
-        self.assertEqual(command, ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-p", "2222",
-                                   "-L", "127.0.0.1:9443:127.0.0.1:18443", "owner@example.test"])
+        rows = self.rows({"origin": "https://localhost:9443", "listen": "0.0.0.0", "port": 18443,
+                          "ssh_target": "owner@example.test", "ssh_port": 2222})
+        self.assertEqual(rows[0][0], "Tunnel")
+        self.assertFalse(rows[0][2], "a copyable command must not be wrapped")
+        self.assertEqual(shlex.split(rows[0][1]), ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-p", "2222",
+                                                   "-L", "127.0.0.1:9443:127.0.0.1:18443", "owner@example.test"])
+        self.assertEqual(rows[1][1], "run on your PC")
 
     def test_ipv6_tunnel_brackets_both_loopback_endpoints(self):
-        output = self.output({"origin": "https://[::1]:9443", "listen": "::", "port": 18443})
-        command = shlex.split(output.split("(run on the client PC): ", 1)[1])
-        self.assertEqual(command[-2:], ["[::1]:9443:[::1]:18443", "USER@HOST"])
-        self.assertIn("SSH tunnel template", output)
+        rows = self.rows({"origin": "https://[::1]:9443", "listen": "::", "port": 18443})
+        self.assertEqual(shlex.split(rows[0][1])[-2:], ["[::1]:9443:[::1]:18443", "USER@HOST"])
+        self.assertIn("replacing USER@HOST", rows[1][1])
 
     def test_ipv6_ssh_target_omits_brackets_without_changing_tunnel_endpoints(self):
-        output = self.output({"origin": "https://[::1]:9443", "listen": "::", "port": 18443,
-                              "ssh_target": "owner@[::1]"})
-        command = shlex.split(output.split("(run on the client PC): ", 1)[1])
-        self.assertEqual(command[-2:], ["[::1]:9443:[::1]:18443", "owner@::1"])
+        rows = self.rows({"origin": "https://[::1]:9443", "listen": "::", "port": 18443,
+                          "ssh_target": "owner@[::1]"})
+        self.assertEqual(shlex.split(rows[0][1])[-2:], ["[::1]:9443:[::1]:18443", "owner@::1"])
 
     def test_public_browser_origin_reports_direct_access(self):
-        output = self.output({"origin": "https://raven.example.test", "listen": "127.0.0.1", "port": 18443})
-        self.assertIn("direct HTTPS", output)
-        self.assertNotIn("ssh -N", output)
+        rows = self.rows({"origin": "https://raven.example.test", "listen": "127.0.0.1", "port": 18443})
+        self.assertEqual(rows, [("Access", "direct HTTPS; check DNS and network access for the browser URL", True)])
+
+
+class TerminalTests(unittest.TestCase):
+    def test_piped_output_is_plain_and_unwrapped(self):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            terminal = manager["Terminal"]()
+            terminal.row("Label", "x " * 200, code="31")
+        self.assertEqual(stream.getvalue(), "  Label     " + "x " * 200 + "\n")
+
+    def test_interactive_output_wraps_prose_with_a_hanging_indent_but_not_commands(self):
+        terminal = manager["Terminal"]()
+        terminal.color, terminal.width = False, 40
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            terminal.row("Label", "word " * 20)
+            terminal.row("Command", "ssh " + "-o x " * 20, wrap=False)
+        lines = stream.getvalue().splitlines()
+        self.assertTrue(all(len(line) <= 42 for line in lines[:-1]), lines)
+        self.assertTrue(all(line.startswith(" " * 12) for line in lines[1:-1]), lines)
+        self.assertTrue(lines[-1].startswith("  Command   ssh -o x"))
 
 
 if __name__ == "__main__":

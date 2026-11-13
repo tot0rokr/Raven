@@ -91,10 +91,15 @@ class DoctorTests(unittest.TestCase):
         docker = FakeDocker(version=(1, "", denied))
         failed, output = run_doctor(docker)
         self.assertTrue(failed)
-        self.assertIn("fail  docker: cannot use the daemon; add this account to the docker group", output)
-        self.assertIn("      " + denied, output)
-        self.assertIn("skip  gateway, image, data volume", output)
-        self.assertIn("fail  broker: stopped", output)
+        self.assertIn("  fail  Docker           cannot use the daemon\n", output)
+        self.assertIn("-> add this account to the docker group or fix DOCKER_HOST", output)
+        self.assertIn("docker: " + denied, output)
+        self.assertIn("  skip  Gateway          needs Docker", output)
+        self.assertIn("  fail  Broker           stopped", output)
+        rows = [line.split()[1] for line in output.splitlines() if line[:6].strip() in ("ok", "warn", "fail", "skip")]
+        self.assertEqual(rows, [item.split()[0] for item in GLOBALS["DOCTOR_ITEMS"]])
+        self.assertTrue(output.rstrip().endswith('2 failed, 8 skipped. Fix the "->" items from the top.'))
+        self.assertNotIn("\033[", output)
         self.assertEqual([verb(argv) for argv in docker.calls], ["version"])
         _, output = run_doctor(FakeDocker(version=FileNotFoundError()))
         self.assertIn("docker CLI is not installed", output)
@@ -105,9 +110,9 @@ class DoctorTests(unittest.TestCase):
                             volume_inspect=(1, "", "Error: no such volume: x"))
         failed, output = run_doctor(docker)
         self.assertTrue(failed)
-        self.assertIn("not created; run: raven web start", output)
-        self.assertIn("not found; run: raven web init --username NAME", output)
-        self.assertIn("skip  gateway -> broker and HTTPS: the gateway is not running", output)
+        self.assertIn("is not created\n" + " " * 25 + "-> raven web start", output)
+        self.assertIn("does not exist\n" + " " * 25 + "-> raven web init --username NAME", output)
+        self.assertIn("  skip  HTTPS            the gateway is not running", output)
         self.assertLessEqual({verb(argv) for argv in docker.calls}, READ_ONLY)
 
     def test_foreign_data_owner_prints_a_root_repair_command_without_running_it(self):
@@ -120,7 +125,7 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(failed)
         self.assertIn("/data belongs to uid 4242, but the gateway runs as uid", output)
         self.assertIn("chown -R", output)
-        self.assertIn("skip  account, certificate and settings", output)
+        self.assertIn("  skip  Account          needs a readable data volume", output)
         runs = [argv for argv in docker.calls if verb(argv) == "run"]
         self.assertEqual(len(runs), 1)
         self.assertIn("none", runs[0][runs[0].index("--network") + 1])
@@ -135,10 +140,14 @@ class DoctorTests(unittest.TestCase):
             with self.subTest(level=level):
                 info = {"not_before": (now - timedelta(days=2)).isoformat(), "not_after": not_after.isoformat(),
                         "san": ["localhost"], "fingerprint": "AB:CD"}
-                _, output, _ = call(manager["check_certificate"], {"certificate_info": info})
-                self.assertTrue(output.startswith(f"{level:<5} certificate for localhost: "), output)
+                report = manager["Report"]()
+                stream = io.StringIO()
+                with redirect_stdout(stream):
+                    manager["check_certificate"](report, {"certificate_info": info})
+                output = stream.getvalue()
+                self.assertTrue(output.startswith(f"  {level:<5} Certificate      localhost, "), output)
                 self.assertIn(message, output)
-                self.assertIn("info  certificate SHA-256 AB:CD", output)
+                self.assertEqual(report.notes, [("SHA-256", "AB:CD")])
         info = {"not_before": (now + timedelta(days=1)).isoformat(), "not_after": (now + timedelta(days=9)).isoformat(),
                 "san": ["localhost"], "fingerprint": "AB:CD"}
         _, output, failed = call(manager["check_certificate"], {"certificate_info": info})
@@ -149,8 +158,9 @@ class DoctorTests(unittest.TestCase):
         data = {"config": {"origin": "https://localhost:8443", "listen": "127.0.0.1", "port": 9555}}
         settings, output, failed = call(manager["check_settings"], data, gateway())
         self.assertFalse(failed)
-        self.assertIn("warn  settings: the gateway runs 127.0.0.1:9444", output)
-        self.assertIn("next start uses 127.0.0.1:9555", output)
+        self.assertIn("  warn  Settings         saved settings are not applied yet", output)
+        self.assertIn("running 127.0.0.1:9444 for https://localhost:8443", output)
+        self.assertIn("saved   127.0.0.1:9555 for https://localhost:8443", output)
         self.assertEqual(settings["port"], 9444)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -164,14 +174,14 @@ class DoctorTests(unittest.TestCase):
     def test_broker_socket_states(self):
         check = manager["check_broker"]
         _, output, _ = call(check)
-        self.assertIn("broker: stopped (no ", output)
+        self.assertIn("Broker           stopped (no ", output)
         self.runtime.mkdir(mode=0o755)
         self.runtime.chmod(0o755)
         _, output, _ = call(check)
         self.assertIn("must be a directory owned by uid", output)
         self.runtime.chmod(0o700)
         _, output, _ = call(check)
-        self.assertIn("broker: stopped (no socket)", output)
+        self.assertIn("Broker           stopped (no socket)", output)
         address = str(self.runtime / "broker.sock")
         with socket.socket(socket.AF_UNIX) as stale:
             stale.bind(address)
@@ -187,10 +197,10 @@ class DoctorTests(unittest.TestCase):
             server.raven = "/elsewhere/raven"
             _, output, failed = call(check)
             self.assertFalse(failed)
-            self.assertIn("warn  broker: pid 4321 runs /elsewhere/raven, not this checkout", output)
+            self.assertIn("  warn  Broker           pid 4321 runs /elsewhere/raven, not this checkout", output)
             server.raven = str(GLOBALS["SOURCE"] / "raven")
             _, output, _ = call(check)
-            self.assertIn("ok    broker: pid 4321", output)
+            self.assertIn("  ok    Broker           pid 4321", output)
         finally:
             server.shutdown()
             server.server_close()

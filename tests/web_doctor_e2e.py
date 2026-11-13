@@ -57,6 +57,12 @@ for name in ('tls.crt', 'tls.key'):
     os.replace(Path('/data') / (name + '.doctor-test'), Path('/data') / name)
 """
 WRITE_CONFIG = "import base64, sys; open('/data/config.json', 'wb').write(base64.b64decode(sys.argv[1]))"
+NEXT = "\n" + " " * 25 + "-> "
+
+
+def row(level, item, message):
+    """One doctor result row as printed to a pipe (no color, no wrapping)."""
+    return f"  {level:<5} {item:<16} {message}"
 
 
 class Doctor:
@@ -150,83 +156,90 @@ def main():
 
         print("Checking a healthy installation", flush=True)
         output = doctor.run(0, [
-            "ok    docker ", f"ok    gateway {gateway} running since", f"ok    image {WEB_IMAGE}",
-            f"ok    data volume {volume}: owned by uid {os.getuid()}, mode 0700, files present",
-            "ok    account: initialized", "ok    certificate for localhost: valid until",
-            f"ok    settings: 127.0.0.1:{server_port} for {origin}", "ok    broker: pid",
-            "ok    gateway -> broker: reachable",
-            f"ok    HTTPS: 127.0.0.1:{server_port} answers for localhost:{browser_port} with tls.crt",
-            f"-L {browser_port}:127.0.0.1:{server_port}"])
-        assert all(line.startswith(("ok ", "info ")) for line in output.splitlines()), output
-        assert "raven web doctor" in cli(environment, "status")
+            row("ok", "Docker", ""), row("ok", "Gateway", "running since"), row("ok", "Image", WEB_IMAGE),
+            row("ok", "Data volume", f"{volume}, uid {os.getuid()}, mode 0700, all files present"),
+            row("ok", "Account", "initialized"), row("ok", "Certificate", "localhost, valid until"),
+            row("ok", "Settings", f"127.0.0.1:{server_port} for {origin}"), row("ok", "Broker", "pid"),
+            row("ok", "Gateway->broker", "reachable"),
+            row("ok", "HTTPS", f"127.0.0.1:{server_port} answers for localhost:{browser_port}"),
+            f"  Browser   {origin} (SSH tunnel -L {browser_port}:127.0.0.1:{server_port}", "  SHA-256   ",
+            "All 10 checks passed."])
+        assert "\033[" not in output, output
+        assert "Problems? raven web doctor" in cli(environment, "status")
 
         print("Checking pending, conflicting and invalid settings", flush=True)
         next_origin = f"https://localhost:{next_browser_port}"
         cli(environment, "configure", "--port", str(next_server_port), "--origin", next_origin)
-        doctor.run(0, [f"warn  settings: the gateway runs 127.0.0.1:{server_port} for {origin}, but the next "
-                       f"start uses 127.0.0.1:{next_server_port} for {next_origin}",
-                       f"ok    HTTPS: 127.0.0.1:{server_port} answers for localhost:{browser_port}"])
+        doctor.run(0, [row("warn", "Settings", "saved settings are not applied yet" + NEXT +
+                           "raven web stop, then raven web start"),
+                       f"running 127.0.0.1:{server_port} for {origin}",
+                       f"saved   127.0.0.1:{next_server_port} for {next_origin}",
+                       row("ok", "HTTPS", f"127.0.0.1:{server_port} answers for localhost:{browser_port}"),
+                       '1 warning. Fix the "->" items from the top.'])
         cli(environment, "stop")
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", next_server_port))
             occupied.listen()
-            doctor.run(1, [f"fail  gateway {gateway}: exited",
-                           f"fail  settings: the next start cannot listen (Cannot bind 127.0.0.1:{next_server_port}",
-                           "fail  broker: stopped", "skip  gateway -> broker and HTTPS: the gateway is not running"])
+            doctor.run(1, [row("fail", "Gateway", "exited, exit code"),
+                           row("fail", "Settings", "the next start cannot listen (Cannot bind "
+                               f"127.0.0.1:{next_server_port}"), row("fail", "Broker", "stopped"),
+                           row("skip", "Gateway->broker", "the gateway is not running"),
+                           row("skip", "HTTPS", "the gateway is not running")])
         cli(environment, "start")
         original = doctor.data("import base64; print(base64.b64encode(open('/data/config.json', 'rb').read()).decode())")
         foreign = json.dumps({**json.loads(base64.b64decode(original)), "origin": "https://elsewhere.example.test"})
         doctor.data(WRITE_CONFIG, base64.b64encode(foreign.encode()).decode(), readonly=False)
-        doctor.run(1, ["fail  settings: The origin hostname must match an exact DNS or IP certificate SAN",
-                       "skip  HTTPS: needs readable settings and tls.crt"])
+        doctor.run(1, [row("fail", "Settings", "The origin hostname must match an exact DNS or IP certificate SAN"),
+                       row("skip", "HTTPS", "needs readable settings and tls.crt")])
         doctor.data(WRITE_CONFIG, original.strip(), readonly=False)
-        doctor.run(0, [f"ok    settings: 127.0.0.1:{next_server_port} for {next_origin}"])
+        doctor.run(0, [row("ok", "Settings", f"127.0.0.1:{next_server_port} for {next_origin}")])
 
         print("Checking broker failures", flush=True)
         shutdown_broker(runtime)
-        doctor.run(1, ["fail  broker: stopped (no socket); run: raven web start",
-                       "skip  gateway -> broker: needs a running broker",
-                       f"ok    HTTPS: 127.0.0.1:{next_server_port}"])
+        doctor.run(1, [row("fail", "Broker", "stopped (no socket)" + NEXT + "raven web start"),
+                       row("skip", "Gateway->broker", "needs a running broker"),
+                       row("ok", "HTTPS", f"127.0.0.1:{next_server_port}")])
         cli(environment, "start")
         pid = broker_pid(runtime)
         os.kill(pid, signal.SIGKILL)
         deadline = time.monotonic() + READY_TIMEOUT
         while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
             time.sleep(0.1)
-        doctor.run(1, ["fail  broker: stopped (a stale socket is left behind); run: raven web start"])
+        doctor.run(1, [row("fail", "Broker", "stopped; a stale socket is left behind" + NEXT + "raven web start")])
         cli(environment, "start")
         shutdown_broker(runtime)
         runtime.rename(scratch / "replaced-runtime")
         cli(environment, "start")
-        doctor.run(1, ["ok    broker: pid", "fail  gateway -> broker: the gateway cannot reach the broker "
-                       "through /run/raven; run: raven web stop, then raven web start"])
+        doctor.run(1, [row("ok", "Broker", "pid"), row("fail", "Gateway->broker", "the gateway cannot reach the "
+                       "broker through /run/raven" + NEXT + "raven web stop, then raven web start")])
         cli(environment, "stop")
         cli(environment, "start")
-        doctor.run(0, ["ok    gateway -> broker: reachable"])
+        doctor.run(0, [row("ok", "Gateway->broker", "reachable")])
 
         print("Checking an expired certificate", flush=True)
         run(["docker", "container", "stop", "--time", "10", gateway], environment)
         doctor.data(EXPIRE_CERTIFICATE, "localhost", readonly=False)
         run(["docker", "container", "start", gateway], environment)
         wait_for_port(next_server_port)
-        doctor.run(1, ["fail  certificate for localhost: expired on",
-                       "fail  HTTPS: the served certificate has expired"])
+        doctor.run(1, [row("fail", "Certificate", "localhost, expired on"),
+                       row("fail", "HTTPS", "the served certificate has expired")])
         run(["docker", "container", "stop", "--time", "10", gateway], environment)
         doctor.data(RESTORE_CERTIFICATE, readonly=False)
         run(["docker", "container", "start", gateway], environment)
         wait_for_port(next_server_port)
-        doctor.run(0, ["ok    certificate for localhost: valid until",
-                       f"ok    HTTPS: 127.0.0.1:{next_server_port} answers for localhost:{next_browser_port}"])
+        doctor.run(0, [row("ok", "Certificate", "localhost, valid until"),
+                       row("ok", "HTTPS", f"127.0.0.1:{next_server_port} answers for localhost:{next_browser_port}")])
 
         print("Checking permission errors", flush=True)
         runtime.chmod(0o755)
         try:
-            doctor.run(1, [f"fail  broker: {runtime} must be a directory owned by uid {os.getuid()} with mode 0700 "
-                           f"(found uid {os.getuid()}, mode 0755)"])
+            doctor.run(1, [row("fail", "Broker", f"{runtime} must be a directory owned by uid {os.getuid()} with "
+                               f"mode 0700 (found uid {os.getuid()}, mode 0755)")])
         finally:
             runtime.chmod(0o700)
-        doctor.run(1, ["fail  docker: cannot use the daemon; start the Docker daemon or fix DOCKER_HOST",
-                       "skip  gateway, image, data volume"], DOCKER_HOST="unix:///nonexistent")
+        doctor.run(1, [row("fail", "Docker", "cannot use the daemon" + NEXT +
+                           "start the Docker daemon or fix DOCKER_HOST"),
+                       row("skip", "Gateway", "needs Docker")], DOCKER_HOST="unix:///nonexistent")
         run(["docker", "volume", "create", "--label", OWNER_LABEL, foreign_volume], environment)
         run(["docker", "run", "--rm", "--network", "none", "--user", "0", "--read-only", "--cap-drop", "ALL",
              "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges",
@@ -235,9 +248,9 @@ def main():
         result = subprocess.run([str(SOURCE / "raven"), "web", "doctor"], capture_output=True, text=True,
                                 env={**environment, "RAVEN_WEB_INSTANCE": foreign_instance}, timeout=COMMAND_TIMEOUT)
         assert result.returncode == 1, result.stdout
-        for text in (f"fail  data volume {foreign_volume}: /data belongs to uid 4242, but the gateway runs as "
-                     f"uid {os.getuid()}; restore ownership: docker run", "chown -R",
-                     "skip  account, certificate and settings"):
+        for text in (row("fail", "Data volume", f"/data belongs to uid 4242, but the gateway runs as uid "
+                         f"{os.getuid()}" + NEXT + "docker run --rm --user 0"), "chown -R",
+                     row("skip", "Account", "needs a readable data volume")):
             assert text in result.stdout, f"missing {text!r}:\n{result.stdout}"
 
         print("Checking logs for credentials", flush=True)

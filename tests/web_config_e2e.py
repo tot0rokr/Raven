@@ -152,8 +152,7 @@ def main():
     try:
         print("Checking read-only status before initialization", flush=True)
         output = cli(environment, "status")
-        assert "Gateway: not created" in output and "Broker: stopped" in output
-        assert "Configuration: not initialized" in output
+        assert "Raven web: not initialized" in output and "raven web init --username NAME" in output
         assert not runtime.exists(), "Status created runtime files before initialization"
 
         print("Provisioning a disposable account and legacy gateway", flush=True)
@@ -171,8 +170,9 @@ def main():
         assert not any(value.startswith("RAVEN_WEB_ORIGIN=")
                        for value in inspect(environment, gateway)["Config"]["Env"])
         output = cli(environment, "status")
-        assert "Gateway: running" in output and "Broker: stopped" in output
-        assert f"Active listen: 127.0.0.1:{server_port}" in output
+        assert "Raven web: running, broker stopped" in output and "  Broker    stopped" in output
+        assert f"  Listen    127.0.0.1:{server_port} -> container 8443" in output
+        assert "(not saved yet; raven web start saves it)" in output
         assert state(environment, volume)["config_bytes"] == initial["config_bytes"]
 
         print("Adopting a legacy binding without explicit flags", flush=True)
@@ -181,11 +181,11 @@ def main():
         adopted = state(environment, volume)
         assert adopted["config"]["port"] == server_port
         assert adopted["config"]["origin"] == origin
-        assert "Broker: running" in cli(environment, "status")
+        assert "  Broker    running, pid" in cli(environment, "status")
         alternate_runtime = scratch / "alternate-runtime"
         output = cli({**environment, "XDG_RUNTIME_DIR": str(alternate_runtime)}, "status")
-        assert "Broker: running" in output
-        assert f"Broker log: {runtime / 'broker.log'}" in output
+        assert "Raven web: running\n" in output and "  Broker    running, pid" in output
+        assert f"            {runtime / 'broker.log'}\n" in output
         assert not alternate_runtime.exists(), "Status created files instead of using the actual runtime mount"
 
         print("Checking legacy origin changes require stopping the gateway", flush=True)
@@ -205,10 +205,11 @@ def main():
         assert pending["config"]["port"] == next_server_port
         assert pending["config"]["origin"] == next_origin
         output = cli(environment, "status")
-        assert f"Active listen: 127.0.0.1:{server_port}" in output
-        assert f"Browser URL (active): {origin}" in output
-        assert f"Next start (saved): 127.0.0.1:{next_server_port}, {next_origin}" in output
-        assert "Pending settings:" in output
+        assert f"  Listen    127.0.0.1:{server_port} -> container 8443" in output
+        assert f"  Browser   {origin}\n" in output
+        assert f"  Running   127.0.0.1:{server_port}, {origin}" in output
+        assert f"  Saved     127.0.0.1:{next_server_port}, {next_origin}" in output
+        assert "Settings    pending -> raven web stop, then raven web start" in output
         assert f"127.0.0.1:{browser_port}:127.0.0.1:{server_port}" in output
         assert "-p 2222" in output and "owner@gateway.example.test" in output
         assert https_status(server_port, origin, certificate) == 200
@@ -217,16 +218,16 @@ def main():
         wait_for_https(server_port, origin, certificate)
         assert https_status(server_port, next_origin, certificate) == 400
         output = cli(environment, "status")
-        assert f"Browser URL (active): {origin}" in output
-        assert f"Next start (saved): 127.0.0.1:{next_server_port}, {next_origin}" in output
-        assert "Pending settings:" in output
+        assert f"  Browser   {origin}\n" in output
+        assert f"  Saved     127.0.0.1:{next_server_port}, {next_origin}" in output
+        assert "Settings    pending" in output
         assert state(environment, volume)["config_bytes"] == pending["config_bytes"]
         assert "different settings" in fails(environment, "start")
         assert state(environment, volume)["config_bytes"] == pending["config_bytes"]
         cli(environment, "stop")
         cli(environment, "start")
         assert https_status(next_server_port, next_origin, certificate) == 200
-        assert "Pending settings:" not in cli(environment, "status")
+        assert "Settings    same as running" in cli(environment, "status")
         cli(environment, "stop")
         cli(environment, "start")
         assert https_status(next_server_port, next_origin, certificate) == 200
@@ -251,9 +252,9 @@ def main():
         print("Checking broker-down reporting and startup rollback", flush=True)
         shutdown_broker(runtime)
         output = cli(environment, "status")
-        assert "Gateway: running" in output and "Broker: stopped" in output
+        assert "Raven web: running, broker stopped" in output and "  Gateway   running since" in output
         cli(environment, "start")
-        assert "Broker: running" in cli(environment, "status")
+        assert "  Broker    running, pid" in cli(environment, "status")
         cli(environment, "stop")
         previous_id = inspect(environment, gateway)["Id"]
         before_failure = state(environment, volume)

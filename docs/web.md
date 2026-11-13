@@ -109,12 +109,35 @@ raven web status
 
 ## 상태 확인
 
-`raven web status`는 다음을 표시한다.
+`raven web status`는 첫 줄에 전체 상태(`running`, `running, broker stopped`, `stopped`, `not initialized`)를 보이고, 접속 정보, 서비스, 설정, 위치 순으로 묶어 표시한다.
 
-- 게이트웨이 상태와 Docker 시작 오류·종료 코드, 호스트 중계의 실행 여부.
-- 실행 중인 실제 listen 주소·서버 포트와 브라우저 URL, 다음 시작에 사용할 저장 설정.
-- 서버 hostname, 명시적으로 저장한 SSH 접속 대상, 접속 PC에서 실행할 터널 명령.
-- 실행 이미지와 image ID, 데이터 volume, 게이트웨이·중계 로그 위치.
+```text
+Raven web: running
+
+  Browser   https://localhost:8443
+  Tunnel    ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8443:127.0.0.1:9444 USER@HOST
+            run on your PC after replacing USER@HOST, or save it once: raven web configure --ssh-target USER@HOST
+
+Service
+  Gateway   running since 2026-11-13 15:11
+  Broker    running, pid 696825
+  Listen    127.0.0.1:9444 -> container 8443
+  Image     raven-web:latest 26e4765c66d8
+
+Settings    same as running
+  Saved     127.0.0.1:9444, https://localhost:8443
+
+Where
+  Server    vm-seg01 (server hostname; your PC may use another address)
+  Volume    raven-junho-web-data
+  Logs      docker logs raven-junho-web
+            /run/user/1000/raven-web-1000-web/broker.log
+
+Problems? raven web doctor
+```
+
+- 저장한 설정이 실행 중인 설정과 다르면 `Settings    pending -> raven web stop, then raven web start`와 함께 `Running`, `Saved` 두 줄을 보인다.
+- 터미널에서는 상태에 색을 넣고 긴 설명을 터미널 폭에 맞춰 줄바꿈한다. 파이프나 파일로 보낼 때와 `NO_COLOR`가 설정된 때는 색과 줄바꿈 없이 출력한다. 터널 명령처럼 복사할 명령은 줄바꿈하지 않는다.
 
 서버 hostname은 접속 PC에서 도달 가능한 SSH 주소라고 보장하지 않는다. SSH 대상이 없으면 `USER@HOST` 자리 표시자와 `configure --ssh-target` 안내를 출력한다. 직접 HTTPS 접속용 origin에는 SSH 터널 대신 직접 접속 안내를 표시한다.
 
@@ -128,36 +151,59 @@ raven web status
 raven web doctor
 ```
 
-검사 항목마다 한 줄을 `ok`, `info`, `warn`, `fail`, `skip`으로 시작해 출력한다. `warn`과 `fail`은 `;` 뒤에 다음 조치를 붙이고, Docker가 낸 원본 오류는 그 아래 줄에 둔다. 앞 항목이 실패해 검사할 수 없는 항목은 `skip`과 이유를 표시한다. `fail`이 있으면 종료 코드는 1이다.
+아래 10개 항목을 항상 같은 순서로 한 줄씩 출력한다. 줄은 `ok`, `warn`, `fail`, `skip` 중 하나로 시작한다. `warn`과 `fail`은 다음 줄에 `->`로 다음 조치를 보이고, Docker가 낸 원본 오류는 그 아래 `docker:` 줄에 둔다. 앞 항목이 실패해 검사할 수 없는 항목은 `skip`과 이유를 표시한다. 끝에 브라우저 주소와 인증서 fingerprint, 결과 요약을 출력한다. `fail`이 있으면 종료 코드는 1이다. 색과 줄바꿈은 `status`와 같은 규칙을 따른다.
 
-| 항목                | 확인 내용                                                                                           |
-| ------------------- | --------------------------------------------------------------------------------------------------- |
-| `docker`            | CLI 설치, daemon 접근 권한                                                                          |
-| `gateway`           | 웹 컨테이너의 존재와 실행 상태, 종료 코드와 Docker 오류                                              |
-| `image`             | 웹 이미지 존재, 실행 중인 컨테이너가 현재 빌드를 쓰는지                                              |
-| `data volume`       | volume 존재, `/data`의 소유자와 권한, 필수 파일                                                      |
-| `account`           | 계정 초기화, 계정 수, 활성 상태                                                                      |
-| `certificate`       | SAN, 유효 기간(30일 미만이면 `warn`), SHA-256 fingerprint                                            |
-| `settings`          | 저장 설정, origin과 인증서 SAN 일치, 실행 중 설정과 저장 설정의 차이, 멈춘 상태에서 다음 시작 포트 사용 가능 여부 |
-| `broker`            | runtime 디렉터리와 socket의 소유자·권한, 응답 여부, 다른 checkout에서 띄운 중계                       |
-| `gateway -> broker` | 웹 컨테이너가 mount한 `/run/raven`으로 중계에 닿는지                                                 |
-| `HTTPS`             | 실제 서버 포트에 origin의 Host로 `GET /login/`을 보내고 `tls.crt`로 인증서를 검증                     |
+```text
+Raven web doctor
+
+  ok    Docker           29.1.3
+  ok    Gateway          running since 2026-11-13 15:11
+  ok    Image            raven-web:latest 26e4765c66d8
+  ok    Data volume      raven-junho-web-data, uid 1000, mode 0700, all files present
+  ok    Account          initialized
+  ok    Certificate      localhost, valid until 2027-11-02 (353 days left)
+  ok    Settings         127.0.0.1:9444 for https://localhost:8443
+  fail  Broker           stopped (no socket)
+                         -> raven web start
+  skip  Gateway->broker  needs a running broker
+  ok    HTTPS            127.0.0.1:9444 answers for localhost:8443
+
+  Browser   https://localhost:8443 (SSH tunnel -L 8443:127.0.0.1:9444; other addresses get HTTP 400)
+  SHA-256   59:1E:C9:69:C9:7E:78:3B:D8:95:15:E3:92:EC:9A:45:8B:5F:F2:F8:68:C8:CC:9B:50:DE:53:29:6F:09:1E:19
+
+1 failed, 1 skipped. Fix the "->" items from the top.
+```
+
+| 항목              | 확인 내용                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `Docker`          | CLI 설치, daemon 접근 권한                                                                          |
+| `Gateway`         | 웹 컨테이너의 존재와 실행 상태, 종료 코드와 Docker 오류                                              |
+| `Image`           | 웹 이미지 존재, 실행 중인 컨테이너가 현재 빌드를 쓰는지                                              |
+| `Data volume`     | volume 존재, `/data`의 소유자와 권한, 필수 파일                                                      |
+| `Account`         | 계정 초기화, 계정 수, 활성 상태                                                                      |
+| `Certificate`     | SAN, 유효 기간(30일 미만이면 `warn`), SHA-256 fingerprint                                            |
+| `Settings`        | 저장 설정, origin과 인증서 SAN 일치, 실행 중 설정과 저장 설정의 차이, 멈춘 상태에서 다음 시작 포트 사용 가능 여부 |
+| `Broker`          | runtime 디렉터리와 socket의 소유자·권한, 응답 여부, 다른 checkout에서 띄운 중계                       |
+| `Gateway->broker` | 웹 컨테이너가 mount한 `/run/raven`으로 중계에 닿는지                                                 |
+| `HTTPS`           | 실제 서버 포트에 origin의 Host로 `GET /login/`을 보내고 `tls.crt`로 인증서를 검증                     |
 
 doctor는 서비스를 시작·중지하지 않고 설정·계정·runtime 파일을 바꾸지 않으며 로그인을 시도하지 않는다. 데이터 volume은 네트워크가 차단된 일회성 컨테이너에서 읽기 전용으로 조회하고, `tls.key`·`secret.key`·비밀번호 hash는 읽지 않는다. Docker 오류는 원문을 보이되 private key, cookie, password 형태의 값은 가린다.
 
 | 결과                                                     | 원인과 조치                                                                                          |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `broker: stopped`                                        | 중계가 꺼져 있다. `raven web start`                                                                   |
-| `broker: stopped (a stale socket is left behind)`        | 중계 프로세스가 비정상 종료했다. `raven web start`                                                    |
-| `broker: ... mode 0700`                                  | runtime 디렉터리 권한이 바뀌었다. 출력된 `chmod 700` 후 `raven web start`                             |
-| `gateway -> broker: the gateway cannot reach the broker` | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web stop` 후 `raven web start` |
-| `settings: the gateway runs ..., but the next start uses ...` | 저장한 설정이 아직 적용되지 않았다. `raven web stop` 후 `raven web start`                        |
-| `settings: the next start cannot listen`                 | 다른 프로세스가 포트를 쓴다. 그 프로세스를 끄거나 `raven web configure --port`로 바꾼다.               |
-| `certificate ...: expired`, `HTTPS: the served certificate has expired` | 인증서가 만료됐다. 갱신 기능은 아직 없다([M8](./roadmap.md#m8--인증서-상태내보내기갱신)). |
-| `HTTPS: the gateway serves a certificate other than tls.crt` | 실행 중인 컨테이너가 이전 인증서를 쓴다. `raven web stop` 후 `raven web start`                   |
-| `data volume ...: /data belongs to uid N`                | 다른 uid로 만든 volume이다. 출력된 root 도우미 명령으로 소유자를 되돌린다.                             |
+| 결과                                                     | 원인과 조치                                                                                          |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `Broker  stopped`                                        | 중계가 꺼져 있다. `raven web start`                                                                   |
+| `Broker  stopped; a stale socket is left behind`         | 중계 프로세스가 비정상 종료했다. `raven web start`                                                    |
+| `Broker  ... mode 0700`                                  | runtime 디렉터리 권한이 바뀌었다. 출력된 `chmod 700` 후 `raven web start`                             |
+| `Gateway->broker  the gateway cannot reach the broker`   | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web stop` 후 `raven web start` |
+| `Settings  saved settings are not applied yet`           | 저장한 설정이 아직 적용되지 않았다. `raven web stop` 후 `raven web start`                             |
+| `Settings  the next start cannot listen`                 | 다른 프로세스가 포트를 쓴다. 그 프로세스를 끄거나 `raven web configure --port`로 바꾼다.               |
+| `Certificate  ... expired`, `HTTPS  the served certificate has expired` | 인증서가 만료됐다. 갱신 기능은 아직 없다([M8](./roadmap.md#m8--인증서-상태내보내기갱신)). |
+| `HTTPS  the gateway serves a certificate other than tls.crt` | 실행 중인 컨테이너가 이전 인증서를 쓴다. `raven web stop` 후 `raven web start`                   |
+| `Data volume  /data belongs to uid N`                    | 다른 uid로 만든 volume이다. 출력된 root 도우미 명령으로 소유자를 되돌린다.                             |
 
-doctor는 접속 PC를 볼 수 없다. 브라우저에서는 `info  browser:` 줄의 origin을 정확히 연다. 다른 hostname이나 포트로 열면 HTTP 400이 된다.
+doctor는 접속 PC를 볼 수 없다. 브라우저에서는 `Browser` 줄의 origin을 정확히 연다. 다른 hostname이나 포트로 열면 HTTP 400이 된다.
 
 ## 화면 오류
 

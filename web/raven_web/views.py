@@ -1,11 +1,13 @@
 import json
+import re
 from functools import wraps
+from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import RequestDataTooBig
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.middleware import csrf
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -15,13 +17,25 @@ from django.views.decorators.http import require_http_methods
 from . import broker
 from .consumers import revoke_session
 from .throttle import login_retry_after
-from .validation import SESSION_ID, session_command, session_generation, session_name, session_options
+from .validation import (
+    CHUNK_SIZE, SESSION_ID, UPLOAD_TOKEN, FileRequestError, file_name, file_path, overwrite_flag, session_command,
+    session_generation, session_name, session_options, upload_offset, upload_size,
+)
 
 # Django formats the rejected Origin or Referer into these reasons, so match only the fixed prefix.
 ORIGIN_FAILURES = tuple(reason.split("%s", 1)[0] for reason in (
     csrf.REASON_BAD_ORIGIN, csrf.REASON_NO_REFERER, csrf.REASON_BAD_REFERER,
     csrf.REASON_MALFORMED_REFERER, csrf.REASON_INSECURE_REFERER,
 ))
+
+# HTTP status for each file failure code; other broker failures stay 502.
+# 409 marks server-side state the user has to fix: a missing Downloads or a bad staging folder.
+FILE_ERROR_STATUS = {
+    "invalid_path": 400, "not_found": 404, "upload_unknown": 404, "not_a_directory": 400, "not_a_file": 400,
+    "file_exists": 409, "offset_mismatch": 409, "too_large": 413, "no_space": 507, "permission_denied": 403,
+    "busy": 429, "downloads_missing": 409, "staging_invalid": 409, "cross_device": 409,
+}
+CONTENT_LENGTH = re.compile(r"[0-9]{1,10}\Z")
 
 
 def error_response(code, message, status, **kwargs):
@@ -109,12 +123,17 @@ def api_view(methods):
             session_id = kwargs.get("session_id")
             if session_id is not None and not SESSION_ID.fullmatch(session_id):
                 return error_response("invalid_request", "Invalid session ID", 400)
+            token = kwargs.get("token")
+            if token is not None and not UPLOAD_TOKEN.fullmatch(token):
+                return error_response("invalid_request", "Invalid upload token", 400)
             try:
                 return view(request, *args, **kwargs)
+            except FileRequestError as error:
+                return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 400))
             except (ValueError, UnicodeDecodeError, RequestDataTooBig) as error:
                 return error_response("invalid_request", str(error), 400)
             except broker.BrokerError as error:
-                return error_response(error.code, str(error), 502)
+                return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 502))
         return wrapped
     return decorator
 
@@ -174,3 +193,90 @@ def delete_session(request, session_id):
     generation = session_generation(data.get("generation"))
     broker.request("delete", id=session_id, confirm=session_id, generation=generation)
     return JsonResponse({"deleted": session_id})
+
+
+def broker_object(result, keys):
+    if not isinstance(result, dict):
+        raise broker.BrokerError("Invalid broker response")
+    return {key: result.get(key) for key in keys}
+
+
+@api_view(["GET"])
+def files(request):
+    path = file_path(request.GET.get("path", ""))
+    return JsonResponse(broker_object(broker.request("files_list", path=path),
+                                      ("path", "entries", "truncated", "skipped")))
+
+
+@api_view(["POST"])
+def start_upload(request):
+    data = json_object(request, {"path", "name", "size", "overwrite"})
+    path = file_path(data.get("path", ""))
+    name = file_name(data.get("name"), path)
+    size = upload_size(data.get("size"))
+    overwrite = overwrite_flag(data.get("overwrite", False))
+    token = broker_object(broker.request("upload_start", path=path, name=name, size=size, overwrite=overwrite),
+                          ("token",))["token"]
+    if not isinstance(token, str) or not UPLOAD_TOKEN.fullmatch(token):
+        raise broker.BrokerError("Invalid broker response")
+    return JsonResponse({"token": token, "chunk_size": CHUNK_SIZE}, status=201)
+
+
+@api_view(["PUT", "DELETE"])
+def upload(request, token):
+    if request.method == "DELETE":
+        broker.request("upload_cancel", token=token)
+        return JsonResponse({"cancelled": True})
+    # Django has already read the body (the ASGI guard caps it); read() avoids request.body's 16 KiB form limit.
+    length = request.META.get("CONTENT_LENGTH", "")
+    if not CONTENT_LENGTH.fullmatch(length):
+        return error_response("invalid_request", "Content-Length is required", 411)
+    if int(length) > CHUNK_SIZE:
+        return error_response("too_large", "An upload chunk can hold at most 4 MiB", 413)
+    if request.content_type != "application/octet-stream":
+        raise ValueError("Content-Type must be application/octet-stream")
+    offset = upload_offset(request.GET.get("offset"))
+    data = request.read()
+    if len(data) != int(length):
+        raise ValueError("The body does not match its Content-Length")
+    received = broker_object(broker.send("upload_chunk", data, token=token, offset=offset, size=len(data)),
+                             ("received",))["received"]
+    if type(received) is not int:
+        raise broker.BrokerError("Invalid broker response")
+    return JsonResponse({"received": received})
+
+
+@api_view(["POST"])
+def finish_upload(request, token):
+    data = json_object(request, {"overwrite"})
+    overwrite = overwrite_flag(data.get("overwrite", False))
+    result = broker.request("upload_finish", token=token, overwrite=overwrite)
+    return JsonResponse({"file": broker_object(result, ("name", "size", "mtime"))})
+
+
+def attachment(name):
+    fallback = "".join(c if " " <= c <= "~" and c not in '"\\' else "_" for c in name)
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+async def download(request):
+    # Async on purpose: under ASGI, Django 5.2 collects a sync iterator into memory before sending it.
+    user = await request.auser()
+    if not user.is_authenticated:
+        return error_response("auth_required", "Authentication required", 401)
+    if request.method != "GET":
+        return error_response("method_not_allowed", "Method not allowed", 405, headers={"Allow": "GET"})
+    try:
+        path = file_path(request.GET.get("path", ""))
+        if not path:
+            raise FileRequestError("Choose a file to download", "not_a_file")
+        reader, writer, size = await broker.download(path)
+    except FileRequestError as error:
+        return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 400))
+    except broker.BrokerError as error:
+        return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 502))
+    response = StreamingHttpResponse(broker.stream(reader, writer, size), content_type="application/octet-stream")
+    response["Content-Length"] = str(size)
+    response["Content-Disposition"] = attachment(path.rsplit("/", 1)[-1])
+    response["X-Content-Type-Options"] = "nosniff"
+    return response

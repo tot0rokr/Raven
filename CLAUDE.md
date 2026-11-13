@@ -33,6 +33,7 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
 - 세션 메타데이터: 바뀌지 않는 값(id, display, port, cmd, geometry, user)은 container label, 바뀌는 값(이름)은 `~/.local/state/raven/<hostname>/`에 둔다.
 - 세션 홈은 named volume에 둔다. 홈 디렉터리는 NFS다.
 - 호스트에 패키지를 설치하지 않는다.
+- 웹 파일 전송은 호스트 중계(`raven_web_host.py`의 `Files`)만 `~/Downloads`를 다룬다. 웹 컨테이너에 Downloads를 mount하지 않는다. 중계는 경로 구성 요소를 하나씩 `O_NOFOLLOW`로 연다. 세션이 Downloads에 아무 symlink나 만들 수 있고 중계는 호스트 사용자 권한이라, 따라가면 `~/.ssh` 같은 파일이 웹으로 나간다.
 - `--no-sandbox`를 쓰지 않는다.
 - Xvnc의 MIT-SHM은 끈 채로 둔다. 켜면 `run --host`로 띄운 Mesa 앱(wezterm 등)이 검은 창이 된다. `--ipc host`로 바꾸지 않는다.
 - 세션과 호스트 사이에는 메뉴 라벨만 오간다. 호스트 명령은 호스트의 `~/.config/raven/menu.conf`에 있는 `LABEL = @COMMAND` 규칙에서만 찾고, 세션이 보낸 문자열을 명령으로 실행하지 않는다. 중계는 SO_PEERCRED의 pid로 요청한 프로세스의 컨테이너를 확인한다(세션 uid가 호스트 uid와 다르고 모든 사용자에게 같으므로 uid로는 가릴 수 없다).

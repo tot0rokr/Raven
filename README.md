@@ -12,7 +12,7 @@ Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스
 - 배경화면: 모든 세션 또는 세션별로 이미지나 단색을 지정한다.
 - 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 기본은 두벌식이고, VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 Shift+Space나 작업표시줄의 `한/A` 버튼으로 전환한다. 개인 설정으로 다른 자판과 키를 쓴다.
 - 개인 설정: `~/.config/raven/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
-- 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다.
+- 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다. 웹 화면의 `파일`로 PC와 이 폴더 사이에 파일을 올리고 내려받는다.
 - 파일 관리자: `files` addon(PCManFM)으로 세션 안에서 홈과 `~/Downloads`의 파일을 찾아 열고 관리한다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
 
@@ -91,7 +91,7 @@ image raven:latest = raven-core (Xvnc, xmonad, openbox, tint2, rofi, viewers, xt
 - 세션 하나는 컨테이너 `raven-<user>-<id>`와 홈 volume `raven-<user>-home-<id>`다.
 - 뷰어(`xtigervncviewer` 또는 `xtightvncviewer`)도 컨테이너 안에서 실행되고, SSH X11 forwarding으로 클라이언트 X 서버에 창을 띄운다. 그래서 클라이언트에는 X 서버만 있으면 되고 VNC 뷰어를 따로 설치하지 않는다.
 - 호스트 앱은 호스트 프로세스가 세션의 X socket에 직접 붙는다. 세션 메뉴의 호스트 항목은 호스트 중계 `raven-hostd`를 거친다.
-- CLI(`raven`)는 POSIX sh 스크립트다. `raven-web`은 별도 웹 컨테이너를 관리하고, `raven_web_host.py`는 소유자 전용 Unix socket에서 세션 관리·열기·VNC 중계를 제공한다. 세션 정보는 컨테이너 label과 `~/.local/state/raven/<hostname>/`에 둔다.
+- CLI(`raven`)는 POSIX sh 스크립트다. `raven-web`은 별도 웹 컨테이너를 관리하고, `raven_web_host.py`는 소유자 전용 Unix socket에서 세션 관리·열기·VNC 중계와 `~/Downloads` 파일 전송을 제공한다. 세션 정보는 컨테이너 label과 `~/.local/state/raven/<hostname>/`에 둔다.
 
 ## 보안 설계
 

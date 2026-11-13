@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from .config import parse_origin
+from .validation import CHUNK_SIZE
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATE_DIR = Path(os.environ.get("RAVEN_WEB_STATE", "/data"))
@@ -66,6 +67,8 @@ SECURE_SSL_REDIRECT = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 DATA_UPLOAD_MAX_MEMORY_SIZE = 16 * 1024
+# Upload chunks stay in memory instead of spilling into the 64 MiB /tmp; asgi.py refuses larger bodies.
+FILE_UPLOAD_MAX_MEMORY_SIZE = CHUNK_SIZE + 64 * 1024
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 10
 USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

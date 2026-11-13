@@ -7,6 +7,24 @@ const AUTHENTICATION_FAILED = "데스크톱 인증에 실패했습니다. 다시
 // Xvnc drops clipboard updates longer than its MaxCutText default.
 const CLIPBOARD_MAX_BYTES = 262144;
 const clipboardEncoder = new TextEncoder();
+const LOGIN_EXPIRED = "로그인이 만료되었습니다. 다시 로그인해 주세요.";
+// The gateway reads a whole request body before its view runs, so files go up in pieces of this size.
+const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+const DOWNLOADS_LABEL = "Downloads";
+const UPLOAD_NETWORK_ERROR = "네트워크 연결이 끊어져 올리지 못했습니다. 다시 시도해 주세요.";
+const UPLOAD_CANCELLED = Symbol("upload cancelled");
+const UPLOAD_STATUS = {
+  queued: "대기 중",
+  starting: "준비 중…",
+  uploading: "올리는 중",
+  finishing: "저장 중…",
+  conflict: "같은 이름이 있습니다",
+  done: "완료",
+  skipped: "건너뜀",
+  cancelled: "취소함",
+};
+const UPLOAD_CANCELLABLE = new Set(["queued", "starting", "uploading"]);
+const UPLOAD_ENDED = new Set(["done", "skipped", "cancelled", "failed"]);
 
 async function loadViewerModule() {
   let timer;
@@ -33,6 +51,14 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let countdownTimer = null;
 let operationSession = null;
+// The folder the file list shows, and the one the latest list request asked for.
+let filesShown = "";
+let filesWanted = "";
+let filesRequest = 0;
+const uploads = [];
+let uploadRunning = false;
+let unloadGuarded = false;
+let leavingForLogin = false;
 
 function notice(id, message) {
   const target = element(id);
@@ -46,6 +72,20 @@ const ERROR_MESSAGES = new Map([
   ["csrf_origin_mismatch", "다른 주소에서 보낸 요청으로 판단해 거부했습니다. 설정된 주소로 페이지를 다시 열어 주세요."],
   ["csrf_token_invalid", "페이지가 만료되었습니다. 새로고침한 뒤 다시 시도해 주세요."],
   ["invalid_host", "설정된 주소로 접속하지 않았습니다. 설정된 주소로 페이지를 다시 열어 주세요."],
+  ["invalid_path", "쓸 수 없는 경로나 파일 이름입니다. 이름의 길이와 문자를 확인해 주세요."],
+  ["not_found", "파일이나 폴더를 찾지 못했습니다. 다른 곳에서 옮기거나 지웠을 수 있으니 목록을 새로고침해 주세요."],
+  ["not_a_directory", "폴더가 아닙니다. 목록을 새로고침해 주세요."],
+  ["not_a_file", "일반 파일이 아닙니다. 같은 이름의 폴더나 특수 파일이 있는지 확인해 주세요."],
+  ["file_exists", "같은 이름의 파일이 이미 있습니다."],
+  ["too_large", "파일이 너무 큽니다. 한 파일은 4 GiB까지 올릴 수 있습니다."],
+  ["no_space", "서버의 디스크 공간이 부족합니다. 필요 없는 파일을 지운 뒤 다시 시도해 주세요."],
+  ["permission_denied", "서버에서 이 파일이나 폴더에 접근할 권한이 없습니다."],
+  ["upload_unknown", "업로드가 만료되었거나 취소되었습니다. 다시 올려 주세요."],
+  ["offset_mismatch", "업로드 순서가 어긋났습니다. 다시 올려 주세요."],
+  ["busy", "진행 중인 업로드가 너무 많습니다. 다른 업로드가 끝난 뒤 다시 시도해 주세요."],
+  ["downloads_missing", "서버에 ~/Downloads 폴더가 없습니다. 세션을 만들거나 시작하면 생깁니다. 서버에서 raven web doctor로 확인해 주세요."],
+  ["staging_invalid", "~/Downloads/.raven-uploads 폴더가 업로드를 막고 있습니다. 세션이나 서버에서 이 폴더를 지운 뒤 다시 올려 주세요."],
+  ["cross_device", "올릴 폴더가 ~/Downloads와 다른 파일 시스템에 있어 저장할 수 없습니다. 다른 폴더에 올려 주세요."],
 ]);
 
 function errorMessage(data) {
@@ -54,6 +94,20 @@ function errorMessage(data) {
   if (typeof data.error !== "string") return "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
   if (data.code === "session_failed") return `세션 작업에 실패했습니다: ${data.error}`;
   return data.error;
+}
+
+function apiError(status, data) {
+  const error = new Error(errorMessage(data));
+  error.status = status;
+  error.code = data.code;
+  return error;
+}
+
+function goToLogin() {
+  leavingForLogin = true;
+  updateUnloadGuard();
+  disconnect();
+  window.location.assign("/login/");
 }
 
 async function api(path, method = "GET", body) {
@@ -66,17 +120,12 @@ async function api(path, method = "GET", body) {
   }
   const response = await fetch(path, options);
   if (response.status === 401 || response.redirected) {
-    disconnect();
-    window.location.assign("/login/");
-    throw new Error("로그인이 만료되었습니다. 다시 로그인해 주세요.");
+    goToLogin();
+    throw new Error(LOGIN_EXPIRED);
   }
   const contentType = response.headers.get("Content-Type") || "";
   const data = contentType.includes("application/json") ? await response.json() : {};
-  if (!response.ok) {
-    const error = new Error(errorMessage(data));
-    error.status = response.status;
-    throw error;
-  }
+  if (!response.ok) throw apiError(response.status, data);
   return data;
 }
 
@@ -205,6 +254,391 @@ async function copyToPc() {
     field.select();
     setClipboardStatus("브라우저가 클립보드 쓰기를 허용하지 않았습니다. 선택된 텍스트를 직접 복사하세요(Ctrl+C).");
   }
+}
+
+function filesJoin(dir, name) {
+  return dir ? `${dir}/${name}` : name;
+}
+
+function filesLabel(path) {
+  return path ? `${DOWNLOADS_LABEL}/${path}` : DOWNLOADS_LABEL;
+}
+
+function formatSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+function formatTime(seconds) {
+  const date = new Date(seconds * 1000);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function renderBreadcrumb() {
+  const parts = filesShown ? filesShown.split("/") : [];
+  const crumbs = [{ label: DOWNLOADS_LABEL, path: "" }];
+  parts.forEach((part, index) => crumbs.push({ label: part, path: parts.slice(0, index + 1).join("/") }));
+  const items = crumbs.map((crumb, index) => {
+    const item = document.createElement("li");
+    const last = index === crumbs.length - 1;
+    const control = document.createElement(last ? "span" : "button");
+    control.className = last ? "crumb crumb-current" : "crumb";
+    control.textContent = crumb.label;
+    if (last) control.setAttribute("aria-current", "location");
+    else {
+      control.type = "button";
+      control.addEventListener("click", () => listFiles(crumb.path));
+    }
+    item.append(control);
+    return item;
+  });
+  element("files-breadcrumb").replaceChildren(...items);
+  element("files-target").textContent = filesLabel(filesShown);
+}
+
+function fileRow(dir, entry) {
+  const type = entry.type === "dir" || entry.type === "file" ? entry.type : "other";
+  const path = filesJoin(dir, entry.name);
+  const row = document.createElement("li");
+  row.className = `file-row file-${type}`;
+  let name;
+  if (type === "dir") {
+    name = document.createElement("button");
+    name.type = "button";
+    name.addEventListener("click", () => listFiles(path));
+  } else if (type === "file") {
+    name = document.createElement("a");
+    name.href = `/api/files/download/?path=${encodeURIComponent(path)}`;
+    name.download = entry.name;
+    name.title = "내려받기";
+  } else {
+    // Links and special files are never followed or read from the web.
+    name = document.createElement("span");
+    name.title = "링크나 특수 파일은 웹에서 열거나 내려받을 수 없습니다.";
+  }
+  name.className = "file-name";
+  name.textContent = entry.name;
+  const size = document.createElement("span");
+  size.className = "file-size";
+  size.textContent = { dir: "폴더", file: formatSize(entry.size), other: "열 수 없음" }[type];
+  const meta = document.createElement("span");
+  meta.className = "file-meta";
+  meta.append(size);
+  if (Number.isFinite(entry.mtime)) {
+    const time = document.createElement("time");
+    time.className = "file-time";
+    time.dateTime = new Date(entry.mtime * 1000).toISOString();
+    time.textContent = formatTime(entry.mtime);
+    meta.append(time);
+  }
+  row.append(name, meta);
+  return row;
+}
+
+function renderFiles(data) {
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) fragment.append(fileRow(filesShown, entry));
+  element("files-list").replaceChildren(fragment);
+  element("files-status").textContent = entries.length ? "" : "빈 폴더입니다.";
+  const notes = [];
+  if (data.truncated) {
+    notes.push(`항목이 너무 많아 ${entries.length}개만 보입니다. 이름순으로 고른 것이 아닐 수 있으니 전체는 세션의 파일 관리자에서 확인해 주세요.`);
+  }
+  if (data.skipped > 0) notes.push(`이름을 읽을 수 없는 항목 ${data.skipped}개는 목록에서 뺐습니다.`);
+  notice("files-note", notes.join(" "));
+}
+
+async function listFiles(path = filesWanted) {
+  const request = ++filesRequest;
+  filesWanted = path;
+  element("files-status").textContent = "불러오는 중…";
+  notice("files-error", "");
+  try {
+    const data = await api(`/api/files/?path=${encodeURIComponent(path)}`);
+    if (request !== filesRequest) return;
+    filesShown = typeof data.path === "string" ? data.path : path;
+    filesWanted = filesShown;
+    renderFiles(data);
+  } catch (error) {
+    if (request !== filesRequest) return;
+    // A folder that failed to open leaves the previous one in place; one that vanished is emptied.
+    if (path === filesShown) {
+      element("files-list").replaceChildren();
+      notice("files-note", "");
+    }
+    filesWanted = filesShown;
+    element("files-status").textContent = "";
+    notice("files-error", error instanceof TypeError ? "목록을 불러오지 못했습니다. 네트워크 연결을 확인해 주세요." : error.message);
+  }
+  renderBreadcrumb();
+}
+
+function openFiles() {
+  const dialog = element("files-dialog");
+  if (!dialog.open) dialog.showModal();
+  const current = uploads.find((upload) => !UPLOAD_ENDED.has(upload.state));
+  if (current) revealUpload(current);
+  listFiles(filesWanted);
+}
+
+function uploadPath(token) {
+  return `/api/files/uploads/${encodeURIComponent(token)}/`;
+}
+
+function uploadsPending() {
+  return uploads.some((upload) => UPLOAD_CANCELLABLE.has(upload.state) || upload.state === "finishing"
+    || (upload.state === "conflict" && upload.token));
+}
+
+function warnBeforeUnload(event) {
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+// Leaving the page drops every upload, so ask first, but only while one is still going.
+function updateUnloadGuard() {
+  const guard = !leavingForLogin && uploadsPending();
+  if (guard === unloadGuarded) return;
+  unloadGuarded = guard;
+  if (guard) window.addEventListener("beforeunload", warnBeforeUnload);
+  else window.removeEventListener("beforeunload", warnBeforeUnload);
+}
+
+function renderUploadList() {
+  element("files-uploads").hidden = uploads.length === 0;
+  element("files-clear-uploads").hidden = !uploads.some((upload) => UPLOAD_ENDED.has(upload.state));
+  updateUnloadGuard();
+}
+
+function renderUpload(upload) {
+  const { row, state } = upload;
+  const size = upload.file.size;
+  const sent = state === "done" ? size : Math.min(upload.sent, size);
+  const progress = row.querySelector(".upload-progress");
+  progress.max = size || 1;
+  progress.value = state === "done" ? progress.max : sent;
+  const percent = state === "done" ? 100 : size ? Math.floor((sent * 100) / size) : 0;
+  row.dataset.state = state;
+  row.querySelector(".upload-percent").textContent = `${percent}%`;
+  let status = state === "failed" ? upload.message : UPLOAD_STATUS[state];
+  if (state === "uploading") status += ` · ${formatSize(sent)} / ${formatSize(size)}`;
+  row.querySelector(".upload-status").textContent = status;
+  row.querySelector(".upload-cancel").hidden = !UPLOAD_CANCELLABLE.has(state);
+  row.querySelector(".upload-overwrite").hidden = state !== "conflict";
+  row.querySelector(".upload-skip").hidden = state !== "conflict";
+  row.querySelector(".upload-retry").hidden = state !== "failed";
+  renderUploadList();
+}
+
+// Keep the row that is running or waiting for an answer in sight; finished rows pile up above it.
+function revealUpload(upload) {
+  upload.row.scrollIntoView({ block: "nearest" });
+}
+
+function setUploadState(upload, state) {
+  upload.state = state;
+  renderUpload(upload);
+  if (state === "uploading" || state === "conflict" || state === "failed") revealUpload(upload);
+}
+
+function addUpload(file, dir) {
+  const row = element("upload-template").content.firstElementChild.cloneNode(true);
+  const upload = { file, dir, row, state: "queued", sent: 0, confirmed: 0, token: null, xhr: null, overwrite: false, message: "" };
+  row.querySelector(".upload-name").textContent = file.name;
+  row.querySelector(".upload-destination").textContent = `${filesLabel(dir)}에 올립니다`;
+  row.querySelector(".upload-cancel").addEventListener("click", () => cancelUpload(upload));
+  row.querySelector(".upload-overwrite").addEventListener("click", () => resolveConflict(upload, true));
+  row.querySelector(".upload-skip").addEventListener("click", () => resolveConflict(upload, false));
+  row.querySelector(".upload-retry").addEventListener("click", () => retryUpload(upload));
+  element("files-upload-list").append(row);
+  uploads.push(upload);
+  renderUpload(upload);
+}
+
+// The broker also drops an upload that stays idle, so a failed cancel only delays the cleanup.
+function discardUpload(upload) {
+  const { token } = upload;
+  upload.token = null;
+  if (token) api(uploadPath(token), "DELETE").catch(() => {});
+}
+
+function putChunk(upload, offset, body) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const url = new URL(`${uploadPath(upload.token)}?offset=${offset}`, window.location.href);
+    upload.xhr = xhr;
+    xhr.open("PUT", url.href);
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-CSRFToken", csrfToken);
+    xhr.upload.addEventListener("progress", (event) => {
+      if (upload.xhr !== xhr) return;
+      upload.sent = offset + Math.min(event.loaded, body.byteLength);
+      renderUpload(upload);
+    });
+    xhr.addEventListener("load", () => {
+      upload.xhr = null;
+      if (xhr.status === 401 || (xhr.responseURL && new URL(xhr.responseURL).pathname !== url.pathname)) {
+        goToLogin();
+        reject(new Error(LOGIN_EXPIRED));
+        return;
+      }
+      let data = {};
+      if ((xhr.getResponseHeader("Content-Type") || "").includes("application/json")) {
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch {
+          data = {};
+        }
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(apiError(xhr.status, data));
+    });
+    xhr.addEventListener("error", () => {
+      upload.xhr = null;
+      reject(new TypeError("network error"));
+    });
+    xhr.addEventListener("abort", () => {
+      upload.xhr = null;
+      reject(UPLOAD_CANCELLED);
+    });
+    xhr.send(body);
+  });
+}
+
+async function sendChunks(upload) {
+  const { file } = upload;
+  while (upload.sent < file.size) {
+    const offset = upload.sent;
+    const end = Math.min(offset + upload.chunkSize, file.size);
+    let body;
+    try {
+      body = await file.slice(offset, end).arrayBuffer();
+    } catch {
+      throw new Error("PC의 파일을 읽지 못했습니다. 파일이 바뀌거나 지워졌는지 확인해 주세요.");
+    }
+    if (upload.state !== "uploading") throw UPLOAD_CANCELLED;
+    const data = await putChunk(upload, offset, body);
+    if (upload.state !== "uploading") throw UPLOAD_CANCELLED;
+    if (data.received !== end) throw new Error("업로드 순서가 어긋났습니다. 다시 올려 주세요.");
+    upload.sent = end;
+    upload.confirmed = end;
+    renderUpload(upload);
+  }
+}
+
+async function finishUpload(upload) {
+  setUploadState(upload, "finishing");
+  await api(`${uploadPath(upload.token)}finish/`, "POST", { overwrite: upload.overwrite });
+  upload.token = null;
+  upload.sent = upload.file.size;
+  setUploadState(upload, "done");
+  if (element("files-dialog").open) listFiles();
+}
+
+function failUpload(upload, error) {
+  if (error === UPLOAD_CANCELLED || !["starting", "uploading", "finishing"].includes(upload.state)) return;
+  if (error.code === "file_exists") {
+    // From finish the staged file stays on the server until the user answers.
+    setUploadState(upload, "conflict");
+    return;
+  }
+  discardUpload(upload);
+  upload.sent = upload.confirmed;
+  upload.message = error instanceof TypeError ? UPLOAD_NETWORK_ERROR : error.message;
+  setUploadState(upload, "failed");
+}
+
+async function runUpload(upload) {
+  upload.sent = 0;
+  upload.confirmed = 0;
+  setUploadState(upload, "starting");
+  try {
+    const started = await api("/api/files/uploads/", "POST", {
+      path: upload.dir, name: upload.file.name, size: upload.file.size, overwrite: upload.overwrite,
+    });
+    upload.token = started.token;
+    if (upload.state !== "starting") {
+      discardUpload(upload);
+      return;
+    }
+    upload.chunkSize = Number.isInteger(started.chunk_size) && started.chunk_size > 0 ? started.chunk_size : UPLOAD_CHUNK_BYTES;
+    setUploadState(upload, "uploading");
+    await sendChunks(upload);
+    await finishUpload(upload);
+  } catch (error) {
+    failUpload(upload, error);
+  }
+}
+
+// One file at a time, in the order they were chosen.
+async function pumpUploads() {
+  if (uploadRunning) return;
+  uploadRunning = true;
+  try {
+    for (let next = uploads.find((upload) => upload.state === "queued"); next;
+      next = uploads.find((upload) => upload.state === "queued")) {
+      await runUpload(next);
+    }
+  } finally {
+    uploadRunning = false;
+  }
+}
+
+function cancelUpload(upload) {
+  if (!UPLOAD_CANCELLABLE.has(upload.state)) return;
+  upload.state = "cancelled";
+  if (upload.xhr) upload.xhr.abort();
+  discardUpload(upload);
+  renderUpload(upload);
+}
+
+async function resolveConflict(upload, overwrite) {
+  if (upload.state !== "conflict") return;
+  if (!overwrite) {
+    discardUpload(upload);
+    setUploadState(upload, "skipped");
+    return;
+  }
+  upload.overwrite = true;
+  if (!upload.token) {
+    setUploadState(upload, "queued");
+    pumpUploads();
+    return;
+  }
+  // Every byte is already on the server; only the final rename waited for the answer.
+  try {
+    await finishUpload(upload);
+  } catch (error) {
+    failUpload(upload, error);
+  }
+}
+
+function retryUpload(upload) {
+  if (upload.state !== "failed") return;
+  upload.overwrite = false;
+  upload.message = "";
+  setUploadState(upload, "queued");
+  pumpUploads();
+}
+
+function clearEndedUploads() {
+  for (const upload of uploads.filter((item) => UPLOAD_ENDED.has(item.state))) {
+    upload.row.remove();
+    uploads.splice(uploads.indexOf(upload), 1);
+  }
+  renderUploadList();
+  element("files-upload").focus();
 }
 
 function clearReconnectTimers() {
@@ -435,6 +869,20 @@ element("clipboard-toggle").addEventListener("click", () => {
   showClipboard(open);
   if (open) element("clipboard-outgoing").focus();
   else if (connection) connection.focus();
+});
+element("files-open").addEventListener("click", openFiles);
+element("viewer-files-open").addEventListener("click", openFiles);
+element("files-refresh").addEventListener("click", () => listFiles());
+element("files-upload").addEventListener("click", () => element("files-input").click());
+element("files-input").addEventListener("change", (event) => {
+  const files = [...event.target.files];
+  event.target.value = "";
+  for (const file of files) addUpload(file, filesShown);
+  pumpUploads();
+});
+element("files-clear-uploads").addEventListener("click", clearEndedUploads);
+element("files-dialog").addEventListener("close", () => {
+  if (!viewer.hidden && connection) connection.focus();
 });
 element("clipboard-send").addEventListener("click", sendClipboard);
 element("clipboard-read").addEventListener("click", readPcClipboard);

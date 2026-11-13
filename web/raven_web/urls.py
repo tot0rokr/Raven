@@ -11,4 +11,9 @@ urlpatterns = [
     path("api/sessions/<str:session_id>/rename/", views.rename_session),
     path("api/sessions/<str:session_id>/run/", views.run_session),
     path("api/sessions/<str:session_id>/", views.delete_session),
+    path("api/files/", views.files),
+    path("api/files/uploads/", views.start_upload),
+    path("api/files/uploads/<str:token>/", views.upload),
+    path("api/files/uploads/<str:token>/finish/", views.finish_upload),
+    path("api/files/download/", views.download),
 ]

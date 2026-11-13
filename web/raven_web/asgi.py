@@ -1,3 +1,4 @@
+import json
 import os
 import re
 
@@ -18,6 +19,9 @@ from django.urls import re_path
 
 from .consumers import DesktopConsumer
 
+MAX_BODY = 64 * 1024
+UPLOAD_CHUNK_PATH = re.compile(r"/api/files/uploads/[A-Za-z0-9_-]{32}/")
+
 
 class WebSocketBoundary:
     def __init__(self, application):
@@ -36,6 +40,42 @@ class WebSocketBoundary:
             await send({"type": "websocket.close", "code": 4403})
             return
         await self.application(scope, receive, send)
+
+
+class RequestBodyLimit:
+    """Refuse large or unsized bodies before Django reads them: it spools the whole body before any view runs.
+
+    Only an upload chunk may carry up to FILE_UPLOAD_MAX_MEMORY_SIZE; every other body is a small form or JSON.
+    """
+
+    def __init__(self, application):
+        self.application = application
+
+    async def __call__(self, scope, receive, send):
+        headers = scope.get("headers", [])
+        lengths = [value for name, value in headers if name == b"content-length"]
+        if any(name == b"transfer-encoding" for name, _ in headers):
+            await self.refuse(send, 411, "invalid_request", "Content-Length is required")
+        elif len(lengths) > 1 or (lengths and not re.fullmatch(rb"[0-9]{1,10}", lengths[0])):
+            await self.refuse(send, 400, "invalid_request", "Invalid Content-Length")
+        elif lengths and int(lengths[0]) > self.limit(scope):
+            await self.refuse(send, 413, "too_large", "The request body is too large")
+        else:
+            await self.application(scope, receive, send)
+
+    @staticmethod
+    def limit(scope):
+        if scope.get("method") == "PUT" and UPLOAD_CHUNK_PATH.fullmatch(scope.get("path", "")):
+            return settings.FILE_UPLOAD_MAX_MEMORY_SIZE
+        return MAX_BODY
+
+    @staticmethod
+    async def refuse(send, status, code, message):
+        await send({"type": "http.response.start", "status": status, "headers": [
+            (b"content-type", b"application/json"), (b"cache-control", b"no-store"),
+            (b"x-content-type-options", b"nosniff"), (b"connection", b"close"),
+        ]})
+        await send({"type": "http.response.body", "body": json.dumps({"error": message, "code": code}).encode()})
 
 
 @database_sync_to_async
@@ -59,7 +99,7 @@ async def lifespan(scope, receive, send):
 
 
 application = ProtocolTypeRouter({
-    "http": http_application,
+    "http": RequestBodyLimit(http_application),
     "websocket": WebSocketBoundary(AuthMiddlewareStack(URLRouter([
         re_path(r"^ws/sessions/(?P<session_id>[^/]+)/$", DesktopConsumer.as_asgi()),
     ]))),

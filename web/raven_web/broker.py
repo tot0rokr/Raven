@@ -11,10 +11,17 @@ MAX_HEADER = 64 * 1024
 MAX_FAILURE_MESSAGE = 200
 BROKER_TIMEOUT = 120
 CONNECT_TIMEOUT = 10
+STREAM_PIECE = 64 * 1024
+# File failures the host broker reports with a code; any other failure stays session_failed.
+FILE_CODES = frozenset({
+    "invalid_path", "not_found", "not_a_directory", "not_a_file", "file_exists", "too_large", "no_space",
+    "permission_denied", "upload_unknown", "offset_mismatch", "busy", "downloads_missing", "staging_invalid",
+    "cross_device",
+})
 
 
 class BrokerError(Exception):
-    """A broker failure; code is broker_unavailable or session_failed."""
+    """A broker failure; code is broker_unavailable, session_failed or one of FILE_CODES."""
 
     def __init__(self, message, code="broker_unavailable"):
         super().__init__(message)
@@ -39,25 +46,81 @@ def _response(line):
     if not isinstance(result, dict):
         raise BrokerError("Invalid broker response")
     if result.get("ok") is False:
-        raise BrokerError(_failure_message(result.get("error")), "session_failed")
+        code = result.get("code")
+        raise BrokerError(_failure_message(result.get("error")),
+                          code if isinstance(code, str) and code in FILE_CODES else "session_failed")
     if result.get("ok") is not True:
         raise BrokerError("Invalid broker response")
     return result.get("data")
 
 
-def request(action, **arguments):
-    payload = json.dumps({"action": action, **arguments}).encode() + b"\n"
-    if len(payload) > MAX_HEADER:
+def _header(action, arguments):
+    header = json.dumps({"action": action, **arguments}).encode() + b"\n"
+    if len(header) > MAX_HEADER:
         raise ValueError("The request is too large")
+    return header
+
+
+def request(action, **arguments):
+    return send(action, b"", **arguments)
+
+
+def send(action, payload, **arguments):
+    """Send a header line followed by raw payload bytes and read the one-line reply."""
+    header = _header(action, arguments)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(BROKER_TIMEOUT)
             connection.connect(settings.RAVEN_BROKER)
-            connection.sendall(payload)
+            connection.sendall(header)
+            if payload:
+                try:
+                    connection.sendall(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # The broker refused the request before reading it all; its reply says why.
             with connection.makefile("rb") as response:
                 return _response(response.readline(MAX_HEADER + 1))
     except OSError as error:
         raise BrokerError("The Raven broker is unavailable") from error
+
+
+async def download(path):
+    """Open a download; returns the stream and the size the broker will send after its header."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(settings.RAVEN_BROKER, limit=MAX_HEADER),
+            timeout=CONNECT_TIMEOUT,
+        )
+    except (OSError, TimeoutError) as error:
+        raise BrokerError("The Raven broker is unavailable") from error
+    try:
+        writer.write(_header("download", {"path": path}))
+        await asyncio.wait_for(writer.drain(), timeout=CONNECT_TIMEOUT)
+        data = _response(await asyncio.wait_for(reader.readline(), timeout=BROKER_TIMEOUT))
+        if not isinstance(data, dict) or type(data.get("size")) is not int or data["size"] < 0:
+            raise BrokerError("Invalid broker response")
+    except (OSError, TimeoutError, ValueError) as error:
+        writer.close()
+        raise BrokerError("The Raven broker is unavailable") from error
+    except BaseException:
+        writer.close()
+        raise
+    return reader, writer, data["size"]
+
+
+async def stream(reader, writer, size):
+    """Yield exactly size bytes, or stop early so the response ends short of its Content-Length."""
+    try:
+        while size:
+            data = await asyncio.wait_for(reader.read(min(size, STREAM_PIECE)), timeout=BROKER_TIMEOUT)
+            if not data:
+                return
+            size -= len(data)
+            yield data
+    except (OSError, TimeoutError):
+        return
+    finally:
+        writer.close()
 
 
 async def connect(session_id):

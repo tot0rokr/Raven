@@ -1,0 +1,6 @@
+# files: bookmark the shared Downloads folder once; an existing GTK bookmarks file is the user's own
+[ "$1" = start ] || exit 0
+bookmarks="$HOME/.config/gtk-3.0/bookmarks"
+[ -e "$bookmarks" ] && exit 0
+mkdir -p "${bookmarks%/*}"
+printf 'file://%s/Downloads Downloads\n' "$HOME" > "$bookmarks"

@@ -335,6 +335,23 @@ raven recreate web                     # 기존 세션은 recreate, 새 세션�
 - 이전부터 `~/Downloads`에 있던 하위 디렉터리는 그룹 쓰기가 없으면 세션에서 그 안에 쓸 수 없다. 필요하면 호스트에서 `chmod g+ws`.
 - 그 밖의 세션 파일은 `docker cp`로 꺼낸다. 컨테이너 이름은 `raven-<user>-<id>`다.
 
+### 파일 관리자
+
+`files` addon(PCManFM)을 켜면 세션 안에서 파일을 찾아 열고 관리한다.
+
+```bash
+raven addon enable files
+raven build                  # 새 세션부터 들어간다. 기존 세션은 raven recreate로 바꾼다(앱이 종료된다)
+```
+
+- 메뉴의 `Files`는 홈, `Downloads`는 공유 `~/Downloads`를 연다. 왼쪽 Places에 Home Folder와 Downloads가 있다.
+- 다른 앱이 `xdg-open`으로 폴더를 열 때도 이 파일 관리자가 열린다.
+- 폴더 만들기(Ctrl+Shift+N), 이름 바꾸기(F2), 복사·잘라내기·붙여넣기, 열기를 지원한다. 한글과 공백이 든 이름도 그대로 다룬다.
+- 삭제(Delete)는 확인 창을 거쳐 바로 지운다. 휴지통은 쓰지 않는다. 공유 `~/Downloads`에서 휴지통을 쓰면 호스트 쪽에 세션 uid 소유의 `.Trash-60000`이 생겨 호스트 사용자가 지울 수 없기 때문이다.
+- 만든 파일과 폴더의 권한은 위의 umask와 setgid 규칙을 따라 호스트 사용자가 고치고 지울 수 있다.
+- 텍스트 편집기는 들어 있지 않다. 웹 문서, PDF, 그림은 Edge로 열리고, 그 밖의 파일은 `Open With`에서 앱을 고른다.
+- 개인 설정은 홈 overlay의 `~/.config/libfm/libfm.conf`, `~/.config/pcmanfm/`이 이긴다. Places의 Downloads는 처음 시작할 때 `~/.config/gtk-3.0/bookmarks`가 없으면 만든다.
+
 ```bash
 docker cp raven-$USER-0:/home/raven/.config/raven/autostart .
 ```

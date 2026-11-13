@@ -1,0 +1,5 @@
+# Delete instead of trashing: trash on the shared ~/Downloads mount would leave a .Trash-<uid> directory
+# owned by the session uid on the host. Deleting still asks for confirmation (confirm_del=1).
+sed -i 's/^use_trash=1$/use_trash=0/' /etc/xdg/libfm/libfm.conf
+grep -qx 'use_trash=0' /etc/xdg/libfm/libfm.conf
+grep -qx 'confirm_del=1' /etc/xdg/libfm/libfm.conf

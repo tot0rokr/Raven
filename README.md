@@ -13,6 +13,7 @@ Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스
 - 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 기본은 두벌식이고, VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 Shift+Space나 작업표시줄의 `한/A` 버튼으로 전환한다. 개인 설정으로 다른 자판과 키를 쓴다.
 - 개인 설정: `~/.config/raven/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다.
+- 파일 관리자: `files` addon(PCManFM)으로 세션 안에서 홈과 `~/Downloads`의 파일을 찾아 열고 관리한다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
 
 ## 요구 사항

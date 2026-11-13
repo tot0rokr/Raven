@@ -128,6 +128,7 @@ git clone <저장소> ~/raven
 mkdir -p ~/.local/bin
 ln -s ~/raven/raven ~/.local/bin/raven     # ~/.local/bin이 PATH에 있어야 한다
 raven addon enable kime                    # 선택: 한글 입력 (기본으로 켜진 것은 edge)
+raven addon enable files                   # 선택: 파일 관리자 (PCManFM)
 raven build                                # 처음에는 xmonad 컴파일과 Edge 내려받기로 오래 걸린다
 ```
 

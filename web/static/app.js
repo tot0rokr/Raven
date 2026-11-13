@@ -4,6 +4,9 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 const RETRYABLE_CLIENT_STATUSES = new Set([408, 429]);
 const RECONNECT_NOTICE = "화면 연결이 끊어졌습니다. 자동으로 다시 연결합니다.";
 const AUTHENTICATION_FAILED = "데스크톱 인증에 실패했습니다. 다시 연결해 주세요.";
+// Xvnc drops clipboard updates longer than its MaxCutText default.
+const CLIPBOARD_MAX_BYTES = 262144;
+const clipboardEncoder = new TextEncoder();
 
 async function loadViewerModule() {
   let timer;
@@ -141,6 +144,67 @@ function setConnectionStatus(text, connected = false) {
   element("connection-status").textContent = text;
   element("connection-status").classList.toggle("connected", connected);
   element("send-ctrl-alt-del").disabled = !connected;
+  element("clipboard-send").disabled = !connected;
+}
+
+function setClipboardStatus(message) {
+  element("clipboard-status").textContent = message;
+}
+
+// The panel holds text only for the connection it was used with; nothing is logged or stored.
+function clearClipboard() {
+  element("clipboard-outgoing").value = "";
+  element("clipboard-incoming").value = "";
+  element("clipboard-copy").disabled = true;
+  setClipboardStatus("");
+  showClipboard(false);
+}
+
+function showClipboard(open) {
+  element("clipboard-panel").hidden = !open;
+  element("clipboard-toggle").setAttribute("aria-expanded", String(open));
+}
+
+function sendClipboard() {
+  const text = element("clipboard-outgoing").value;
+  if (!connection) {
+    setClipboardStatus("화면이 연결되어 있지 않아 보내지 못했습니다.");
+    return;
+  }
+  if (!text) {
+    setClipboardStatus("보낼 텍스트가 없습니다.");
+    return;
+  }
+  const size = clipboardEncoder.encode(text).length;
+  if (size > CLIPBOARD_MAX_BYTES) {
+    setClipboardStatus(`텍스트가 너무 깁니다 (${Math.ceil(size / 1024)} KiB). ${CLIPBOARD_MAX_BYTES / 1024} KiB 이하로 나눠 보내 주세요.`);
+    return;
+  }
+  connection.clipboardPasteFrom(text);
+  setClipboardStatus("세션 클립보드에 넣었습니다. 세션의 앱에서 붙여넣으세요.");
+}
+
+async function readPcClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    element("clipboard-outgoing").value = text;
+    setClipboardStatus(text ? "PC 클립보드의 텍스트를 가져왔습니다. 세션으로 보내기를 누르세요." : "PC 클립보드가 비어 있습니다.");
+  } catch {
+    element("clipboard-outgoing").focus();
+    setClipboardStatus("브라우저가 클립보드 읽기를 허용하지 않았습니다. 'PC → 세션' 칸에 직접 붙여넣으세요(Ctrl+V).");
+  }
+}
+
+async function copyToPc() {
+  const field = element("clipboard-incoming");
+  try {
+    await navigator.clipboard.writeText(field.value);
+    setClipboardStatus("PC 클립보드에 복사했습니다.");
+  } catch {
+    field.focus();
+    field.select();
+    setClipboardStatus("브라우저가 클립보드 쓰기를 허용하지 않았습니다. 선택된 텍스트를 직접 복사하세요(Ctrl+C).");
+  }
 }
 
 function clearReconnectTimers() {
@@ -160,6 +224,7 @@ function disconnect() {
   }
   element("desktop").replaceChildren();
   setConnectionStatus("연결 종료");
+  clearClipboard();
 }
 
 function endConnection(message, { status = "연결 종료", retry = true } = {}) {
@@ -250,6 +315,12 @@ async function connectViewer(session, attempt) {
     connection = null;
     if (authenticationFailed) endConnection(AUTHENTICATION_FAILED);
     else scheduleReconnect(RECONNECT_NOTICE);
+  });
+  remote.addEventListener("clipboard", (event) => {
+    if (connection !== remote) return;
+    element("clipboard-incoming").value = event.detail.text;
+    element("clipboard-copy").disabled = !event.detail.text;
+    if (!element("clipboard-panel").hidden) setClipboardStatus("세션에서 복사한 텍스트를 받았습니다.");
   });
   remote.addEventListener("securityfailure", () => {
     if (connection !== remote) return;
@@ -359,6 +430,15 @@ element("close-viewer").addEventListener("click", closeViewer);
 element("reconnect-viewer").addEventListener("click", () => {
   if (activeSession) openSession(activeSession);
 });
+element("clipboard-toggle").addEventListener("click", () => {
+  const open = element("clipboard-panel").hidden;
+  showClipboard(open);
+  if (open) element("clipboard-outgoing").focus();
+  else if (connection) connection.focus();
+});
+element("clipboard-send").addEventListener("click", sendClipboard);
+element("clipboard-read").addEventListener("click", readPcClipboard);
+element("clipboard-copy").addEventListener("click", copyToPc);
 element("resize-desktop").addEventListener("change", (event) => {
   if (connection) connection.resizeSession = event.target.checked;
 });

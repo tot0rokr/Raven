@@ -4,7 +4,7 @@ Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스
 
 ## 기능
 
-- 브라우저: Raven 전용 단일 계정으로 로그인해 세션 생성·이름 변경·삭제·세션 내 명령 실행과 화면 조작을 한다. HTTPS와 인증된 WebSocket을 사용하고 VcXsrv 같은 클라이언트 X 서버가 필요 없다. 서버 SSH 로그인과는 별도다.
+- 브라우저: Raven 전용 단일 계정으로 로그인해 세션 생성·이름 변경·삭제·세션 내 명령 실행과 화면 조작, PC와의 텍스트 클립보드 교환을 한다. HTTPS와 인증된 WebSocket을 사용하고 VcXsrv 같은 클라이언트 X 서버가 필요 없다. 서버 SSH 로그인과는 별도다.
 - 세션: 번호(0부터)와 이름으로 관리하고 attach/detach한다. 한 세션에 뷰어 여러 개가 붙을 수 있고, VM 재부팅 뒤에는 자동으로 다시 뜬다.
 - 데스크톱: 창 관리자는 xmonad(기본, 타일링) 또는 openbox. tint2 작업표시줄과 시계, rofi 메뉴, 세션 안에서 보는 단축키 목록(`Alt+Shift+/`), D-Bus 세션 버스가 있다.
 - 앱: addon으로 이미지에 넣는다. 기본으로 Microsoft Edge가 켜져 있다. 메뉴는 설치된 앱의 `.desktop`에서 자동으로 만들고 `menu.conf`로 고친다.

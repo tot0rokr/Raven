@@ -7,8 +7,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>워크스페이스 · Raven</title>
-  <link rel="stylesheet" href="{% static 'style.css' %}">
-  <script type="module" src="{% static 'app.js' %}?v=3"></script>
+  <link rel="stylesheet" href="{% static 'style.css' %}?v=4">
+  <script type="module" src="{% static 'app.js' %}?v=4"></script>
 </head>
 <body class="workspace-page">
   <header class="app-header">
@@ -58,11 +58,30 @@
       <div class="viewer-controls">
         <label class="checkbox-label"><input id="resize-desktop" type="checkbox" checked> 화면 크기 맞춤</label>
         <button id="send-ctrl-alt-del" class="button-quiet" type="button" disabled>Ctrl + Alt + Del</button>
+        <button id="clipboard-toggle" class="button-secondary" type="button" aria-expanded="false" aria-controls="clipboard-panel">클립보드</button>
         <button id="fullscreen-viewer" class="button-secondary" type="button">전체 화면</button>
         <button id="reconnect-viewer" class="button-primary" type="button" hidden>다시 연결</button>
       </div>
     </div>
     <p id="viewer-notice" class="notice notice-error viewer-notice" role="alert" hidden></p>
+    <section id="clipboard-panel" class="clipboard-panel" aria-label="클립보드" hidden>
+      <div class="clipboard-column">
+        <label for="clipboard-outgoing">PC → 세션</label>
+        <textarea id="clipboard-outgoing" rows="3" spellcheck="false" autocomplete="off" placeholder="세션에 넣을 텍스트를 붙여넣거나 입력합니다"></textarea>
+        <div class="clipboard-actions">
+          <button id="clipboard-read" class="button-quiet" type="button">PC 클립보드에서 가져오기</button>
+          <button id="clipboard-send" class="button-primary" type="button" disabled>세션으로 보내기</button>
+        </div>
+      </div>
+      <div class="clipboard-column">
+        <label for="clipboard-incoming">세션 → PC</label>
+        <textarea id="clipboard-incoming" rows="3" spellcheck="false" readonly placeholder="세션에서 복사한 텍스트가 여기에 나타납니다"></textarea>
+        <div class="clipboard-actions">
+          <button id="clipboard-copy" class="button-primary" type="button" disabled>PC로 복사</button>
+        </div>
+      </div>
+      <p id="clipboard-status" class="clipboard-status" role="status"></p>
+    </section>
     <div id="desktop" class="desktop" tabindex="-1" aria-label="원격 데스크톱"></div>
   </section>
   <template id="session-template">

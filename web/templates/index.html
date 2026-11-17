@@ -7,8 +7,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>워크스페이스 · Raven</title>
-  <link rel="stylesheet" href="{% static 'style.css' %}?v=5">
-  <script type="module" src="{% static 'app.js' %}?v=5"></script>
+  <link rel="stylesheet" href="{% static 'style.css' %}?v=6">
+  <script type="module" src="{% static 'app.js' %}?v=6"></script>
 </head>
 <body class="workspace-page">
   <header class="app-header">
@@ -35,6 +35,7 @@
       </div>
     </div>
     <p id="workspace-notice" class="notice notice-error" role="alert" hidden></p>
+    <p id="workspace-info" class="notice notice-paused" role="status" hidden></p>
     <section class="session-section" aria-labelledby="session-list-title">
       <div class="section-caption">
         <h2 id="session-list-title">내 데스크톱 <span id="session-count" class="count"></span></h2>
@@ -55,6 +56,7 @@
         <button id="close-viewer" class="button-secondary" type="button">세션 목록</button>
         <h2 id="viewer-title"></h2>
         <span id="connection-status" class="connection-status" role="status">연결 중…</span>
+        <button id="pause-viewer" class="button-secondary" type="button" disabled>일시정지</button>
       </div>
       <div class="viewer-controls">
         <label class="checkbox-label"><input id="resize-desktop" type="checkbox" checked> 화면 크기 맞춤</label>
@@ -66,6 +68,10 @@
       </div>
     </div>
     <p id="viewer-notice" class="notice notice-error viewer-notice" role="alert" hidden></p>
+    <div id="viewer-paused" class="notice notice-paused viewer-notice viewer-paused" role="status" hidden>
+      <p>세션이 일시정지되었습니다. 이어하기를 누르면 다시 연결할 수 있습니다.</p>
+      <button id="resume-viewer" class="button-primary" type="button">이어하고 연결</button>
+    </div>
     <section id="clipboard-panel" class="clipboard-panel" aria-label="클립보드" hidden>
       <div class="clipboard-column">
         <label for="clipboard-outgoing">PC → 세션</label>
@@ -91,13 +97,20 @@
       <div class="session-summary">
         <div class="session-name-line"><h3 class="session-name"></h3><span class="session-state"></span></div>
         <p class="session-details"></p>
+        <p class="session-stats" hidden></p>
         <p class="session-command"></p>
       </div>
       <div class="session-actions">
         <button class="button-primary session-open" type="button">연결</button>
+        <button class="button-primary session-resume" type="button" hidden>이어하기</button>
+        <button class="button-secondary session-pause" type="button" hidden>일시정지</button>
         <button class="button-secondary" type="button" data-action="run">명령 실행</button>
         <button class="button-quiet" type="button" data-action="rename">이름 변경</button>
         <button class="button-quiet danger-text" type="button" data-action="delete">삭제</button>
+      </div>
+      <div class="pause-help" role="note" hidden>
+        <p>일시정지는 앱을 멈춘 채 메모리에 둡니다. RAM은 계속 차지하고, 서버를 재부팅하면 상태가 사라집니다. <code>run --host</code>로 띄운 호스트 앱과 네트워크 상대편 연결은 멈추거나 유지되지 않습니다.</p>
+        <button class="button-quiet pause-help-dismiss" type="button">알겠습니다</button>
       </div>
     </article>
   </template>

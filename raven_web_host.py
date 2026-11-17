@@ -68,6 +68,15 @@ FILE_FAILURES = {
     "staging_invalid": "~/Downloads/.raven-uploads is not this broker's private folder; remove it and upload again",
     "cross_device": "The upload staging folder and the target folder are on different file systems",
 }
+# Session states that refuse an action; the gateway answers these with 409.
+SESSION_FAILURES = {
+    "session_paused": "Session is paused; resume it first",
+    "session_not_paused": "Session is not paused",
+    "session_not_running": "Session is not running",
+}
+# Every session's CPU use is sampled once per listing, this far apart.
+CPU_SAMPLE_SECONDS = 0.25
+VIEWER_PROCESSES = frozenset({"xtigervncviewer", "xtightvncviewer"})
 ERRNO_FAILURES = {
     errno.ENOENT: "not_found", errno.ENOTDIR: "not_a_directory", errno.ELOOP: "not_a_file",
     errno.EISDIR: "not_a_file", errno.ENXIO: "not_a_file", errno.EEXIST: "file_exists",
@@ -108,15 +117,34 @@ sys.exit(1)
 
 
 class RequestError(Exception):
-    pass
+    """A refused request; a code, when set, lets the gateway map it to an HTTP status."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class FileError(RequestError):
     """A file transfer failure the gateway maps to an HTTP status by its code."""
 
     def __init__(self, code, message=None):
-        super().__init__(message or FILE_FAILURES[code])
-        self.code = code
+        super().__init__(message or FILE_FAILURES[code], code)
+
+
+def session_failure(code, message=None):
+    return RequestError(message or SESSION_FAILURES[code], code)
+
+
+def established_ports(tables):
+    """Count established TCP connections by local port, from /proc/net/tcp-style tables."""
+    counts = {}
+    for table in tables:
+        for row in table.splitlines()[1:]:
+            fields = row.split()
+            if len(fields) > 3 and fields[3] == "01":
+                port = int(fields[1].rsplit(":", 1)[1], 16)
+                counts[port] = counts.get(port, 0) + 1
+    return counts
 
 
 def file_failure(error, directory=False):
@@ -126,6 +154,30 @@ def file_failure(error, directory=False):
     if directory and code == "not_a_file":
         code = "not_a_directory"
     return FileError(code)
+
+
+def refuse_paused(item):
+    if item["State"].get("Status") == "paused":
+        raise session_failure("session_paused")
+
+
+def cpu_usage(group):
+    """Microseconds of CPU time the cgroup has used, or None."""
+    try:
+        for line in (group / "cpu.stat").read_text().splitlines():
+            name, _, value = line.partition(" ")
+            if name == "usage_usec":
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def memory_usage(group):
+    try:
+        return int((group / "memory.current").read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def private_directory(path):
@@ -601,6 +653,8 @@ class Raven:
         self.state = Path(state) / "raven" / socket.gethostname()
         self.runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"raven-{os.getuid()}"
         self.lock = threading.Lock()
+        self.proc = Path("/proc")
+        self.cgroups = Path("/sys/fs/cgroup")
         self.environment = dict(os.environ)
         self.environment.pop("DISPLAY", None)
 
@@ -625,22 +679,113 @@ class Raven:
         if not SESSION_ID.fullmatch(sid):
             raise RequestError("Invalid session id")
         item = self.inspect(f"raven-{self.user}-{sid}")
-        if request.get("action") in ("rename", "delete", "run"):
+        if request.get("action") in ("rename", "delete", "run", "pause", "resume"):
             if checked_text(request, "generation", 64) != item["Id"]:
                 raise RequestError("Session changed; refresh the session list")
         return item
 
-    def describe(self, item):
+    def describe(self, item, usage=None):
         labels = item["Config"]["Labels"]
         sid = labels["raven.id"]
         try:
             name = (self.state / f"{sid}.name").read_text().strip()
         except FileNotFoundError:
             name = ""
+        if usage is None:
+            usage = self.usage([item])[item["Id"]]
         return {"id": sid, "generation": item["Id"], "name": name, "state": item["State"]["Status"],
                 "wm": labels.get("raven.wm") or "openbox",
                 "geometry": labels["raven.geometry"], "command": labels["raven.cmd"],
-                "display": labels["raven.display"]}
+                "display": labels["raven.display"], **usage}
+
+    def cgroup(self, item):
+        """The container's cgroup v2 directory, found through its init process; None when unknown."""
+        state = item["State"]
+        pid = state.get("Pid")
+        if not state.get("Running") or type(pid) is not int or pid <= 0:
+            return None
+        try:
+            lines = (self.proc / str(pid) / "cgroup").read_text().splitlines()
+        except OSError:
+            return None
+        path = next((line[3:] for line in lines if line.startswith("0::")), "")
+        parts = path.split("/")
+        # The init process may have exited and its PID been reused: the path must name this container.
+        if not path.startswith("/") or ".." in parts or item["Id"] not in path:
+            return None
+        return self.cgroups.joinpath(*parts[1:])
+
+    def x11_viewers(self, group):
+        """VNC viewer processes inside the session: the X11 viewers that raven attach starts."""
+        try:
+            pids = (group / "cgroup.procs").read_text().split()
+        except OSError:
+            return None
+        count = 0
+        for pid in pids:
+            try:
+                if (self.proc / pid / "comm").read_text().strip() in VIEWER_PROCESSES:
+                    count += 1
+            except OSError:
+                continue  # It exited meanwhile.
+        return count
+
+    def connections(self):
+        """Established TCP connections by local port; sessions share the host network."""
+        tables = []
+        for name in ("tcp", "tcp6"):
+            try:
+                tables.append((self.proc / "net" / name).read_text())
+            except FileNotFoundError:
+                if name == "tcp":
+                    return None
+            except OSError:
+                return None
+        try:
+            return established_ports(tables)
+        except (ValueError, IndexError):
+            return None
+
+    def usage(self, items):
+        """Memory, CPU and viewers of each session by container ID, without docker exec.
+
+        A value that cannot be read is None; it never fails the listing. Paused sessions keep
+        their memory, use no CPU and have no viewers, as pause disconnected them.
+        """
+        groups = {item["Id"]: self.cgroup(item) for item in items}
+        running = [item["Id"] for item in items
+                   if item["State"].get("Status") == "running" and groups[item["Id"]] is not None]
+        before, after, elapsed = {}, {}, 0
+        if running:
+            started = time.monotonic()
+            before = {cid: cpu_usage(groups[cid]) for cid in running}
+            time.sleep(CPU_SAMPLE_SECONDS)
+            elapsed = time.monotonic() - started
+            after = {cid: cpu_usage(groups[cid]) for cid in running}
+        connections = self.connections() if running else None
+        result = {}
+        for item in items:
+            cid, status, group = item["Id"], item["State"].get("Status"), groups[item["Id"]]
+            memory = cpu = None
+            viewers = {"x11": 0, "web": 0}
+            if group is not None and status in ("running", "paused"):
+                memory = memory_usage(group)
+            if status == "paused":
+                cpu = 0.0
+            elif status == "running":
+                viewers = None
+                if before.get(cid) is not None and after.get(cid) is not None and elapsed > 0:
+                    cpu = round(max(after[cid] - before[cid], 0) / (elapsed * 1e6) * 100, 1)
+                x11 = self.x11_viewers(group) if group is not None else None
+                try:
+                    port = int(item["Config"]["Labels"]["raven.port"])
+                except (KeyError, ValueError):
+                    port = None
+                if x11 is not None and connections is not None and port is not None:
+                    # The other connections to the VNC port are web viewers through this broker.
+                    viewers = {"x11": x11, "web": max(connections.get(port, 0) - x11, 0)}
+            result[cid] = {"memory": memory, "cpu": cpu, "viewers": viewers}
+        return result
 
     def ensure_up(self, sid):
         self.execute([self.cli, "menu", "show", "-t", sid])
@@ -674,11 +819,13 @@ class Raven:
         action = request.get("action")
         if action == "list":
             result = self.execute(["docker", "ps", "-aq", "--filter", f"label=raven.user={self.user}"])
-            sessions = [self.describe(self.inspect(cid)) for cid in result.stdout.decode().split()]
+            items = [self.inspect(cid) for cid in result.stdout.decode().split()]
+            usage = self.usage(items)
+            sessions = [self.describe(item, usage[item["Id"]]) for item in items]
             return sorted(sessions, key=lambda session: int(session["id"]))
         if action == "create":
             return self.create(request)
-        if action not in ("open", "rename", "delete", "run"):
+        if action not in ("open", "rename", "delete", "run", "pause", "resume"):
             raise RequestError("Unknown operation")
         if action == "delete" and checked_text(request, "confirm", 9) != request.get("id"):
             raise RequestError("Confirm the exact session ID before deleting it")
@@ -690,17 +837,35 @@ class Raven:
         if action == "delete":
             self.delete(item)
             return None
+        if action == "pause":
+            status = item["State"]["Status"]
+            if status == "paused":
+                raise session_failure("session_paused", "Session is already paused")
+            if status != "running":
+                raise session_failure("session_not_running")
+            self.execute([self.cli, "pause", "-t", sid])
+            return self.describe(self.session(request))
+        if action == "resume":
+            if item["State"]["Status"] != "paused":
+                raise session_failure("session_not_paused")
+            self.execute([self.cli, "resume", "-t", sid])
+            return self.describe(self.session(request))
         if action == "run":
             command = checked_command(request)
+            refuse_paused(item)
             self.ensure_up(sid)
             item = self.session(request)
+            refuse_paused(item)
             display = item["Config"]["Labels"]["raven.display"]
             self.execute(["docker", "exec", "-d", "-w", "/home/raven",
                           "-e", f"DISPLAY=:{display}", "-e", "XAUTHORITY=/home/raven/.Xauthority",
                           item["Id"], "sh", "-c", "umask 002; " + command])
             return None
+        # open: a paused session would only fail in ensure_up, with a less useful message.
+        refuse_paused(item)
         self.ensure_up(sid)
         item = self.session(request)
+        refuse_paused(item)
         password = self.execute(["docker", "exec", item["Id"], "cat", "/home/raven/.vnc/passwd"]).stdout
         if len(password) != 8:
             raise RequestError("Unsupported VNC password file")
@@ -710,8 +875,10 @@ class Raven:
     def connect(self, request):
         item = self.session(request)
         labels = item["Config"]["Labels"]
+        # Running stays true while paused; Xvnc would accept the TCP connection and never answer.
+        refuse_paused(item)
         if not item["State"]["Running"]:
-            raise RequestError("Session is not running")
+            raise session_failure("session_not_running")
         try:
             port, display = int(labels["raven.port"]), int(labels["raven.display"])
         except (KeyError, ValueError) as error:
@@ -775,10 +942,13 @@ class Handler(socketserver.StreamRequestHandler):
                 with self.server.raven.lock:
                     data = self.server.raven.dispatch(request)
                 self.reply(ok=True, data=data)
-        except FileError as error:
-            self.reply(ok=False, error=str(error), code=error.code)
-        except (RequestError, ValueError) as error:
-            self.reply(ok=False, error=str(error) if isinstance(error, RequestError) else "Invalid request")
+        except RequestError as error:
+            if error.code is None:
+                self.reply(ok=False, error=str(error))
+            else:
+                self.reply(ok=False, error=str(error), code=error.code)
+        except ValueError:
+            self.reply(ok=False, error="Invalid request")
         except (OSError, subprocess.TimeoutExpired):
             try:
                 self.reply(ok=False, error="Raven backend is unavailable")

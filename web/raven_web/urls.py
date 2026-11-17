@@ -10,6 +10,8 @@ urlpatterns = [
     path("api/sessions/<str:session_id>/open/", views.open_session),
     path("api/sessions/<str:session_id>/rename/", views.rename_session),
     path("api/sessions/<str:session_id>/run/", views.run_session),
+    path("api/sessions/<str:session_id>/pause/", views.pause_session),
+    path("api/sessions/<str:session_id>/resume/", views.resume_session),
     path("api/sessions/<str:session_id>/", views.delete_session),
     path("api/files/", views.files),
     path("api/files/uploads/", views.start_upload),

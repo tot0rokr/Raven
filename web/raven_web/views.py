@@ -35,6 +35,10 @@ FILE_ERROR_STATUS = {
     "file_exists": 409, "offset_mismatch": 409, "too_large": 413, "no_space": 507, "permission_denied": 403,
     "busy": 429, "downloads_missing": 409, "staging_invalid": 409, "cross_device": 409,
 }
+# A session in the wrong state for the action (paused, not paused, not running) is a 409 as well.
+BROKER_ERROR_STATUS = {
+    **FILE_ERROR_STATUS, "session_paused": 409, "session_not_paused": 409, "session_not_running": 409,
+}
 CONTENT_LENGTH = re.compile(r"[0-9]{1,10}\Z")
 
 
@@ -133,7 +137,7 @@ def api_view(methods):
             except (ValueError, UnicodeDecodeError, RequestDataTooBig) as error:
                 return error_response("invalid_request", str(error), 400)
             except broker.BrokerError as error:
-                return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 502))
+                return error_response(error.code, str(error), BROKER_ERROR_STATUS.get(error.code, 502))
         return wrapped
     return decorator
 
@@ -183,6 +187,18 @@ def run_session(request, session_id):
     generation = session_generation(data.get("generation"))
     broker.request("run", id=session_id, command=command, generation=generation)
     return JsonResponse({"started": True}, status=202)
+
+
+@api_view(["POST"])
+def pause_session(request, session_id):
+    generation = session_generation(json_object(request, {"generation"}).get("generation"))
+    return JsonResponse({"session": broker.request("pause", id=session_id, generation=generation)})
+
+
+@api_view(["POST"])
+def resume_session(request, session_id):
+    generation = session_generation(json_object(request, {"generation"}).get("generation"))
+    return JsonResponse({"session": broker.request("resume", id=session_id, generation=generation)})
 
 
 @api_view(["DELETE"])

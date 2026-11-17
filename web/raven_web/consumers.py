@@ -17,6 +17,8 @@ MAX_FRAME_SIZE = 1024 * 1024
 STREAM_CHUNK_SIZE = 64 * 1024
 SESSION_CHECK_SECONDS = 2
 WRITE_TIMEOUT_SECONDS = 10
+# The session is paused: the browser stops reconnecting until the user resumes it.
+PAUSED_CLOSE_CODE = 4409
 _connections = set()
 _connections_lock = threading.Lock()
 
@@ -66,11 +68,14 @@ class DesktopConsumer(AsyncWebsocketConsumer):
         if limited:
             await self.close(code=4429)
             return
+        paused = False
         try:
             self.reader, self.writer = await broker.connect(session_id)
-        except broker.BrokerError:
-            await self.end(4502)
-            return
+        except broker.BrokerError as error:
+            if error.code != "session_paused":
+                await self.end(4502)
+                return
+            paused = True
         if self.closing or not await session_valid(self.session_key, user.pk):
             await self.cleanup()
             await self.close(code=4401)
@@ -81,6 +86,10 @@ class DesktopConsumer(AsyncWebsocketConsumer):
             self.closing = True
             await self.cleanup()
             raise
+        if paused:
+            # A close before the handshake reaches the browser as 1006; after it, as this code.
+            await self.end(PAUSED_CLOSE_CODE)
+            return
         self.tasks = [asyncio.create_task(self.forward_screen()), asyncio.create_task(self.watch_session(user.pk))]
 
     def schedule_revocation(self):

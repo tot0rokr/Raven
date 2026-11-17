@@ -1,4 +1,4 @@
-"""Run management and reconnect UI component checks with isolated Docker fixtures."""
+"""Run management, reconnect and pause UI component checks with isolated Docker fixtures."""
 
 import json
 import os
@@ -18,14 +18,17 @@ django.setup()
 from django.template.loader import render_to_string
 print(render_to_string('index.html', {'username': 'preview', 'csrf_token': 'ui-fixture'}))
 """
+# The web image only renders; the template is this checkout's, not the one baked into the image.
 page = subprocess.run(
     ["docker", "run", "--rm", "--network", "none", "--read-only", "--user", f"{os.getuid()}:{os.getgid()}",
      "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",
-     "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", web_image, "python", "-c", render],
+     "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+     "--mount", f"type=bind,src={source / 'web' / 'templates'},dst=/app/templates,readonly",
+     web_image, "python", "-c", render],
     capture_output=True, check=True, timeout=60,
 )
 print(f"UI artifacts: {output}", flush=True)
-for script in ("web_management_ui.py", "web_reconnect_ui.py"):
+for script in ("web_management_ui.py", "web_reconnect_ui.py", "web_pause_ui.py"):
     subprocess.run(
         ["docker", "run", "--rm", "-i", "--init", "--network", "none", "--read-only",
          "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",

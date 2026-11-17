@@ -139,7 +139,7 @@ raven build                                # 처음에는 xmonad 컴파일과 Ed
 ```bash
 raven doctor               # 서버 준비 상태. fail이 없어야 한다
 raven new -s t xclock      # 세션을 만들고 뷰어를 띄운다. 시계가 보이면 된다
-raven ls                   # STATE running, VIEWERS 1
+raven ls                   # STATE running, X11 1
 raven menu show t          # 메뉴 항목
 raven kill t
 ```

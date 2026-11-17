@@ -18,10 +18,13 @@ FILE_CODES = frozenset({
     "permission_denied", "upload_unknown", "offset_mismatch", "busy", "downloads_missing", "staging_invalid",
     "cross_device",
 })
+# Session states the host broker refuses an action in; the gateway answers them with 409.
+SESSION_CODES = frozenset({"session_paused", "session_not_paused", "session_not_running"})
+CODES = FILE_CODES | SESSION_CODES
 
 
 class BrokerError(Exception):
-    """A broker failure; code is broker_unavailable, session_failed or one of FILE_CODES."""
+    """A broker failure; code is broker_unavailable, session_failed or one of CODES."""
 
     def __init__(self, message, code="broker_unavailable"):
         super().__init__(message)
@@ -48,7 +51,7 @@ def _response(line):
     if result.get("ok") is False:
         code = result.get("code")
         raise BrokerError(_failure_message(result.get("error")),
-                          code if isinstance(code, str) and code in FILE_CODES else "session_failed")
+                          code if isinstance(code, str) and code in CODES else "session_failed")
     if result.get("ok") is not True:
         raise BrokerError("Invalid broker response")
     return result.get("data")
@@ -142,7 +145,9 @@ async def connect(session_id):
             await writer.wait_closed()
         except OSError:
             pass
-        raise BrokerError("The session connection failed") from error
+        # Keep a refusal by session state (a paused session) apart from a failed connection.
+        code = error.code if isinstance(error, BrokerError) and error.code in SESSION_CODES else "broker_unavailable"
+        raise BrokerError("The session connection failed", code) from error
     return reader, writer
 
 

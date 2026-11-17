@@ -31,6 +31,8 @@ usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        raven run [-t TARGET] @LABEL                    start a host entry of menu.conf
        raven shell [-t TARGET]                         open a shell inside a session
        raven kill [-t] TARGET                          delete a session and its home
+       raven pause [-t] TARGET                         freeze a session's apps, keeping them in memory
+       raven resume [-t] TARGET                        continue a paused session
        raven recreate [-a | [-t] TARGET]               move sessions onto the current image
        raven build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        raven addon ls | enable NAME | disable NAME | new NAME [PKG...]
@@ -47,6 +49,8 @@ new: CMD defaults to xterm, -d skips attaching, -w picks xmonad (default) or ope
 wallpaper: without -t the setting applies to every session; -t sets one session's own.
 home: files under ~/.config/raven/home go into every session home (symlinks followed).
 attach: -d detaches other viewers of the session.
+pause: viewers are disconnected and the apps stop where they are; the session keeps its
+  memory until resume, and a server reboot loses that state. run --host apps keep running.
 EOF
 }
 
@@ -250,8 +254,14 @@ ensure_hostd() {
     done
 }
 
+# A paused session can neither run docker exec nor be started; it is left as it is
+refuse_paused() {
+    [ "$(field "$1" 4)" != paused ] || die "session $1 is paused; resume it first: raven resume $1"
+}
+
 ensure_up() {
     local c port i=0 home=0 started=0
+    refuse_paused "$1"
     c=$(cname "$1")
     # Before a start, so the session's start hooks already see the new files
     push_home "$1" || home=$?
@@ -430,22 +440,103 @@ cmd_attach() {
     view "$id" "$geometry" "$exclusive"
 }
 
+# cgroup (v2) directory of the container whose init process is $1
+cgroup_of() {
+    local g
+    [ "${1:-0}" -gt 0 ] || return 1
+    g=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null) || return 1
+    [ -n "$g" ] && [ -d "/sys/fs/cgroup$g" ] || return 1
+    echo "/sys/fs/cgroup$g"
+}
+
+# "FILE USEC" for the CPU time used so far, from each cpu.stat file given
+cpu_usage() {
+    [ $# -eq 0 ] || awk '$1 == "usage_usec" { print FILENAME, $2 }' "$@" 2>/dev/null || true
+}
+
+# Bytes as MiB, or as GiB from 1 GiB up
+size_text() {
+    awk -v b="$1" 'BEGIN { if (b < 1073741824) printf "%dMiB\n", b / 1048576; else printf "%.1fGiB\n", b / 1073741824 }'
+}
+
+# X11 viewers (raven attach) are VNC viewer processes inside the session, in its cgroup $1
+x11_viewers() {
+    local procs
+    procs=$(cat "$1/cgroup.procs" 2>/dev/null) || return 1
+    echo "$procs" | sed 's|.*|/proc/&/comm|' | xargs -r cat 2>/dev/null | grep -cxE 'xt(iger|ight)vncviewer' || true
+}
+
+# Established connections to the VNC port $1: X11 viewers and the web broker's
+vnc_clients() {
+    ss -Htn state established "( sport = :$1 )" | grep -c . || true
+}
+
 cmd_ls() {
-    local out id display port state cmd clients name wm
+    local out info groups files= s1= s2= t1=0 t2=0 e conns id display port state cmd name wm pid g x11 web cpu mem a b
     out=$(sessions | sort -n)
     [ -n "$out" ] || { echo "no sessions"; return 0; }
-    printf '%-4s %-16s %-8s %-8s %-8s %-6s %-8s %s\n' ID NAME STATE WM DISPLAY PORT VIEWERS CMD
+    # One docker inspect for every session: init pid (0 when stopped) and window manager
+    info=$(echo "$out" | while read -r id display; do cname "$id"; done \
+        | xargs docker inspect -f '{{index .Config.Labels "raven.id"}} {{.State.Pid}} {{index .Config.Labels "raven.wm"}}' \
+        2>/dev/null) || true
+    groups=$(echo "$info" | while read -r id pid wm; do
+        g=$(cgroup_of "$pid") && echo "$id $g"
+    done) || true
+    for id in $(echo "$out" | awk '$4 == "running" { print $1 }'); do
+        g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
+        [ -z "$g" ] || files="$files $g/cpu.stat"
+    done
+    # One CPU sample for all sessions: the time used in a quarter second (one core is 100%)
+    if [ -n "$files" ]; then
+        t1=$(date +%s%N)
+        # shellcheck disable=SC2086
+        s1=$(cpu_usage $files)
+        sleep 0.25
+        t2=$(date +%s%N)
+        # shellcheck disable=SC2086
+        s2=$(cpu_usage $files)
+    fi
+    conns=$(ss -Htn state established 2>/dev/null | awk '{ n = split($3, a, ":"); print a[n] }') || true
+    printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-5s %-7s %s\n' \
+        ID NAME STATE WM DISPLAY PORT X11 WEB CPU MEM CMD
     echo "$out" | while read -r id display port state cmd; do
-        clients=-
-        if [ "$state" = running ]; then
-            clients=$(docker top "$(cname "$id")" -eo pid,args | grep -cE 'x(tiger|tight)vncviewer' || true)
-        fi
         name=$(name_of "$id")
         # Sessions made before window managers were selectable run openbox
-        wm=$(label_of "$(cname "$id")" raven.wm)
-        printf '%-4s %-16s %-8s %-8s %-8s %-6s %-8s %s\n' \
-            "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$clients" "$cmd"
+        wm=$(echo "$info" | awk -v id="$id" '$1 == id { print $3 }')
+        g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
+        x11=- web=- cpu=- mem=-
+        case "$state" in
+            running | paused)
+                mem='?'
+                if [ -n "$g" ] && b=$(cat "$g/memory.current" 2>/dev/null); then
+                    mem=$(size_text "$b")
+                fi ;;
+        esac
+        case "$state" in
+            running)
+                cpu='?' x11='?' web='?'
+                a=$(echo "$s1" | awk -v f="$g/cpu.stat" '$1 == f { print $2 }')
+                b=$(echo "$s2" | awk -v f="$g/cpu.stat" '$1 == f { print $2 }')
+                e=$(((t2 - t1) / 1000))
+                if [ -n "$g" ] && [ -n "$a" ] && [ -n "$b" ] && [ "$e" -gt 0 ]; then
+                    cpu=$((((b - a) * 100 + e / 2) / e))%
+                fi
+                if [ -n "$g" ] && x11=$(x11_viewers "$g"); then
+                    # The other connections to the VNC port are web viewers
+                    web=$(($(echo "$conns" | grep -cx "$port" || true) - x11))
+                    [ "$web" -ge 0 ] || web=0
+                else
+                    x11='?'
+                fi ;;
+            # Frozen, and pause disconnected every viewer
+            paused) cpu=0% ;;
+        esac
+        printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-5s %-7s %s\n' \
+            "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$x11" "$web" "$cpu" "$mem" "$cmd"
     done
+    if echo "$out" | awk '$4 == "paused" { found = 1 } END { exit !found }'; then
+        echo "paused sessions keep their memory until resumed; a server reboot loses them"
+    fi
 }
 
 cmd_rename() {
@@ -564,6 +655,81 @@ cmd_kill() {
     rm -f "$statedir/$id.name" "$statedir/$id.home" "$rundir/$id.xauth" "$rundir/$id.log"
 }
 
+# Disconnect every viewer of running session $1, as they would freeze with it: X11 viewers
+# (raven attach) run inside the session; vncconfig drops the other VNC connections (web).
+drop_viewers() {
+    xin "$1" sh -c '
+        pkill -x "xt(iger|ight)vncviewer"
+        i=0
+        while pgrep -x "xt(iger|ight)vncviewer" >/dev/null && [ "$i" -lt 20 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        pkill -KILL -x "xt(iger|ight)vncviewer"
+        vncconfig -display "$DISPLAY" -disconnect'
+}
+
+# Freeze the session's processes in memory (cgroup freezer) without ending them
+cmd_pause() {
+    local target= opt id c port name mem i=0
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    target=${target:-${1:-}}
+    [ -n "$target" ] || die "usage: raven pause [-t] TARGET"
+    id=$(resolve "$target")
+    case "$(field "$id" 4)" in
+        running) ;;
+        paused) die "session $id is already paused" ;;
+        *) die "session $id is not running" ;;
+    esac
+    c=$(cname "$id")
+    port=$(field "$id" 3)
+    while :; do
+        drop_viewers "$id" || die "session $id: cannot disconnect its viewers; not paused"
+        docker pause "$c" >/dev/null
+        # A viewer that connected in between would stay frozen: disconnect it and pause again
+        [ "$(vnc_clients "$port")" -gt 0 ] || break
+        i=$((i + 1))
+        if [ "$i" -ge 3 ]; then
+            echo "raven: session $id: a viewer connected during the pause; it stays frozen until resume" >&2
+            break
+        fi
+        docker unpause "$c" >/dev/null
+    done
+    name=$(name_of "$id")
+    mem=$(cgroup_of "$(docker inspect -f '{{.State.Pid}}' "$c")") && mem=$(cat "$mem/memory.current" 2>/dev/null) \
+        && mem=$(size_text "$mem") || mem=
+    echo "raven: paused session $id${name:+ ($name)}; its apps stop where they are, viewers were disconnected" >&2
+    echo "raven: it keeps holding its memory${mem:+ ($mem)} until resumed; a server reboot loses the paused state" >&2
+    echo "raven: apps started with run --host are not paused" >&2
+    echo "raven: resume with: raven resume $id" >&2
+}
+
+cmd_resume() {
+    local target= opt id name
+    OPTIND=1
+    while getopts t: opt; do
+        case "$opt" in
+            t) target=$OPTARG ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    target=${target:-${1:-}}
+    [ -n "$target" ] || die "usage: raven resume [-t] TARGET"
+    id=$(resolve "$target")
+    [ "$(field "$id" 4)" = paused ] || die "session $id is not paused"
+    docker unpause "$(cname "$id")" >/dev/null
+    name=$(name_of "$id")
+    echo "raven: resumed session $id${name:+ ($name)}; its viewers were disconnected, attach again: raven attach $id" >&2
+}
+
 cmd_recreate() {
     local all=0 target= opt id targets c cmd geometry wm
     OPTIND=1
@@ -584,6 +750,11 @@ cmd_recreate() {
     fi
     need_image
     for id in $targets; do
+        # Recreating ends the apps a pause keeps; only an explicit target does that
+        if [ "$all" = 1 ] && [ "$(field "$id" 4)" = paused ]; then
+            echo "raven: session $id is paused; skipped (resume it, or recreate -t $id)" >&2
+            continue
+        fi
         c=$(cname "$id")
         cmd=$(label_of "$c" raven.cmd)
         geometry=$(label_of "$c" raven.geometry)
@@ -950,9 +1121,12 @@ cmd_home() {
     shift $((OPTIND - 1))
     [ $# -eq 0 ] || die "usage: raven home sync [-t TARGET]"
     if [ -n "$target" ]; then
-        sync_home "$(resolve "$target")"
+        id=$(resolve "$target")
+        refuse_paused "$id"
+        sync_home "$id"
         return
     fi
+    # Stopped sessions get the files at their next start; paused ones at the next attach or run
     for id in $(sessions | awk '$4 == "running" { print $1 }'); do
         sync_home "$id" || failed=1
     done
@@ -1140,6 +1314,8 @@ case "$1" in
     run) shift; cmd_run "$@" ;;
     shell) shift; cmd_shell "$@" ;;
     kill) shift; cmd_kill "$@" ;;
+    pause) shift; cmd_pause "$@" ;;
+    resume) shift; cmd_resume "$@" ;;
     recreate) shift; cmd_recreate "$@" ;;
     build) shift; cmd_build "$@" ;;
     addon) shift; cmd_addon "$@" ;;

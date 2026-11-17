@@ -25,6 +25,10 @@ const UPLOAD_STATUS = {
 };
 const UPLOAD_CANCELLABLE = new Set(["queued", "starting", "uploading"]);
 const UPLOAD_ENDED = new Set(["done", "skipped", "cancelled", "failed"]);
+const STATE_NAMES = { running: "실행 중", exited: "중지됨", created: "시작 전", paused: "일시정지", restarting: "재시작 중", dead: "오류" };
+const PAUSED_STATUS = "일시정지됨";
+const PAUSE_HELP_KEY = "raven.pause-help-seen";
+const REQUEST_NETWORK_ERROR = "서버에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.";
 
 async function loadViewerModule() {
   let timer;
@@ -59,6 +63,12 @@ const uploads = [];
 let uploadRunning = false;
 let unloadGuarded = false;
 let leavingForLogin = false;
+// The sessions on screen, the connection attempt a viewer pause belongs to, and the one-time pause explanation.
+let shownSessions = [];
+let pauseAttempt = null;
+let pauseHelpSeen = false;
+let pauseHelpSession = null;
+let pendingFocus = null;
 
 function notice(id, message) {
   const target = element(id);
@@ -86,6 +96,9 @@ const ERROR_MESSAGES = new Map([
   ["downloads_missing", "서버에 ~/Downloads 폴더가 없습니다. 세션을 만들거나 시작하면 생깁니다. 서버에서 raven web doctor로 확인해 주세요."],
   ["staging_invalid", "~/Downloads/.raven-uploads 폴더가 업로드를 막고 있습니다. 세션이나 서버에서 이 폴더를 지운 뒤 다시 올려 주세요."],
   ["cross_device", "올릴 폴더가 ~/Downloads와 다른 파일 시스템에 있어 저장할 수 없습니다. 다른 폴더에 올려 주세요."],
+  ["session_paused", "세션이 일시정지되어 있습니다. 이어하기를 누른 뒤 다시 시도해 주세요."],
+  ["session_not_paused", "세션이 일시정지 상태가 아닙니다. 다른 곳에서 이미 이어했거나 중지했을 수 있습니다."],
+  ["session_not_running", "실행 중인 세션만 일시정지할 수 있습니다. 세션이 중지되었거나 다른 곳에서 바뀌었을 수 있습니다."],
 ]);
 
 function errorMessage(data) {
@@ -94,6 +107,11 @@ function errorMessage(data) {
   if (typeof data.error !== "string") return "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
   if (data.code === "session_failed") return `세션 작업에 실패했습니다: ${data.error}`;
   return data.error;
+}
+
+// fetch rejects with a TypeError when the network or the gateway is unreachable.
+function requestMessage(error) {
+  return error instanceof TypeError ? REQUEST_NETWORK_ERROR : error.message;
 }
 
 function apiError(status, data) {
@@ -148,29 +166,135 @@ function showDialog(kind, session = null) {
   element(`${kind}-dialog`).showModal();
 }
 
+function formatPercent(value) {
+  return value > 0 && value < 0.5 ? "<1%" : `${Math.round(value)}%`;
+}
+
+// Live numbers for a running session; a paused one shows only the memory it keeps.
+function sessionStats(session) {
+  const memory = Number.isFinite(session.memory) && session.memory >= 0 ? formatSize(session.memory) : "";
+  if (session.state === "paused") {
+    return [memory ? `메모리 ${memory} 유지 중` : "메모리에 유지 중", "서버를 재부팅하면 사라집니다"];
+  }
+  if (session.state !== "running") return [];
+  const stats = [];
+  if (memory) stats.push(`메모리 ${memory}`);
+  if (Number.isFinite(session.cpu) && session.cpu >= 0) stats.push(`CPU ${formatPercent(session.cpu)}`);
+  const viewers = session.viewers || {};
+  const counts = [["X11", viewers.x11], ["웹", viewers.web]]
+    .filter(([, count]) => Number.isInteger(count) && count >= 0)
+    .map(([label, count]) => `${label} ${count}`);
+  if (counts.length) stats.push(`보는 중 ${counts.join(" · ")}`);
+  return stats;
+}
+
+// The first pause in this browser explains what pausing keeps and what it does not.
+function claimPauseHelp(id) {
+  if (pauseHelpSeen) return;
+  pauseHelpSeen = true;
+  try {
+    if (window.localStorage.getItem(PAUSE_HELP_KEY)) return;
+    window.localStorage.setItem(PAUSE_HELP_KEY, "1");
+  } catch {
+    // Without browser storage the explanation shows once per page.
+  }
+  pauseHelpSession = id;
+}
+
 function renderSessions(sessions) {
+  shownSessions = sessions;
   const list = element("session-list");
   const fragment = document.createDocumentFragment();
   for (const session of sessions) {
-    const card = element("session-template").content.cloneNode(true);
+    const content = element("session-template").content.cloneNode(true);
+    const card = content.querySelector(".session-card");
+    const paused = session.state === "paused";
+    card.dataset.session = session.id;
+    card.classList.toggle("is-paused", paused);
     card.querySelector(".session-name").textContent = sessionName(session);
     const state = card.querySelector(".session-state");
-    const stateNames = { running: "실행 중", exited: "중지됨", created: "시작 전", paused: "일시 중지", restarting: "재시작 중", dead: "오류" };
-    state.textContent = stateNames[session.state] || session.state;
+    state.textContent = STATE_NAMES[session.state] || session.state;
     state.classList.toggle("running", session.state === "running");
+    state.classList.toggle("paused", paused);
     card.querySelector(".session-details").textContent = `#${session.id} · ${session.wm === "xmonad" ? "XMonad" : "Openbox"} · ${session.geometry}`;
+    const stats = card.querySelector(".session-stats");
+    sessionStats(session).forEach((text, index) => {
+      if (index) stats.append(" · ");
+      const item = document.createElement("span");
+      item.textContent = text;
+      stats.append(item);
+    });
+    stats.hidden = !stats.hasChildNodes();
+    stats.classList.toggle("paused", paused);
     const command = card.querySelector(".session-command");
     command.textContent = session.command;
     command.title = session.command;
-    card.querySelector(".session-open").addEventListener("click", () => openSession(session));
+    const open = card.querySelector(".session-open");
+    open.hidden = paused;
+    open.addEventListener("click", () => openSession(session));
+    const resume = card.querySelector(".session-resume");
+    resume.hidden = !paused;
+    resume.addEventListener("click", () => changeSessionState(session, "resume", card));
+    const pause = card.querySelector(".session-pause");
+    pause.hidden = session.state !== "running";
+    pause.addEventListener("click", () => changeSessionState(session, "pause", card));
     for (const button of card.querySelectorAll("[data-action]")) {
       button.addEventListener("click", () => showDialog(button.dataset.action, session));
     }
-    fragment.append(card);
+    const run = card.querySelector('[data-action="run"]');
+    run.disabled = paused;
+    if (paused) run.title = "일시정지한 세션에서는 명령을 실행할 수 없습니다. 이어하기를 누른 뒤 실행하세요.";
+    const help = card.querySelector(".pause-help");
+    help.hidden = !paused || session.id !== pauseHelpSession;
+    help.querySelector(".pause-help-dismiss").addEventListener("click", () => {
+      pauseHelpSession = null;
+      help.hidden = true;
+      resume.focus();
+    });
+    fragment.append(content);
   }
   list.replaceChildren(fragment);
   element("session-count").textContent = String(sessions.length);
   element("empty-state").hidden = sessions.length !== 0;
+  if (pendingFocus && !workspace.hidden) {
+    const card = [...list.children].find((item) => item.dataset.session === pendingFocus.id);
+    const target = card && card.querySelector(pendingFocus.control);
+    if (target && !target.hidden && !target.disabled) target.focus();
+  }
+}
+
+// Pause and resume need no confirmation: either one can be undone with the other.
+async function changeSessionState(session, action, card) {
+  for (const button of card.querySelectorAll(".session-actions button")) button.disabled = true;
+  card.setAttribute("aria-busy", "true");
+  card.querySelector(`.session-${action}`).textContent = action === "pause" ? "멈추는 중…" : "이어가는 중…";
+  notice("workspace-notice", "");
+  notice("workspace-info", "");
+  let changed = null;
+  try {
+    const result = await api(sessionPath(session.id, action), "POST", { generation: session.generation });
+    if (result && result.session && result.session.id === session.id) changed = result.session;
+  } catch (error) {
+    if (leavingForLogin) return;
+    // A session someone else already paused is where this request wanted it.
+    if (action !== "pause" || error.code !== "session_paused") {
+      notice("workspace-notice", requestMessage(error));
+      // A refused change means this card is out of date; anything else leaves it as it was.
+      if (error.status === 409 || error.code === "session_failed") {
+        await refreshSessions();
+      } else {
+        pendingFocus = { id: session.id, control: `.session-${action}` };
+        renderSessions(shownSessions);
+        pendingFocus = null;
+      }
+      return;
+    }
+  }
+  if (action === "pause") claimPauseHelp(session.id);
+  pendingFocus = { id: session.id, control: action === "pause" ? ".session-resume" : ".session-open" };
+  if (changed) renderSessions(shownSessions.map((item) => (item.id === session.id ? { ...item, ...changed } : item)));
+  await refreshSessions();
+  pendingFocus = null;
 }
 
 async function refreshSessions() {
@@ -190,10 +314,13 @@ async function refreshSessions() {
 }
 
 function setConnectionStatus(text, connected = false) {
-  element("connection-status").textContent = text;
-  element("connection-status").classList.toggle("connected", connected);
+  const status = element("connection-status");
+  status.textContent = text;
+  status.classList.toggle("connected", connected);
+  status.classList.remove("paused");
   element("send-ctrl-alt-del").disabled = !connected;
   element("clipboard-send").disabled = !connected;
+  element("pause-viewer").disabled = !connected;
 }
 
 function setClipboardStatus(message) {
@@ -661,7 +788,25 @@ function disconnect() {
   clearClipboard();
 }
 
+function hidePausedOffer() {
+  element("viewer-paused").hidden = true;
+  element("pause-viewer").hidden = false;
+}
+
+// A paused session is the user's choice, so the viewer stops reconnecting and offers to resume instead.
+function showPausedOffer() {
+  clearReconnectTimers();
+  reconnectAttempts = 0;
+  setConnectionStatus(PAUSED_STATUS);
+  element("connection-status").classList.add("paused");
+  element("reconnect-viewer").hidden = true;
+  element("pause-viewer").hidden = true;
+  notice("viewer-notice", "");
+  element("viewer-paused").hidden = false;
+}
+
 function endConnection(message, { status = "연결 종료", retry = true } = {}) {
+  hidePausedOffer();
   setConnectionStatus(status);
   element("reconnect-viewer").hidden = !retry;
   notice("viewer-notice", message);
@@ -682,6 +827,7 @@ function scheduleReconnect(message) {
   showCountdown();
   countdownTimer = setInterval(showCountdown, 1000);
   reconnectTimer = setTimeout(reconnectNow, delay);
+  hidePausedOffer();
   element("reconnect-viewer").hidden = false;
   notice("viewer-notice", message);
 }
@@ -701,6 +847,11 @@ async function reconnectNow() {
       endConnection("세션이 삭제되었거나 다시 만들어졌습니다. 세션 목록에서 다시 선택해 주세요.", { retry: false });
       return;
     }
+    if (current.state === "paused") {
+      activeSession = current;
+      showPausedOffer();
+      return;
+    }
     if (current.state !== "running") {
       endConnection("세션이 중지되어 자동으로 다시 연결하지 않습니다. 다시 연결하면 세션을 시작합니다.");
       return;
@@ -710,6 +861,10 @@ async function reconnectNow() {
     await connectViewer(current, attempt);
   } catch (error) {
     if (attempt !== connectionAttempt) return;
+    if (error.code === "session_paused") {
+      showPausedOffer();
+      return;
+    }
     if (error.status >= 400 && error.status < 500 && !RETRYABLE_CLIENT_STATUSES.has(error.status)) {
       endConnection(error.message, { status: "연결 실패" });
       return;
@@ -747,6 +902,8 @@ async function connectViewer(session, attempt) {
   remote.addEventListener("disconnect", () => {
     if (connection !== remote) return;
     connection = null;
+    // Pausing closes every viewer of the session; the pause request decides what comes next.
+    if (pauseAttempt === connectionAttempt) return;
     if (authenticationFailed) endConnection(AUTHENTICATION_FAILED);
     else scheduleReconnect(RECONNECT_NOTICE);
   });
@@ -777,13 +934,85 @@ async function openSession(session) {
   viewer.hidden = false;
   element("viewer-title").textContent = sessionName(session);
   element("reconnect-viewer").hidden = true;
+  hidePausedOffer();
   notice("viewer-notice", "");
+  notice("workspace-info", "");
   setConnectionStatus("연결 중…");
   try {
     await connectViewer(session, attempt);
   } catch (error) {
     if (attempt !== connectionAttempt) return;
+    if (error.code === "session_paused") {
+      showPausedOffer();
+      return;
+    }
     endConnection(error.message, { status: "연결 실패" });
+  }
+}
+
+async function pauseFromViewer() {
+  const session = activeSession;
+  if (!session || !connection || pauseAttempt !== null) return;
+  // A new attempt drops any connect still in flight; the open connection stays until the pause closes it.
+  connectionAttempt += 1;
+  clearReconnectTimers();
+  const attempt = connectionAttempt;
+  pauseAttempt = attempt;
+  notice("viewer-notice", "");
+  setConnectionStatus("일시정지하는 중…");
+  try {
+    await api(sessionPath(session.id, "pause"), "POST", { generation: session.generation });
+  } catch (error) {
+    if (pauseAttempt === attempt) pauseAttempt = null;
+    if (attempt !== connectionAttempt || leavingForLogin) return;
+    if (error.code === "session_paused") showPausedOffer();
+    else if (connection) {
+      setConnectionStatus("연결됨", true);
+      notice("viewer-notice", requestMessage(error));
+    } else {
+      scheduleReconnect(requestMessage(error));
+    }
+    return;
+  }
+  if (pauseAttempt === attempt) pauseAttempt = null;
+  claimPauseHelp(session.id);
+  const message = `${session.name || `#${session.id}`} 세션을 일시정지했습니다. 이어하기를 누르면 멈춘 그대로 이어집니다.`;
+  if (attempt === connectionAttempt) {
+    pendingFocus = { id: session.id, control: ".session-resume" };
+    notice("workspace-info", message);
+    await closeViewer();
+    pendingFocus = null;
+  } else if (!workspace.hidden) {
+    // The list came back while the pause ran; show the session as it is now.
+    notice("workspace-info", message);
+    await refreshSessions();
+  }
+}
+
+async function resumeAndConnect() {
+  const session = activeSession;
+  const button = element("resume-viewer");
+  if (!session || button.disabled) return;
+  const attempt = connectionAttempt;
+  button.disabled = true;
+  notice("viewer-notice", "");
+  setConnectionStatus("이어가는 중…");
+  try {
+    const result = await api(sessionPath(session.id, "resume"), "POST", { generation: session.generation });
+    if (attempt !== connectionAttempt) return;
+    const resumed = result && result.session && result.session.id === session.id ? { ...session, ...result.session } : session;
+    await openSession(resumed);
+  } catch (error) {
+    if (attempt !== connectionAttempt || leavingForLogin) return;
+    if (error.code === "session_not_paused") {
+      endConnection(requestMessage(error));
+      return;
+    }
+    setConnectionStatus(PAUSED_STATUS);
+    element("connection-status").classList.add("paused");
+    notice("viewer-notice", requestMessage(error));
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -858,9 +1087,12 @@ handleForm("delete", (_fields, session) => api(sessionPath(session.id), "DELETE"
 
 element("refresh-sessions").addEventListener("click", () => {
   notice("workspace-notice", "");
+  notice("workspace-info", "");
   refreshSessions();
 });
 element("close-viewer").addEventListener("click", closeViewer);
+element("pause-viewer").addEventListener("click", pauseFromViewer);
+element("resume-viewer").addEventListener("click", resumeAndConnect);
 element("reconnect-viewer").addEventListener("click", () => {
   if (activeSession) openSession(activeSession);
 });

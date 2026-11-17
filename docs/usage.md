@@ -25,6 +25,8 @@
 | `raven rename`            | 세션 이름 변경                                            |
 | `raven run`               | 세션 화면에 앱 실행 (세션 안 또는 호스트)                 |
 | `raven shell`             | 세션 안의 bash                                            |
+| `raven pause`             | 세션의 앱을 메모리에 둔 채 멈춤                           |
+| `raven resume`            | 일시정지한 세션을 이어감                                  |
 | `raven kill`              | 세션과 홈 삭제                                            |
 | `raven recreate`          | 세션을 현재 이미지로 교체 (홈 유지)                       |
 | `raven build`             | core 이미지와 켜진 addon으로 이미지 빌드                  |
@@ -78,7 +80,7 @@ raven a -d 0                           # 다른 뷰어를 끊고 attach
 
 - 뷰어 창을 닫으면 detach다. 세션 안의 앱은 계속 실행된다.
 - 한 세션에 뷰어 여러 개가 동시에 붙을 수 있다. `-d`는 나머지 X11 뷰어를 끊으며 브라우저 연결에는 적용하지 않는다.
-- 멈춘 세션은 `attach`, `run`, `shell` 때 자동으로 켠다.
+- 꺼진 세션(`exited`)은 `attach`, `run`, `shell` 때 자동으로 켠다. 일시정지한 세션은 켜지 않고 거절한다([일시정지와 이어하기](#일시정지와-이어하기)).
 
 ### 목록과 이름
 
@@ -88,12 +90,16 @@ raven rename 0 browser
 ```
 
 ```
-ID   NAME             STATE    WM       DISPLAY  PORT   VIEWERS  CMD
-0    browser          running  xmonad   :100     15900  1        microsoft-edge
-1    ob               exited   openbox  :101     15901  -        xterm
+ID   NAME             STATE    WM       DISPLAY  PORT   X11  WEB  CPU   MEM     CMD
+0    browser          running  xmonad   :100     15900  1    1    3%    1.2GiB  microsoft-edge
+1    work             paused   xmonad   :101     15901  -    -    0%    842MiB  xterm
+2    ob               exited   openbox  :102     15902  -    -    -     -       xterm
+paused sessions keep their memory until resumed; a server reboot loses them
 ```
 
-- `VIEWERS`는 지금 붙어 있는 X11 뷰어 수이며 브라우저 연결은 포함하지 않는다. 멈춘 세션은 `-`.
+- `X11`은 붙어 있는 X11 뷰어 수, `WEB`은 브라우저(웹 게이트웨이) 연결 수다.
+- `CPU`는 0.25초 동안 잰 사용률이다(코어 하나가 100%, 세션 상한은 CPU 2개). 막 이어간 세션은 잠깐 200%를 넘게 보일 수 있다. `MEM`은 세션 컨테이너의 메모리 사용량이다.
+- 일시정지한 세션은 `X11`, `WEB`이 `-`이고 `MEM`은 그대로 남는다. 꺼진 세션은 네 칸 모두 `-`, 읽지 못한 값은 `?`다.
 - 창 관리자를 고를 수 있기 전에 만든 세션은 `WM`이 openbox다.
 
 ### 앱 실행과 셸
@@ -129,6 +135,22 @@ raven shell -t 0                       # 세션 안의 bash (DISPLAY 설정됨)
 
 - xmonad 세션: `~/.config/raven/autostart`
 - openbox 세션: `~/.config/openbox/autostart`
+
+### 일시정지와 이어하기
+
+```bash
+raven pause work      # 앱을 멈춘 자리에 그대로 둔다
+raven resume work     # 멈춘 자리에서 이어간다
+raven attach work
+```
+
+- 일시정지는 세션 컨테이너의 프로세스를 멈춘 그대로 메모리에 둔다(`docker pause`). 열린 창, 저장하지 않은 입력, 계산 중이던 상태가 그대로 남고 CPU는 쓰지 않는다. 이어하면 같은 프로세스가 멈춘 곳에서 계속한다.
+- 메모리(RAM)는 계속 차지한다. 서버가 재부팅되면 일시정지 상태는 사라지고 세션은 [재시작과 보존](#재시작과-보존)처럼 새로 뜬다.
+- 멈추기 전에 이 세션의 뷰어를 모두 끊는다(X11 뷰어 창이 닫히고 브라우저 화면은 끊긴다). 이어한 뒤 다시 `attach`한다.
+- 멈춘 동안 `attach`, `run`, `shell`, `menu show`, `home sync -t`, `wallpaper -t`는 `raven resume`을 하라고 하고 거절한다. 모든 세션에 적용하는 `menu sync`, `home sync`, `wallpaper`는 멈춘 세션을 건너뛰고, `recreate -a`는 건너뛴 세션을 알린다. `kill`과 `recreate -t`는 멈춘 세션에도 한다(앱 상태는 사라진다).
+- `run --host`로 띄운 호스트 앱은 컨테이너 밖에 있어서 같이 멈추지 않는다. 세션 앱의 네트워크 상대편(원격 서버 등)이 연결을 끊는 것은 막지 못한다.
+- 미리 열어 둔 `raven shell`도 멈췄다가 이어하면 계속된다. `~/Downloads`는 호스트 폴더라서 멈춘 동안에도 웹의 `파일`로 주고받을 수 있다.
+- 앱 메모리를 버리고 새로 시작하려면 일시정지가 아니라 `raven recreate -t TARGET`을 쓴다.
 
 ### 지우기
 

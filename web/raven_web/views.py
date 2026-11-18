@@ -6,6 +6,7 @@ from urllib.parse import quote
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
+from django.contrib.sessions.backends.db import SessionStore
 from django.core.exceptions import RequestDataTooBig
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.middleware import csrf
@@ -14,8 +15,8 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.debug import sensitive_post_parameters
 from django.views.decorators.http import require_http_methods
 
-from . import broker
-from .consumers import revoke_session
+from . import broker, logins
+from .consumers import connection_counts, revoke_session
 from .service_config import certificate_info, public_certificate
 from .throttle import login_retry_after
 from .validation import (
@@ -97,6 +98,7 @@ def login_view(request):
     if user is None:
         return render(request, "login.html", {"error": "Incorrect username or password."}, status=401)
     login(request, user)
+    logins.start(request)
     return redirect("/")
 
 
@@ -329,3 +331,46 @@ def certificate_download(request):
     response = HttpResponse(chain.encode("ascii"), content_type="application/x-x509-ca-cert")
     response["Content-Disposition"] = f'attachment; filename="raven-{hostname}.crt"'
     return response
+
+
+@api_view(["GET"])
+def login_list(request):
+    # Session keys never leave this view; entries carry only the login ID.
+    SessionStore.clear_expired()
+    current = request.session.session_key
+    counts = connection_counts()
+    return JsonResponse({"logins": [
+        {**entry, "current": key == current, "connections": counts[key]}
+        for key, entry in logins.account_logins(request.user)
+    ]})
+
+
+def revoked(request, session_keys):
+    """End these logins and their open desktop connections; log this response out when one is the current login."""
+    current = request.session.session_key in session_keys
+    count = logins.revoke(session_keys)
+    for key in session_keys:
+        revoke_session(key)
+    if current:
+        logout(request)
+    return JsonResponse({"revoked": count, "current": current})
+
+
+@api_view(["POST"])
+def revoke_login(request, login_id):
+    keys = []
+    if logins.LOGIN_ID.fullmatch(login_id):
+        keys = [key for key, entry in logins.account_logins(request.user) if entry["id"] == login_id]
+    if not keys:
+        return error_response("login_not_found", "That login has already ended; refresh the list", 404)
+    return revoked(request, keys)
+
+
+@api_view(["POST"])
+def revoke_logins(request):
+    scope = json_object(request, {"scope"}).get("scope")
+    if scope not in ("others", "all"):
+        raise ValueError('scope must be "others" or "all"')
+    current = request.session.session_key
+    return revoked(request, [key for key, _ in logins.account_logins(request.user)
+                             if scope == "all" or key != current])

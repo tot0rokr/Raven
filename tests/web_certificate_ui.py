@@ -245,7 +245,7 @@ def expect_days(desk, text, level):
 
 
 def dialog_shows_every_field(desk):
-    assert desk.static_queries == {"/static/app.js": "v=7", "/static/style.css": "v=7"}, desk.static_queries
+    assert desk.static_queries == {"/static/app.js": "v=8", "/static/style.css": "v=8"}, desk.static_queries
     wait_for_certificate_requests(desk, 1)
     assert sorted(desk.requests) == sorted([LIST, CERT]), desk.requests
     expect(desk.notice).to_be_hidden()

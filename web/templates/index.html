@@ -7,15 +7,16 @@
   <meta name="color-scheme" content="dark">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>워크스페이스 · Raven</title>
-  <link rel="stylesheet" href="{% static 'style.css' %}?v=7">
-  <script type="module" src="{% static 'app.js' %}?v=7"></script>
+  <link rel="stylesheet" href="{% static 'style.css' %}?v=8">
+  <script type="module" src="{% static 'app.js' %}?v=8"></script>
 </head>
 <body class="workspace-page">
   <header class="app-header">
     <a class="wordmark" href="/" aria-label="Raven 워크스페이스">raven<span class="wordmark-dot" aria-hidden="true"></span></a>
     <div class="account-controls">
-      <span class="account-name">{{ username }}</span>
+      <span class="account-name" title="{{ username }}">{{ username }}</span>
       <button id="certificate-open" class="button-quiet" type="button" aria-haspopup="dialog">인증서</button>
+      <button id="logins-open" class="button-quiet" type="button" aria-haspopup="dialog">로그인 기기</button>
       <form id="logout-form" method="post" action="/logout/">
         {% csrf_token %}
         <button class="button-quiet" type="submit">로그아웃</button>
@@ -192,6 +193,45 @@
       </ol>
     </section>
   </dialog>
+  <dialog id="logins-dialog" class="logins-dialog" aria-labelledby="logins-title" aria-describedby="logins-intro">
+    <div class="logins-heading">
+      <h2 id="logins-title">로그인 기기 <span id="logins-count" class="count"></span></h2>
+      <div class="logins-heading-actions">
+        <button id="logins-refresh" class="button-quiet" type="button">새로고침</button>
+        <button type="button" class="button-quiet" data-close-dialog autofocus>닫기</button>
+      </div>
+    </div>
+    <p id="logins-intro" class="logins-intro">이 계정으로 로그인한 브라우저입니다. 해제하면 그 브라우저의 화면 연결이 바로 끊기고, 다시 쓰려면 로그인해야 합니다.</p>
+    <p id="logins-error" class="notice notice-error" role="alert" hidden></p>
+    <p id="logins-status" class="logins-status" role="status"></p>
+    <ul id="logins-list" class="logins-list" aria-label="로그인 목록"></ul>
+    <div id="logins-actions" class="logins-actions">
+      <button id="logins-revoke-others" class="button-secondary" type="button" disabled>다른 기기 모두 해제</button>
+      <button id="logins-revoke-all" class="button-quiet danger-text" type="button" disabled>모두 해제(이 기기 포함)</button>
+    </div>
+    <div id="logins-confirm" class="logins-confirm" role="group" aria-labelledby="logins-confirm-text" hidden>
+      <p id="logins-confirm-text"></p>
+      <div class="logins-confirm-actions">
+        <button id="logins-confirm-cancel" class="button-secondary" type="button">취소</button>
+        <button id="logins-confirm-go" class="button-danger" type="button">해제하고 로그아웃</button>
+      </div>
+    </div>
+    <p class="logins-privacy">접속 주소는 SSH 터널 뒤라 알 수 없어 남기지 않고, 브라우저와 OS 종류만 기록합니다. 로그인이 끝나면 함께 지웁니다.</p>
+  </dialog>
+  <template id="login-template">
+    <li class="login-row">
+      <div class="login-summary">
+        <div class="login-name-line"><span class="login-name"></span><span class="login-current" hidden>이 기기</span></div>
+        <p class="login-meta"></p>
+        <dl class="login-facts">
+          <div><dt>로그인</dt><dd class="login-created"></dd></div>
+          <div><dt>마지막 활동</dt><dd class="login-seen"></dd></div>
+          <div><dt>만료</dt><dd class="login-expires"></dd></div>
+        </dl>
+      </div>
+      <button class="button-secondary login-revoke" type="button">해제</button>
+    </li>
+  </template>
   <dialog id="create-dialog" aria-labelledby="create-title">
     <form id="create-form" class="stack-form dialog-form">
       <div class="dialog-heading"><h2 id="create-title">새 세션</h2></div>

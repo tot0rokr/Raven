@@ -32,6 +32,9 @@ const REQUEST_NETWORK_ERROR = "서버에 연결하지 못했습니다. 네트워
 const CERTIFICATE_WARNING_DAYS = 30;
 const CERTIFICATE_RENEW = "raven web certificate renew";
 const CERTIFICATE_UNAVAILABLE = "인증서 정보를 불러오지 못했습니다. 서버에서 raven web certificate info로 확인해 주세요.";
+const LOGINS_UNAVAILABLE = "로그인 목록을 불러오지 못했습니다. 다시 시도해 주세요.";
+const LOGINS_NETWORK_ERROR = "로그인 목록을 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.";
+const LOGIN_DEVICES = { desktop: "데스크톱", mobile: "모바일" };
 
 async function loadViewerModule() {
   let timer;
@@ -75,6 +78,12 @@ let pendingFocus = null;
 // The latest good answer from the certificate API, and the request whose answer counts.
 let certificateInfo = null;
 let certificateRequest = 0;
+// The logins on screen (null before a good answer), the list request whose answer counts, a revoke in flight,
+// and the revoke that includes this browser while it waits for the inline confirmation.
+let shownLogins = null;
+let loginsRequest = 0;
+let loginsBusy = false;
+let loginConfirm = null;
 
 function notice(id, message) {
   const target = element(id);
@@ -105,6 +114,7 @@ const ERROR_MESSAGES = new Map([
   ["session_paused", "세션이 일시정지되어 있습니다. 이어하기를 누른 뒤 다시 시도해 주세요."],
   ["session_not_paused", "세션이 일시정지 상태가 아닙니다. 다른 곳에서 이미 이어했거나 중지했을 수 있습니다."],
   ["session_not_running", "실행 중인 세션만 일시정지할 수 있습니다. 세션이 중지되었거나 다른 곳에서 바뀌었을 수 있습니다."],
+  ["login_not_found", "이미 해제되었거나 만료된 로그인입니다."],
 ]);
 
 function errorMessage(data) {
@@ -885,6 +895,207 @@ function openCertificate() {
   loadCertificate();
 }
 
+function loginLabel(login) {
+  const browser = typeof login.browser === "string" && login.browser ? login.browser : "알 수 없는 브라우저";
+  return typeof login.os === "string" && login.os ? `${browser} · ${login.os}` : browser;
+}
+
+function relativeTime(time) {
+  const seconds = Math.floor((Date.now() - time) / 1000);
+  if (seconds < 60) return "방금 전";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}시간 전` : `${Math.floor(hours / 24)}일 전`;
+}
+
+// Login, last activity and expiry come as ISO UTC strings; they show in local time, the activity as "N분 전".
+function loginTime(text, relative = false) {
+  const time = parseInstant(text);
+  if (time === null) return "알 수 없음";
+  const node = timeElement(text);
+  if (relative) {
+    node.title = node.textContent;
+    node.textContent = relativeTime(time);
+  }
+  return node;
+}
+
+function validLogins(data) {
+  return Boolean(data) && Array.isArray(data.logins)
+    && data.logins.every((login) => Boolean(login) && typeof login.id === "string" && login.id !== "");
+}
+
+function loginRow(login) {
+  const row = element("login-template").content.firstElementChild.cloneNode(true);
+  const current = login.current === true;
+  const label = loginLabel(login);
+  row.dataset.login = login.id;
+  row.classList.toggle("is-current", current);
+  const name = row.querySelector(".login-name");
+  name.textContent = label;
+  name.classList.toggle("unknown", !(typeof login.browser === "string" && login.browser));
+  row.querySelector(".login-current").hidden = !current;
+  const meta = [];
+  if (typeof login.device === "string" && login.device) meta.push([LOGIN_DEVICES[login.device] || login.device, ""]);
+  if (Number.isInteger(login.connections) && login.connections >= 0) {
+    meta.push([`화면 연결 ${login.connections}개`, login.connections ? "login-connections active" : "login-connections"]);
+  }
+  const line = row.querySelector(".login-meta");
+  meta.forEach(([text, className], index) => {
+    if (index) line.append(" · ");
+    const item = document.createElement("span");
+    item.textContent = text;
+    if (className) item.className = className;
+    line.append(item);
+  });
+  line.hidden = meta.length === 0;
+  row.querySelector(".login-created").replaceChildren(loginTime(login.created));
+  row.querySelector(".login-seen").replaceChildren(loginTime(login.seen, true));
+  row.querySelector(".login-expires").replaceChildren(loginTime(login.expires));
+  const revoke = row.querySelector(".login-revoke");
+  revoke.setAttribute("aria-label", current ? "이 기기의 로그인 해제" : `${label} 로그인 해제`);
+  revoke.addEventListener("click", () => {
+    const request = { path: `/api/logins/${encodeURIComponent(login.id)}/revoke/`, button: revoke };
+    if (current) confirmRevoke(request, "이 기기의 로그인을 해제할까요?");
+    else revokeLogins(request);
+  });
+  return row;
+}
+
+function updateLoginControls() {
+  const confirming = loginConfirm !== null;
+  const locked = loginsBusy || confirming;
+  const others = shownLogins !== null && shownLogins.some((login) => login.current !== true);
+  element("logins-refresh").disabled = locked;
+  for (const button of element("logins-list").querySelectorAll(".login-revoke")) button.disabled = locked;
+  element("logins-revoke-others").disabled = locked || !others;
+  element("logins-revoke-all").disabled = locked || shownLogins === null || shownLogins.length === 0;
+  element("logins-actions").hidden = confirming;
+  element("logins-confirm").hidden = !confirming;
+  element("logins-list").setAttribute("aria-busy", String(loginsBusy));
+}
+
+// This browser's row comes first; the rest keep the server's order (latest activity first).
+function renderLogins(logins) {
+  shownLogins = [...logins].sort((a, b) => Number(b.current === true) - Number(a.current === true));
+  element("logins-list").replaceChildren(...shownLogins.map(loginRow));
+  element("logins-count").textContent = String(shownLogins.length);
+  updateLoginControls();
+}
+
+function clearLogins() {
+  shownLogins = null;
+  element("logins-list").replaceChildren();
+  element("logins-count").textContent = "";
+  updateLoginControls();
+}
+
+// The dialog shows only what the latest request returned; `message` replaces the status line once it has.
+async function loadLogins(message = "") {
+  const request = ++loginsRequest;
+  const status = element("logins-status");
+  notice("logins-error", "");
+  if (shownLogins === null) status.textContent = "불러오는 중…";
+  try {
+    const data = await api("/api/logins/");
+    if (request !== loginsRequest) return;
+    if (!validLogins(data)) throw new Error(LOGINS_UNAVAILABLE);
+    renderLogins(data.logins);
+    status.textContent = message || (data.logins.length ? "" : "로그인이 없습니다.");
+  } catch (error) {
+    if (request !== loginsRequest || leavingForLogin) return;
+    clearLogins();
+    status.textContent = "";
+    let text = LOGINS_UNAVAILABLE;
+    if (error instanceof TypeError) text = LOGINS_NETWORK_ERROR;
+    else if (ERROR_MESSAGES.has(error.code)) text = error.message;
+    notice("logins-error", text);
+  }
+}
+
+// After a revoke the focused row may be gone or its button disabled; keep focus in the dialog on a harmless control.
+function focusInLogins() {
+  const dialog = element("logins-dialog");
+  const active = document.activeElement;
+  if (dialog.open && (!dialog.contains(active) || active.disabled)) dialog.querySelector("[data-close-dialog]").focus();
+}
+
+// Revoking this browser ends its login on the server; leave the way an expired login does, without reconnecting.
+function leaveRevokedDevice() {
+  element("logins-status").textContent = "이 기기의 로그인을 해제했습니다. 로그인 화면으로 이동합니다.";
+  goToLogin();
+}
+
+async function revokeLogins(request) {
+  if (loginsBusy) return;
+  const { path, body, button } = request;
+  const label = button.textContent;
+  loginsBusy = true;
+  loginConfirm = null;
+  button.textContent = "해제하는 중…";
+  notice("logins-error", "");
+  element("logins-status").textContent = "";
+  updateLoginControls();
+  let result = null;
+  let failure = null;
+  try {
+    result = await api(path, "POST", body);
+  } catch (error) {
+    failure = error;
+  }
+  if (leavingForLogin) return;
+  if (result && result.current === true) {
+    leaveRevokedDevice();
+    return;
+  }
+  loginsBusy = false;
+  button.textContent = label;
+  updateLoginControls();
+  if (failure && failure.code !== "login_not_found") {
+    notice("logins-error", requestMessage(failure));
+    if (button.isConnected) button.focus();
+    return;
+  }
+  let message;
+  if (failure) {
+    // A login that is already gone is where the revoke wanted it; show the list as it is now.
+    message = `${failure.message} 목록을 다시 불러왔습니다.`;
+  } else {
+    const count = Number.isInteger(result && result.revoked) ? result.revoked : 0;
+    message = count ? `로그인 ${count}개를 해제했습니다.` : "해제할 로그인이 없었습니다.";
+  }
+  await loadLogins(message);
+  focusInLogins();
+}
+
+function confirmRevoke(request, question) {
+  const parts = [question, "열린 화면 연결이 끊기고 로그인 화면으로 이동합니다."];
+  if (uploadsPending()) parts.push("올리는 중인 파일도 끊깁니다.");
+  loginConfirm = request;
+  element("logins-confirm-text").textContent = parts.join(" ");
+  notice("logins-error", "");
+  element("logins-status").textContent = "";
+  updateLoginControls();
+  element("logins-confirm-cancel").focus();
+}
+
+function cancelConfirm() {
+  const request = loginConfirm;
+  loginConfirm = null;
+  updateLoginControls();
+  if (request && request.button.isConnected) request.button.focus();
+}
+
+function openLogins() {
+  const dialog = element("logins-dialog");
+  loginConfirm = null;
+  element("logins-status").textContent = "";
+  updateLoginControls();
+  if (!dialog.open) dialog.showModal();
+  loadLogins();
+}
+
 function clearReconnectTimers() {
   clearTimeout(reconnectTimer);
   clearInterval(countdownTimer);
@@ -1234,6 +1445,25 @@ element("files-dialog").addEventListener("close", () => {
   if (!viewer.hidden && connection) connection.focus();
 });
 element("certificate-open").addEventListener("click", openCertificate);
+element("logins-open").addEventListener("click", openLogins);
+element("logins-refresh").addEventListener("click", () => loadLogins());
+element("logins-revoke-others").addEventListener("click", (event) => {
+  revokeLogins({ path: "/api/logins/revoke/", body: { scope: "others" }, button: event.currentTarget });
+});
+element("logins-revoke-all").addEventListener("click", (event) => {
+  const count = shownLogins ? shownLogins.length : 0;
+  confirmRevoke({ path: "/api/logins/revoke/", body: { scope: "all" }, button: event.currentTarget },
+    count > 1 ? `이 기기를 포함해 로그인 ${count}개를 모두 해제할까요?` : "이 기기의 로그인을 해제할까요?");
+});
+element("logins-confirm-cancel").addEventListener("click", cancelConfirm);
+element("logins-confirm-go").addEventListener("click", () => {
+  if (loginConfirm) revokeLogins(loginConfirm);
+});
+// Escape closes the dialog; a confirmation left open there is dropped, never carried out later.
+element("logins-dialog").addEventListener("close", () => {
+  loginConfirm = null;
+  updateLoginControls();
+});
 element("certificate-notice-open").addEventListener("click", openCertificate);
 // The gateway names the download raven-<origin hostname>.crt, other characters as "_"; the guide's command matches.
 const certificateHost = window.location.hostname.replace(/^\[|\]$/g, "").replace(/[^A-Za-z0-9.-]/g, "_");

@@ -43,6 +43,7 @@ MAX_PEM_FILE = 128 * 1024
 TRUST_GUIDE = "docs/web.md, trusting the certificate on Windows"
 WRITE_ACTIONS = ("write", "certificate-apply", "certificate-restore")
 GATEWAY_BROKER = "/run/raven/broker.sock"
+LOGIN_ID = re.compile(r"[0-9a-f]{16}")
 LABEL_WIDTH = 9
 ITEM_WIDTH = 16
 MIN_WRAP_WIDTH = 30
@@ -543,6 +544,52 @@ def password(args):
     require_data()
     docker("run", "--rm", "-it", "--network", "none", *container_args(), IMAGE,
            "python", "manage.py", "change-password", "--username", args.username, capture=False)
+
+
+def logins_command(*arguments, write=False):
+    """Run manage.py logins in a networkless helper container; only a revocation mounts the data volume writable."""
+    try:
+        result = docker("run", "--rm", "--pull", "never", "--network", "none", *container_args(readonly=not write),
+                        IMAGE, "python", "manage.py", "logins", *arguments)
+    except RequestError as error:
+        if "Unknown command" in str(error):
+            raise RequestError(f"{IMAGE} has no login management; run raven web build, then raven web stop and "
+                               "raven web start") from None
+        raise RequestError(str(error).rsplit("CommandError: ", 1)[-1]) from None
+    return json.loads(result.stdout)
+
+
+def login_browser(login):
+    if not login["browser"] and not login["os"]:
+        return "unknown"
+    return " on ".join(part for part in (login["browser"] or "unknown browser", login["os"]) if part)
+
+
+def show_logins():
+    """raven web logins: a table of the account's browser logins, read from the data volume."""
+    require_data()
+    found = logins_command("list")["logins"]
+    if not found:
+        print("No browser logins.")
+        return
+    rows = [("ID", "BROWSER", "DEVICE", "LOGGED IN", "LAST SEEN", "EXPIRES")]
+    rows.extend((login["id"], login_browser(login), login["device"] or "-",
+                 *(local_time(login[key]) if login[key] else "-" for key in ("created", "seen", "expires")))
+                for login in found)
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]))]
+    for row in rows:
+        print("  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip())
+
+
+def revoke_logins(args):
+    if bool(args.id) == args.all:
+        raise RequestError("Give one login ID or --all")
+    if args.id and not LOGIN_ID.fullmatch(args.id):
+        raise RequestError("A login ID is 16 hexadecimal characters; raven web logins lists them")
+    require_data()
+    count = logins_command("revoke", *(["--all"] if args.all else [args.id]), write=True)["revoked"]
+    print(f"Revoked {count} login{'' if count == 1 else 's'}. A running gateway closes their desktop "
+          "connections within seconds.")
 
 
 def start(args, launch_broker=True):
@@ -1383,6 +1430,13 @@ def arguments():
     commands.add_parser("serve", help="keep the gateway up and run the broker (used by the systemd unit)")
     change = commands.add_parser("password", help="change the account password and revoke logins")
     change.add_argument("--username", required=True)
+    logins = commands.add_parser("logins", help="list browser logins; revoke one or all of them",
+                                 description="Without a subcommand, list the account's browser logins.")
+    login_actions = logins.add_subparsers(dest="logins_action", metavar="{revoke}")
+    revoke = login_actions.add_parser("revoke", help="end one browser login and its desktop connections, "
+                                      "or all with --all")
+    revoke.add_argument("id", nargs="?", metavar="ID", help="login ID from raven web logins")
+    revoke.add_argument("--all", action="store_true", help="end every browser login")
     certificate = commands.add_parser("certificate", help="print the public HTTPS certificate; info, renew, import",
                                       description="Without a subcommand, print the public HTTPS certificate chain.")
     subcommands = certificate.add_subparsers(dest="certificate_action", metavar="{info,renew,import}")
@@ -1434,6 +1488,9 @@ def main():
         return
     if args.action == "certificate" and args.certificate_action:
         return change_certificate(args)
+    if args.action == "logins" and not args.logins_action:
+        show_logins()
+        return
     managed = args.action == "start" and (autostart() or {}).get("enabled", False)
     with manager_lock():
         if args.action == "init":
@@ -1446,6 +1503,8 @@ def main():
             stop()
         elif args.action == "password":
             password(args)
+        elif args.action == "logins":
+            revoke_logins(args)
         elif args.action == "certificate":
             require_data()
             docker("run", "--rm", "--network", "none", *container_args(),

@@ -69,7 +69,7 @@ input:not([type="checkbox"]) { display: block; width: 100%; height: 44px; paddin
 .app-header { height: 78px; padding: 0 40px; border-bottom: 1px solid #2a3035; display: flex; align-items: center; justify-content: space-between; gap: 24px; background: #15191c; }
 .app-header .wordmark { font-size: 25px; }
 .account-controls { display: flex; align-items: center; gap: 18px; min-width: 0; }
-.account-name { max-width: 230px; overflow: hidden; text-overflow: ellipsis; color: #c4ccd3; font-size: 13px; }
+.account-name { min-width: 0; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c4ccd3; font-size: 13px; }
 .workspace { max-width: 1280px; padding: 60px 40px; margin: 0 auto; }
 .workspace-heading { display: flex; align-items: end; justify-content: space-between; gap: 25px; margin-bottom: 38px; }
 .workspace-heading h1 { margin-bottom: 12px; }
@@ -161,6 +161,40 @@ input:not([type="checkbox"]) { display: block; width: 100%; height: 44px; paddin
 .certificate-guide ol { display: grid; gap: 8px; margin: 0; padding-left: 20px; color: #d3d8dd; font-size: 13px; line-height: 1.6; }
 .certificate-guide li::marker { color: var(--muted); }
 .certificate-guide code { padding: 1px 5px; border: 1px solid #30363b; border-radius: 4px; background: #111619; color: #f1f3f5; font: 12px ui-monospace, "Cascadia Code", monospace; overflow-wrap: anywhere; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.logins-dialog { width: min(640px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 24px; }
+.logins-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
+.logins-dialog[open] > * { flex-shrink: 0; }
+.logins-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.logins-heading-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.logins-heading button { min-height: 34px; padding: 6px 11px; font-size: 12px; }
+.logins-intro { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.logins-status { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.logins-status:empty { display: none; }
+.logins-dialog[open] > .logins-list { flex-shrink: 1; min-height: 96px; }
+.logins-list { margin: 0; padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--border); border-radius: 9px; background: #15191c; }
+.logins-list:empty { display: none; }
+.login-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 16px; padding: 12px 14px; border-bottom: 1px solid #252b30; }
+.login-row:last-child { border-bottom: 0; }
+.login-row.is-current { background: #171f1a; }
+.login-summary { display: grid; gap: 3px; min-width: 0; }
+.login-name-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.login-name { min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.login-name.unknown { color: #c4cbd3; font-weight: 550; }
+.login-current { padding: 0 7px; border: 1px solid #385b43; border-radius: 4px; background: #203025; color: #b6d8bc; font-size: 11px; font-weight: 600; line-height: 1.7; white-space: nowrap; }
+.login-meta { color: #a6b0ba; font-size: 12px; line-height: 1.5; }
+.login-meta span { white-space: nowrap; }
+.login-connections.active { color: var(--accent); }
+.login-facts { display: flex; flex-wrap: wrap; gap: 0 14px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.login-facts > div { display: flex; gap: 5px; white-space: nowrap; }
+.login-facts dt { color: #7f8a94; }
+.login-facts dd { margin: 0; color: #c4cbd3; font-variant-numeric: tabular-nums; }
+.login-revoke { min-height: 32px; padding: 6px 13px; font-size: 12px; }
+.logins-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.logins-actions button, .logins-confirm button { min-height: 34px; padding: 7px 12px; font-size: 12px; }
+.logins-actions button:disabled { cursor: not-allowed; }
+.logins-confirm { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid #70413e; border-radius: 8px; background: #30201f; color: #f6c0bb; font-size: 13px; line-height: 1.55; }
+.logins-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.logins-privacy { padding-top: 12px; border-top: 1px solid var(--border); color: #8f9aa5; font-size: 12px; line-height: 1.5; }
 .files-dialog { width: min(720px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 24px; }
 .files-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
 .files-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -226,14 +260,14 @@ a.file-name:hover { text-decoration: underline; text-underline-offset: 3px; }
   .viewer-controls { flex-wrap: wrap; }
 }
 @media (max-width: 600px) {
-  .app-header { height: 65px; padding: 0 20px; }
-  .account-controls { gap: 7px; }
-  .account-name { max-width: 110px; }
+  .app-header { height: 65px; padding: 0 20px; gap: 12px; }
+  .account-controls { gap: 2px; }
+  .account-name { max-width: 110px; margin-right: 4px; }
   .workspace { padding: 35px 20px; }
   .workspace-heading { align-items: start; margin-bottom: 26px; gap: 18px; flex-direction: column; }
   h1 { font-size: 30px; }
   .workspace-heading .muted { max-width: 220px; }
-  .account-controls .button-quiet { padding-inline: 10px; }
+  .account-controls .button-quiet { padding-inline: 7px; font-size: 12px; }
   .certificate-notice { flex-direction: column; align-items: start; padding: 10px 12px; }
   .certificate-dialog { padding: 16px; }
   .certificate-dialog[open] { gap: 12px; }
@@ -255,6 +289,12 @@ a.file-name:hover { text-decoration: underline; text-underline-offset: 3px; }
   .viewer-controls .checkbox-label { font-size: 11px; }
   .viewer-toolbar button { padding-inline: 8px; font-size: 11px; }
   .clipboard-panel { grid-template-columns: 1fr; padding: 8px; gap: 8px; }
+  .logins-dialog { padding: 16px; }
+  .logins-dialog[open] { gap: 12px; }
+  .logins-intro { font-size: 12px; }
+  .login-row { align-items: start; padding: 10px 12px; gap: 8px 10px; }
+  .login-facts { flex-direction: column; }
+  .logins-privacy { font-size: 11px; }
   .files-dialog { padding: 16px; }
   .files-dialog[open] { gap: 10px; }
   .files-intro { font-size: 12px; }

@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 import threading
 
 from channels.db import database_sync_to_async
@@ -10,6 +11,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
 from . import broker
+from .logins import record_activity
 from .validation import SESSION_ID
 
 MAX_CONNECTIONS = 8
@@ -45,6 +47,12 @@ def revoke_session(session_key):
         connection.loop.call_soon_threadsafe(connection.schedule_revocation)
 
 
+def connection_counts():
+    """Open desktop connections in this process, by login session key."""
+    with _connections_lock:
+        return Counter(connection.session_key for connection in _connections)
+
+
 class DesktopConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.tasks = []
@@ -61,6 +69,10 @@ class DesktopConsumer(AsyncWebsocketConsumer):
         ):
             await self.close(code=4401)
             return
+        try:
+            await database_sync_to_async(record_activity)(self.session_key)
+        except DatabaseError:
+            pass  # Last activity is bookkeeping: a busy database must not refuse the desktop.
         with _connections_lock:
             limited = len(_connections) >= MAX_CONNECTIONS
             if not limited:

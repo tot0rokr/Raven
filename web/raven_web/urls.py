@@ -20,4 +20,7 @@ urlpatterns = [
     path("api/files/download/", views.download),
     path("api/certificate/", views.certificate),
     path("api/certificate/download/", views.certificate_download),
+    path("api/logins/", views.login_list),
+    path("api/logins/revoke/", views.revoke_logins),
+    path("api/logins/<str:login_id>/revoke/", views.revoke_login),
 ]

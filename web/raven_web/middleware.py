@@ -1,7 +1,10 @@
 from django.conf import settings
 from django.core.exceptions import DisallowedHost
+from django.db import DatabaseError
 from django.http import HttpResponse, JsonResponse
 from django.template.loader import render_to_string
+
+from .logins import activity_due, record_activity
 
 
 def exact_host(request):
@@ -22,6 +25,23 @@ class ExactHostMiddleware:
             return JsonResponse({"error": "Invalid host", "code": "invalid_host"}, status=400)
         # A browser opened another address; name the configured one without echoing the request's Host.
         return HttpResponse(render_to_string("wrong_host.html", {"origin": settings.ORIGIN}), status=400)
+
+
+class LoginActivityMiddleware:
+    """Record a logged-in request as its login's last activity, at most once per ACTIVITY_INTERVAL."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        # After the view: a logout or revocation in this request leaves nothing to record.
+        if request.user.is_authenticated and activity_due(request.session):
+            try:
+                record_activity(request.session.session_key)
+            except DatabaseError:
+                pass  # Last activity is bookkeeping: a busy database must not fail the request.
+        return response
 
 
 class SecurityHeadersMiddleware:

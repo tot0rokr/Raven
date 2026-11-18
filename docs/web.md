@@ -293,6 +293,10 @@ API의 오류 응답은 `error` 문장과 함께 고정된 `code`를 준다: `au
   - 화면을 보는 중에 다른 곳(CLI, 다른 탭)에서 멈추면 화면에 `이어하고 연결`이 뜬다. 멈춘 세션의 연결 요청은 거절(409 `session_paused`)하고 같은 안내를 보인다.
   - 일시정지·이어하기 요청도 고유 컨테이너 ID를 검사한다. `파일`은 호스트 폴더라서 멈춘 동안에도 쓴다.
 - 머리글의 `인증서`로 지금 인증서의 이름, 유효 기간, SHA-256을 보고 공개 인증서를 받는다([인증서 확인과 교체](#인증서-확인과-교체)). 만료 30일 전부터 세션 목록 위에 갱신 안내가 뜬다.
+- 머리글의 `로그인 기기`로 이 계정에 로그인한 브라우저를 본다. 브라우저·OS, `이 기기` 표시, 로그인 시각, 마지막 활동, 만료 시각, 지금 열린 화면 연결 수가 나온다. 줄마다 `해제`가 있고, `다른 기기 모두 해제`와 `모두 해제(이 기기 포함)`도 있다. 이 기기가 포함된 해제는 한 번 더 확인한다.
+  - 해제된 로그인의 화면 연결은 바로 닫히고, 그 브라우저는 다음 요청에서 로그인 화면으로 간다.
+  - 이 기기를 해제하면 화면을 끊고(다시 연결하지 않음) 클립보드 칸을 비운 뒤 로그인 화면으로 간다.
+  - 주소는 SSH 터널 뒤라서 실제 PC 주소가 아니므로 기록하지 않는다. 브라우저·OS 종류와 기기 구분만 기록하고 버전이나 User-Agent 원문은 남기지 않는다. 이 기록은 그 로그인 세션에만 있어서 로그아웃·해제·만료와 함께 지워진다.
 - 세션 목록으로 돌아가면 해당 화면 연결만 끊는다. 로그아웃하면 같은 로그인 세션으로 연 다른 탭의 화면 연결도 닫는다.
 - 새 세션에서 이름, 창 관리자, 초기 해상도, 시작 명령을 정한다. 생성이 끝나면 화면에 연결한다. 이름은 영문자로 시작하는 64자 이하의 영문·숫자·`_`·`.`·`-` 조합이다.
 - 이름 변경은 실행 중인 앱에 영향을 주지 않는다. 명령 실행은 선택한 세션 컨테이너 안에서 shell 명령을 시작한다. 명령은 4096자 이하이며 호스트 직접 실행 옵션은 제공하지 않는다.
@@ -324,9 +328,14 @@ raven web start --listen 0.0.0.0 --port 8443
 raven web status
 raven web doctor
 raven web password --username junho
+raven web logins                       # 브라우저 로그인 목록
+raven web logins revoke 6ed84413faa83ba1
+raven web logins revoke --all
 raven web stop
 raven web start
 ```
+
+- `logins`는 이 계정의 살아 있는 브라우저 로그인을 ID, 브라우저·OS, 기기(desktop/mobile), 로그인 시각, 마지막 활동, 만료 시각으로 보인다. 잃어버린 휴대폰처럼 브라우저로 끊을 수 없을 때 `revoke ID`나 `revoke --all`로 해제한다. 실행 중인 게이트웨이는 해제된 로그인의 화면 연결을 2초 안에 닫는다.
 
 - 비밀번호를 바꾸면 기존 웹 로그인은 모두 무효화되고 열린 화면은 2초 이내에 닫힌다.
 - `stop`은 웹 컨테이너와 웹 중계만 중지한다. 데스크톱 세션과 기존 호스트 앱 중계는 계속 실행된다.
@@ -363,7 +372,8 @@ raven web disable         # unit을 지운다. 실행 중인 게이트웨이는 
 ## 접근 경계
 
 - 웹 로그인은 Argon2id password hash를 사용한다. 전체 서비스에서 로그인 시도 5회마다 마지막 시도부터 1분 동안 추가 시도를 차단한다. 차단 응답은 남은 대기 시간을 알려 주며, 대기 중 재요청해도 차단 시간을 연장하지 않는다.
-- 로그인 cookie는 `Secure`, `HttpOnly`, `SameSite=Strict`다. 로그인은 8시간 뒤 만료되며 HTTP API와 WebSocket에 모두 적용된다.
+- 로그인 cookie는 `Secure`, `HttpOnly`, `SameSite=Strict`다. 로그인은 로그인한 때부터 8시간 뒤 만료되며(활동해도 늘어나지 않는다) HTTP API와 WebSocket에 모두 적용된다.
+- 로그인 목록(`GET /api/logins/`)은 무작위 ID(16자리 hex)와 브라우저·OS 계열, 기기 구분, 로그인·마지막 활동·만료 시각, 현재 기기 여부, 열린 화면 연결 수만 돌려준다. 세션 key, cookie, CSRF 값은 넣지 않는다. 마지막 활동은 HTTP 요청과 화면 연결 때 1분에 한 번까지만 기록한다. 해제(`POST /api/logins/<id>/revoke/`, `POST /api/logins/revoke/`의 `others`·`all`)에는 CSRF 검사를 하고, 해제한 세션의 WebSocket을 바로 닫는다. 이 기능 이전에 만든 로그인은 브라우저 정보 없이 보이며 세션 key에서 만든 HMAC 일부를 ID로 쓴다.
 - 생성·이름 변경·삭제·명령 실행을 포함해 상태를 바꾸는 HTTP 요청에는 로그인과 CSRF 검사를 적용한다. JSON 필드와 입력값을 검증하고, 기존 세션 변경에는 고유 컨테이너 ID의 일치를 요구한다. 삭제 API는 대상 번호의 명시적 확인도 요구한다. WebSocket은 정확한 HTTPS origin, Host, 로그인 세션을 확인한 뒤 중계에 연결한다. 로그아웃하면 이미 열린 연결도 닫는다.
 - `Referrer-Policy: same-origin`으로 같은 사이트의 로그인·로그아웃 폼에 출처 정보를 유지한다. 외부 사이트에는 Referer를 보내지 않는다. `no-referrer`는 브라우저 폼의 Origin을 `null`로 만들어 CSRF 검사와 충돌하므로 사용하지 않는다.
 - 웹 컨테이너는 호스트 사용자의 UID로 실행하지만 별도 network namespace를 사용한다. Docker socket과 호스트 홈을 mount하지 않고 capability를 제거하며 root filesystem을 읽기 전용으로 둔다.
@@ -412,6 +422,7 @@ python3 tests/web_files_ui.py
 python3 tests/web_files_e2e.py
 python3 tests/web_pause_e2e.py
 python3 tests/web_certificate_e2e.py
+python3 tests/web_logins_e2e.py
 python3 tests/pause_e2e.py
 python3 tests/web_e2e.py
 ```
@@ -425,6 +436,8 @@ doctor 통합 시험은 정상 설치, 적용 대기 설정, 다음 시작 포�
 클립보드 통합 시험은 세션 이미지에 `xclip`만 더한 시험 이미지(`raven:clipboard-test`)로 데스크톱 두 개를 만들고 각각에 브라우저 뷰어를 붙인다. 뷰어 A에서 보낸 한글·여러 줄·탭 텍스트가 데스크톱 1의 CLIPBOARD와 PRIMARY에 그대로 들어가고 데스크톱 2에는 가지 않는지, 데스크톱 2에서 `xclip`으로 복사한 텍스트가 뷰어 B에만 나타나는지 확인한다. 이어서 PC 클립보드 가져오기·복사, 256KiB 한도(세션 클립보드가 바뀌지 않음), 세션 목록으로 돌아갈 때 비우기, 권한이 없는 브라우저의 안내와 모바일 배치를 확인하고, 게이트웨이 로그에 텍스트와 비밀번호가 없는지 본다. Xvnc는 한 뷰어가 보낸 클립보드를 다른 VNC 뷰어에 다시 보내지 않으므로, 세션 안의 X 앱(여기서는 `xclip`)을 거쳐 확인한다.
 
 파일 화면 시험(`web_files_ui.py`)은 실제 template·JavaScript·CSS와 메모리 안의 가짜 파일 API로 PC와 휴대폰 크기에서 대화상자 열기, 경로 이동, 여러 조각 업로드의 sha256, 진행률, 취소, 덮어쓰기 선택, 오류 문구, 대화상자를 닫은 뒤의 업로드, 페이지 이탈 경고를 검사한다. 파일 통합 시험(`web_files_e2e.py`)은 임시 HOME의 실제 게이트웨이·중계와 openbox 시험 세션을 쓴다. 브라우저의 로그인 cookie로 파일 API를 불러 여러 조각의 한글 이름 파일과 하위 폴더 업로드를 세션 안의 sha256으로, 세션이 만든 파일의 다운로드를 브라우저 쪽 sha256으로 맞춘다. 올린 파일의 권한·그룹, 취소 뒤 임시 파일, 덮어쓰기 거절과 동의, 올리는 중 같은 이름이 생긴 경우, 실제 대화상자의 파일 선택과 다운로드 링크, 세션이 심은 symlink·`..`·절대 경로·막힌 파일·FIFO·크기 초과·비로그인·CSRF 거절도 확인한다. Downloads는 임시 HOME 아래라서 사용자의 파일을 건드리지 않는다.
+
+로그인 기기 통합 시험(`web_logins_e2e.py`)은 격리한 instance와 시험 데스크톱에 브라우저 두 개(A, B)로 로그인해 같은 화면을 연다. A의 목록에 둘과 현재 기기·화면 연결 수가 보이는지, A가 B를 해제하면 B의 WebSocket이 닫히고 B의 API가 401·로그인 화면이 되며 A 화면은 그대로인지, CLI `logins`와 `logins revoke`, `모두 해제` 뒤 저장해 둔 두 cookie가 API·WebSocket에서 거절되는지, `raven web password` 뒤 기존 cookie·WebSocket이 거절되는지, 로그와 응답에 cookie·비밀번호가 없는지 본다.
 
 인증서 통합 시험(`web_certificate_e2e.py`)은 격리한 instance에서 `info`, 터미널 없이 `-y` 없는 교체 거절, `renew --name`(같은 컨테이너, 새 인증서로 HTTPS 로그인과 시험 데스크톱 WebSocket, 이전 인증서 거절), CA가 발급한 leaf+중간 인증서 체인 `import`(root만 신뢰하고 로그인·WebSocket), 맞지 않는 키·다른 hostname·만료 인증서 거절(tls 파일 hash, 백업, 게이트웨이 컨테이너 ID·시작 시각 불변), HTTPS에서 쓸 수 없는 인증서의 되돌리기, 포트만 바꾼 `configure`와 stop·start 뒤 같은 인증서, 백업 권한, 계정·`secret.key`·데스크톱 유지, systemd unit이 관리하는 상태의 교체(MainPID 불변), 게이트웨이 로그·broker.log·journal·CLI 출력·API 응답에 `PRIVATE KEY`와 키 내용이 없음을 확인한다.
 

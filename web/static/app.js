@@ -29,6 +29,9 @@ const STATE_NAMES = { running: "실행 중", exited: "중지됨", created: "시�
 const PAUSED_STATUS = "일시정지됨";
 const PAUSE_HELP_KEY = "raven.pause-help-seen";
 const REQUEST_NETWORK_ERROR = "서버에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.";
+const CERTIFICATE_WARNING_DAYS = 30;
+const CERTIFICATE_RENEW = "raven web certificate renew";
+const CERTIFICATE_UNAVAILABLE = "인증서 정보를 불러오지 못했습니다. 서버에서 raven web certificate info로 확인해 주세요.";
 
 async function loadViewerModule() {
   let timer;
@@ -69,6 +72,9 @@ let pauseAttempt = null;
 let pauseHelpSeen = false;
 let pauseHelpSession = null;
 let pendingFocus = null;
+// The latest good answer from the certificate API, and the request whose answer counts.
+let certificateInfo = null;
+let certificateRequest = 0;
 
 function notice(id, message) {
   const target = element(id);
@@ -768,6 +774,117 @@ function clearEndedUploads() {
   element("files-upload").focus();
 }
 
+function parseInstant(text) {
+  const time = typeof text === "string" ? Date.parse(text) : NaN;
+  return Number.isNaN(time) ? null : time;
+}
+
+function validCertificate(data) {
+  return Boolean(data) && Array.isArray(data.names) && data.names.every((name) => typeof name === "string")
+    && Number.isInteger(data.days_left) && typeof data.fingerprint === "string" && data.fingerprint !== ""
+    && typeof data.origin_covered === "boolean"
+    && parseInstant(data.not_before) !== null && parseInstant(data.not_after) !== null;
+}
+
+// days_left counts whole days, so 0 is the last day; its end time decides whether that day is already over.
+function certificateLevel(data) {
+  if (data.days_left < 0 || (data.days_left === 0 && parseInstant(data.not_after) <= Date.now())) return "expired";
+  return data.days_left < CERTIFICATE_WARNING_DAYS ? "warn" : "ok";
+}
+
+function codeText(text) {
+  const code = document.createElement("code");
+  code.textContent = text;
+  return code;
+}
+
+function timeElement(text) {
+  const time = document.createElement("time");
+  time.dateTime = text;
+  time.title = text;
+  time.textContent = formatTime(parseInstant(text) / 1000);
+  return time;
+}
+
+function renderCertificateNotice() {
+  const data = certificateInfo;
+  const level = data ? certificateLevel(data) : "ok";
+  const box = element("certificate-notice");
+  box.hidden = level === "ok";
+  if (level === "ok") return;
+  const end = formatTime(parseInstant(data.not_after) / 1000);
+  const date = end.slice(0, 10);
+  let lead = `HTTPS 인증서가 ${data.days_left}일 뒤(${date}) 만료됩니다.`;
+  if (level === "expired") lead = `HTTPS 인증서가 ${date}에 만료되었습니다.`;
+  else if (data.days_left === 0) lead = `HTTPS 인증서가 하루 안에(${end}) 만료됩니다.`;
+  element("certificate-notice-text").replaceChildren(
+    `${lead} 서버에서 `, codeText(CERTIFICATE_RENEW), "로 갱신하고 PC의 신뢰 등록을 새로 하세요.",
+  );
+  box.classList.toggle("notice-error", level === "expired");
+  box.classList.toggle("notice-warning", level === "warn");
+}
+
+function renderCertificate() {
+  const data = certificateInfo;
+  element("certificate-details").hidden = !data;
+  if (!data) return;
+  const names = data.names.map((name) => {
+    const item = document.createElement("span");
+    item.className = "certificate-name";
+    item.textContent = name;
+    return item;
+  });
+  element("certificate-names").replaceChildren(...(names.length ? names : ["이름 없음"]));
+  element("certificate-validity").replaceChildren(timeElement(data.not_before), " – ", timeElement(data.not_after));
+  const level = certificateLevel(data);
+  const days = element("certificate-days");
+  days.dataset.level = level;
+  days.textContent = `${data.days_left}일 남음`;
+  if (level === "expired") days.textContent = "만료됨";
+  else if (data.days_left === 0) days.textContent = "하루 안에 만료";
+  // Break the fingerprint only between bytes; copying it still gives the plain AA:BB:… text.
+  const fingerprint = [];
+  data.fingerprint.split(":").forEach((part, index) => {
+    if (index) fingerprint.push(":", document.createElement("wbr"));
+    fingerprint.push(part);
+  });
+  element("certificate-fingerprint").replaceChildren(...fingerprint);
+  const covered = document.createElement("span");
+  covered.className = data.origin_covered ? "certificate-covered" : "certificate-uncovered";
+  covered.textContent = data.origin_covered
+    ? "인증서 이름에 들어 있습니다."
+    : "설정된 주소의 이름이 인증서에 없습니다. 서버에서 raven web doctor로 확인해 주세요.";
+  element("certificate-origin").replaceChildren(codeText(window.location.origin), " ", covered);
+}
+
+// The page works without this answer; a failure only shows a quiet line in the dialog.
+async function loadCertificate() {
+  const request = ++certificateRequest;
+  const details = element("certificate-details");
+  if (details.hidden) element("certificate-status").textContent = "인증서 정보를 불러오는 중…";
+  try {
+    const data = await api("/api/certificate/");
+    if (request !== certificateRequest) return;
+    if (!validCertificate(data)) throw new Error("unexpected certificate answer");
+    certificateInfo = data;
+  } catch {
+    if (request !== certificateRequest || leavingForLogin) return;
+    // The dialog shows only what the latest request returned; the notice keeps the last good answer.
+    details.hidden = true;
+    element("certificate-status").textContent = CERTIFICATE_UNAVAILABLE;
+    return;
+  }
+  element("certificate-status").textContent = "";
+  renderCertificate();
+  renderCertificateNotice();
+}
+
+function openCertificate() {
+  const dialog = element("certificate-dialog");
+  if (!dialog.open) dialog.showModal();
+  loadCertificate();
+}
+
 function clearReconnectTimers() {
   clearTimeout(reconnectTimer);
   clearInterval(countdownTimer);
@@ -1116,6 +1233,11 @@ element("files-clear-uploads").addEventListener("click", clearEndedUploads);
 element("files-dialog").addEventListener("close", () => {
   if (!viewer.hidden && connection) connection.focus();
 });
+element("certificate-open").addEventListener("click", openCertificate);
+element("certificate-notice-open").addEventListener("click", openCertificate);
+// The gateway names the download raven-<origin hostname>.crt, other characters as "_"; the guide's command matches.
+const certificateHost = window.location.hostname.replace(/^\[|\]$/g, "").replace(/[^A-Za-z0-9.-]/g, "_");
+for (const node of document.querySelectorAll(".certificate-file")) node.textContent = `raven-${certificateHost}.crt`;
 element("clipboard-send").addEventListener("click", sendClipboard);
 element("clipboard-read").addEventListener("click", readPcClipboard);
 element("clipboard-copy").addEventListener("click", copyToPc);
@@ -1148,3 +1270,4 @@ window.addEventListener("pageshow", (event) => {
   if (event.persisted) window.location.reload();
 });
 refreshSessions();
+loadCertificate();

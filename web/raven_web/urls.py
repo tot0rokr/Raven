@@ -18,4 +18,6 @@ urlpatterns = [
     path("api/files/uploads/<str:token>/", views.upload),
     path("api/files/uploads/<str:token>/finish/", views.finish_upload),
     path("api/files/download/", views.download),
+    path("api/certificate/", views.certificate),
+    path("api/certificate/download/", views.certificate_download),
 ]

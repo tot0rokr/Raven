@@ -15,6 +15,10 @@ IMPORT_TIMEOUT_MS = 5000
 VIEWER_TIMEOUT_MS = 10000
 MODES = ("normal", "missing_api", "rejected_support", "hanging_flush", "rejected_flush", "late_support", "successful_decode")
 SOURCE = Path("/source")
+# The page asks for the certificate when it loads; one far from expiry shows no notice.
+CERTIFICATE = {"names": ["raven.test"], "not_before": "2025-12-01T00:00:00+00:00",
+               "not_after": "2026-12-01T00:00:00+00:00", "days_left": 300,
+               "fingerprint": ":".join(["5A"] * 32), "origin_covered": True}
 
 STUB = """
 mode => {
@@ -98,6 +102,8 @@ with sync_playwright() as playwright:
                 route.fulfill(json={"sessions": [{"id": "41", "name": "fixture-desktop", "state": "running",
                                                   "wm": "openbox", "geometry": "800x600", "command": "xterm",
                                                   "generation": "a" * 64}]})
+            elif path == "/api/certificate/":
+                route.fulfill(json=CERTIFICATE)
             elif path == "/favicon.ico":
                 route.fulfill(status=204)
             else:
@@ -147,7 +153,7 @@ with sync_playwright() as playwright:
         else:
             expect(page.locator("#session-count")).to_have_text("1", timeout=IMPORT_TIMEOUT_MS)
             assert len(api_requests) == 1 and not vendor_requests
-            assert len(app_requests) == 1 and urlparse(app_requests[0]).query == "v=6"
+            assert len(app_requests) == 1 and urlparse(app_requests[0]).query == "v=7"
             assert page.evaluate("window.decoderProbe.supportCalls === 0 && window.decoderProbe.created === 0")
             imported = page.evaluate("""async ({prefix, timeout}) => {
               const started = performance.now();

@@ -53,7 +53,8 @@ select { width: 100%; height: 44px; padding: 8px; background: #111619; border: 1
 .command-input { font-family: ui-monospace, "Cascadia Code", monospace; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .notice { padding: 12px 15px; border: 1px solid #70413e; border-radius: 7px; background: #30201f; color: #f6c0bb; font-size: 13px; overflow-wrap: anywhere; }
-.notice-paused { border-color: #5b5034; background: #24211a; color: #ecdcb4; }
+.notice-paused, .notice-warning { border-color: #5b5034; background: #24211a; color: #ecdcb4; }
+.link-button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 9px 15px; border: 1px solid transparent; border-radius: 7px; font-size: 13px; font-weight: 600; line-height: 1.35; text-decoration: none; white-space: nowrap; }
 label { font-size: 13px; font-weight: 550; }
 input:not([type="checkbox"]) { display: block; width: 100%; height: 44px; padding: 10px 12px; background: #111619; border: 1px solid #414a53; border-radius: 6px; color: #eef0f3; font-size: 14px; }
 .login-page { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 40px 20px; background: radial-gradient(ellipse at 50% 0%, #21322c 0, #141b19 34%, #111416 67%); }
@@ -128,6 +129,38 @@ input:not([type="checkbox"]) { display: block; width: 100%; height: 44px; paddin
 .clipboard-actions button { min-height: 32px; padding: 6px 11px; font-size: 12px; }
 .clipboard-status { grid-column: 1 / -1; margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
 .desktop { flex: 1; min-height: 0; min-width: 0; overflow: hidden; outline: none; }
+.certificate-notice { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.certificate-notice code { font: 12px ui-monospace, "Cascadia Code", monospace; color: inherit; white-space: nowrap; }
+.certificate-notice button { min-height: 32px; padding: 6px 11px; font-size: 12px; flex-shrink: 0; color: inherit; }
+.certificate-dialog { width: min(600px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 24px; }
+.certificate-dialog[open] { display: grid; gap: 16px; }
+.certificate-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.certificate-heading button { min-height: 34px; padding: 6px 11px; font-size: 12px; flex-shrink: 0; }
+.certificate-status { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.certificate-status:empty { display: none; }
+.certificate-facts { margin: 0; border: 1px solid var(--border); border-radius: 9px; background: #15191c; }
+.certificate-facts > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 2px 14px; padding: 11px 14px; border-bottom: 1px solid #252b30; }
+.certificate-facts > div:last-child { border-bottom: 0; }
+.certificate-facts dt { color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.8; }
+.certificate-facts dd { margin: 0; min-width: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.certificate-facts code { font: 13px/1.6 ui-monospace, "Cascadia Code", monospace; color: #eef0f3; }
+.certificate-names { display: flex; flex-wrap: wrap; gap: 6px; }
+.certificate-name { min-width: 0; padding: 0 7px; border: 1px solid #3b434a; border-radius: 4px; background: #1d2226; font: 12px/1.7 ui-monospace, "Cascadia Code", monospace; overflow-wrap: anywhere; }
+.certificate-facts time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.certificate-days { display: inline-block; margin-left: 4px; padding: 0 7px; border: 1px solid #3b434a; border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.7; white-space: nowrap; }
+.certificate-days[data-level="ok"] { color: #b6d8bc; border-color: #385b43; background: #203025; }
+.certificate-days[data-level="warn"] { color: var(--paused); border-color: #5b5034; background: #26231a; }
+.certificate-days[data-level="expired"] { color: #f6c0bb; border-color: #70413e; background: #30201f; }
+.certificate-facts .certificate-fingerprint { display: block; letter-spacing: .3px; overflow-wrap: anywhere; }
+.certificate-covered { color: var(--accent); }
+.certificate-uncovered { color: #f6c0bb; }
+.certificate-download { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.certificate-download p { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.certificate-guide { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+.certificate-guide h3 { font-size: 13px; color: #c4cbd3; }
+.certificate-guide ol { display: grid; gap: 8px; margin: 0; padding-left: 20px; color: #d3d8dd; font-size: 13px; line-height: 1.6; }
+.certificate-guide li::marker { color: var(--muted); }
+.certificate-guide code { padding: 1px 5px; border: 1px solid #30363b; border-radius: 4px; background: #111619; color: #f1f3f5; font: 12px ui-monospace, "Cascadia Code", monospace; overflow-wrap: anywhere; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .files-dialog { width: min(720px, calc(100vw - 32px)); max-width: calc(100vw - 32px); padding: 24px; }
 .files-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
 .files-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -200,6 +233,12 @@ a.file-name:hover { text-decoration: underline; text-underline-offset: 3px; }
   .workspace-heading { align-items: start; margin-bottom: 26px; gap: 18px; flex-direction: column; }
   h1 { font-size: 30px; }
   .workspace-heading .muted { max-width: 220px; }
+  .account-controls .button-quiet { padding-inline: 10px; }
+  .certificate-notice { flex-direction: column; align-items: start; padding: 10px 12px; }
+  .certificate-dialog { padding: 16px; }
+  .certificate-dialog[open] { gap: 12px; }
+  .certificate-facts > div { grid-template-columns: minmax(0, 1fr); padding: 9px 12px; }
+  .certificate-guide ol { font-size: 12px; }
   .session-card { padding: 18px; align-items: start; gap: 18px; grid-template-columns: minmax(0, 1fr); }
   .session-summary { width: 100%; }
   .session-actions { justify-content: flex-start; }

@@ -1,4 +1,4 @@
-"""Run management, reconnect and pause UI component checks with isolated Docker fixtures."""
+"""Run management, reconnect, pause and certificate UI component checks with isolated Docker fixtures."""
 
 import json
 import os
@@ -28,7 +28,7 @@ page = subprocess.run(
     capture_output=True, check=True, timeout=60,
 )
 print(f"UI artifacts: {output}", flush=True)
-for script in ("web_management_ui.py", "web_reconnect_ui.py", "web_pause_ui.py"):
+for script in ("web_management_ui.py", "web_reconnect_ui.py", "web_pause_ui.py", "web_certificate_ui.py"):
     subprocess.run(
         ["docker", "run", "--rm", "-i", "--init", "--network", "none", "--read-only",
          "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "256",

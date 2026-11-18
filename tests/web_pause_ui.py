@@ -17,6 +17,10 @@ from playwright.sync_api import Error as PlaywrightError, expect, sync_playwrigh
 ORIGIN = "https://raven.test"
 CSRF_TOKEN = "ui-fixture"
 SOURCE = Path("/source")
+# The page asks for the certificate when it loads; one far from expiry shows no notice.
+CERTIFICATE = {"names": ["raven.test"], "not_before": "2025-12-01T00:00:00+00:00",
+               "not_after": "2026-12-01T00:00:00+00:00", "days_left": 300,
+               "fingerprint": ":".join(["5A"] * 32), "origin_covered": True}
 IDLE_MS = 120_000
 CLOCK_START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 PHONE = {"width": 412, "height": 915}
@@ -141,6 +145,8 @@ class Desk:
             route.fulfill(content_type="text/javascript", body=RFB_FIXTURE)
         elif path == "/favicon.ico":
             route.fulfill(status=204)
+        elif path == "/api/certificate/" and request.method == "GET":
+            route.fulfill(json=CERTIFICATE)
         elif path == "/login/" and request.method == "GET":
             self.requests.append("GET /login/")
             route.fulfill(content_type="text/html", body="<!doctype html><title>login fixture</title>")
@@ -307,7 +313,7 @@ def expect_card(desk, name, state, stats, actions):
 
 
 def cards_show_state_and_stats(desk):
-    assert desk.static_queries == {"/static/app.js": "v=6", "/static/style.css": "v=6"}, desk.static_queries
+    assert desk.static_queries == {"/static/app.js": "v=7", "/static/style.css": "v=7"}, desk.static_queries
     expect_card(desk, "work", "실행 중", "메모리 1.2 GiB · CPU 3% · 보는 중 X11 1 · 웹 1", {"open", "pause", "run"})
     expect_card(desk, "frozen", "일시정지", "메모리 2.0 GiB 유지 중 · 서버를 재부팅하면 사라집니다", {"resume"})
     expect_card(desk, "stopped", "중지됨", None, {"open", "run"})

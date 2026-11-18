@@ -7,14 +7,15 @@
   <meta name="color-scheme" content="dark">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>워크스페이스 · Raven</title>
-  <link rel="stylesheet" href="{% static 'style.css' %}?v=6">
-  <script type="module" src="{% static 'app.js' %}?v=6"></script>
+  <link rel="stylesheet" href="{% static 'style.css' %}?v=7">
+  <script type="module" src="{% static 'app.js' %}?v=7"></script>
 </head>
 <body class="workspace-page">
   <header class="app-header">
     <a class="wordmark" href="/" aria-label="Raven 워크스페이스">raven<span class="wordmark-dot" aria-hidden="true"></span></a>
     <div class="account-controls">
       <span class="account-name">{{ username }}</span>
+      <button id="certificate-open" class="button-quiet" type="button" aria-haspopup="dialog">인증서</button>
       <form id="logout-form" method="post" action="/logout/">
         {% csrf_token %}
         <button class="button-quiet" type="submit">로그아웃</button>
@@ -22,6 +23,10 @@
     </div>
   </header>
   <main id="workspace" class="workspace">
+    <div id="certificate-notice" class="notice notice-warning certificate-notice" role="status" hidden>
+      <p id="certificate-notice-text"></p>
+      <button id="certificate-notice-open" class="button-quiet" type="button" aria-haspopup="dialog">인증서 정보</button>
+    </div>
     <div class="workspace-heading">
       <div>
         <p class="eyebrow">YOUR WORKSPACE</p>
@@ -162,6 +167,31 @@
       <p class="upload-destination"></p>
     </li>
   </template>
+  <dialog id="certificate-dialog" class="certificate-dialog" aria-labelledby="certificate-title">
+    <div class="certificate-heading">
+      <h2 id="certificate-title">HTTPS 인증서</h2>
+      <button type="button" class="button-quiet" data-close-dialog>닫기</button>
+    </div>
+    <p id="certificate-status" class="certificate-status" role="status"></p>
+    <dl id="certificate-details" class="certificate-facts" hidden>
+      <div><dt>이름</dt><dd id="certificate-names" class="certificate-names"></dd></div>
+      <div><dt>유효 기간</dt><dd><span id="certificate-validity"></span> <span id="certificate-days" class="certificate-days"></span></dd></div>
+      <div><dt>SHA-256</dt><dd><code id="certificate-fingerprint" class="certificate-fingerprint"></code></dd></div>
+      <div><dt>접속 주소</dt><dd id="certificate-origin"></dd></div>
+    </dl>
+    <div class="certificate-download">
+      <a id="certificate-download" class="button-primary link-button" href="/api/certificate/download/" download>인증서 받기</a>
+      <p>공개 인증서 파일입니다. 개인 키는 서버 밖으로 나가지 않습니다.</p>
+    </div>
+    <section class="certificate-guide" aria-labelledby="certificate-guide-title">
+      <h3 id="certificate-guide-title">PC에서 신뢰하기</h3>
+      <ol>
+        <li>처음 신뢰할 때는 이 화면의 값이 아니라, 서버에 SSH로 접속해 <code>raven web certificate info</code>로 본 SHA-256과 받은 파일이 같은지 확인한 뒤 등록하세요. 신뢰하기 전의 HTTPS 연결은 중간에서 가로챌 수 있어서, 이 화면과 받은 파일만 믿으면 바꿔친 인증서를 믿게 될 수 있습니다.</li>
+        <li>Windows에서는 <code>certutil -user -addstore Root <span class="certificate-file">raven-localhost.crt</span></code>로 현재 사용자의 신뢰 저장소에 등록하고, 브라우저를 완전히 닫았다가 다시 엽니다. 받은 파일의 SHA-256을 PC에서 계산하는 방법과 전체 절차는 문서 docs/web.md의 「Windows에서 인증서 신뢰」에 있습니다.</li>
+        <li>갱신은 서버에서 <code>raven web certificate renew</code>로 합니다. 인증서가 바뀌므로 그 뒤 PC마다 새 인증서를 받아 다시 등록하세요.</li>
+      </ol>
+    </section>
+  </dialog>
   <dialog id="create-dialog" aria-labelledby="create-title">
     <form id="create-form" class="stack-form dialog-form">
       <div class="dialog-heading"><h2 id="create-title">새 세션</h2></div>

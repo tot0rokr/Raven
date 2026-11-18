@@ -7,7 +7,7 @@ from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import RequestDataTooBig
-from django.http import JsonResponse, StreamingHttpResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.middleware import csrf
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -16,6 +16,7 @@ from django.views.decorators.http import require_http_methods
 
 from . import broker
 from .consumers import revoke_session
+from .service_config import certificate_info, public_certificate
 from .throttle import login_retry_after
 from .validation import (
     CHUNK_SIZE, SESSION_ID, UPLOAD_TOKEN, FileRequestError, file_name, file_path, overwrite_flag, session_command,
@@ -295,4 +296,36 @@ async def download(request):
     response["Content-Length"] = str(size)
     response["Content-Disposition"] = attachment(path.rsplit("/", 1)[-1])
     response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def served_certificate():
+    """The chain in /data/tls.crt, the file uvicorn loaded at startup; raises OSError or ValueError."""
+    return (settings.STATE_DIR / "tls.crt").read_bytes().decode("ascii")
+
+
+def certificate_unavailable():
+    return error_response("certificate_unavailable", "The HTTPS certificate cannot be read; run raven web doctor "
+                          "on the server", 500)
+
+
+@api_view(["GET"])
+def certificate(request):
+    try:
+        info = certificate_info(served_certificate(), settings.ORIGIN_PARTS.hostname)
+    except (OSError, ValueError):
+        return certificate_unavailable()
+    return JsonResponse(info)
+
+
+@api_view(["GET"])
+def certificate_download(request):
+    # Only re-encoded certificates leave: a private key appended to tls.crt by hand is never served.
+    try:
+        chain = public_certificate(served_certificate())
+    except (OSError, ValueError):
+        return certificate_unavailable()
+    hostname = re.sub(r"[^A-Za-z0-9.-]", "_", settings.ORIGIN_PARTS.hostname)
+    response = HttpResponse(chain.encode("ascii"), content_type="application/x-x509-ca-cert")
+    response["Content-Disposition"] = f'attachment; filename="raven-{hostname}.crt"'
     return response

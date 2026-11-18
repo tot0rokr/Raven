@@ -38,6 +38,10 @@ LABEL = "raven.web.uid"
 START_TIMEOUT = 15
 PROBE_TIMEOUT = 5
 CERTIFICATE_WARNING_DAYS = 30
+CERTIFICATE_MAX_DAYS = 825
+MAX_PEM_FILE = 128 * 1024
+TRUST_GUIDE = "docs/web.md, trusting the certificate on Windows"
+WRITE_ACTIONS = ("write", "certificate-apply", "certificate-restore")
 GATEWAY_BROKER = "/run/raven/broker.sock"
 LABEL_WIDTH = 9
 ITEM_WIDTH = 16
@@ -152,16 +156,21 @@ def container_args(readonly=False):
             f"type=volume,src={VOLUME},dst=/data" + (",readonly" if readonly else "")]
 
 
-def configuration(action="read", config=None, revision=None):
-    payload = None if config is None else json.dumps({"config": config, "revision": revision})
+def helper(action, payload=None):
+    """Run one service_config.py action in a networkless helper container; a payload travels on stdin only."""
     result = docker("run", "--rm", "-i", "--pull", "never", "--network", "none",
-                    *container_args(readonly=action != "write"), "--mount",
+                    *container_args(readonly=action not in WRITE_ACTIONS), "--mount",
                     f"type=bind,src={SOURCE / 'web/raven_web/service_config.py'},dst=/app/raven_config.py,readonly",
-                    IMAGE, "python", "/app/raven_config.py", action, input=payload)
+                    IMAGE, "python", "/app/raven_config.py", action,
+                    input=None if payload is None else json.dumps(payload))
     result = json.loads(result.stdout)
     if result.get("warning"):
         print(f"raven web: {result['warning']}", file=sys.stderr)
     return result
+
+
+def configuration(action="read", config=None, revision=None):
+    return helper(action, None if config is None else {"config": config, "revision": revision})
 
 
 def binding(current):
@@ -238,10 +247,17 @@ def probe_host(listen):
     return ("::1" if address.version == 6 else "127.0.0.1") if address.is_unspecified else str(address)
 
 
+def trusting(certificate):
+    """A TLS client context that trusts this PEM chain, its server certificate included, as a PC that registered it."""
+    context = ssl.create_default_context(cadata=certificate)
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return context
+
+
 def wait_for_https(config, certificate):
     origin = urlsplit(config["origin"])
     host = probe_host(config["listen"])
-    context = ssl.create_default_context(cadata=certificate)
+    context = trusting(certificate)
     deadline = time.monotonic() + START_TIMEOUT
     detail = "no response"
     while time.monotonic() < deadline:
@@ -621,9 +637,12 @@ def status():
         term.row("Next", "raven web init --username NAME", wrap=False)
         return
     try:
-        saved, problem = configuration()["config"], None
-    except RequestError as error:
-        saved, problem = None, str(error)
+        data, problem = helper("inspect"), None
+    except (RequestError, ValueError) as error:
+        data, problem = {}, str(error)
+    saved = data.get("config")
+    if saved is None and problem is None:
+        problem = data.get("config_error", "config.json is unreadable")
     if running and broker:
         state, code = "running", GREEN
     elif running:
@@ -649,6 +668,7 @@ def status():
         published = binding(current)
         term.row("Listen", f"{published['listen']}:{published['port']} -> container 8443")
     term.row("Image", f"{current['Config']['Image']} {current['Image'][7:19]}" if current else IMAGE)
+    certificate_section(term, data)
     if problem:
         term.section("Settings", f"unavailable: {problem}", RED)
     elif saved is not None:
@@ -672,6 +692,47 @@ def status():
         term.row("", str(RUNTIME / "broker.log"), wrap=False)
     print()
     print(f"Problems? {term.paint('raven web doctor', BOLD)}")
+
+
+def certificate_dates(info, now=None):
+    """(not_before, not_after, days left, color, problem) of a certificate summary."""
+    now = now or datetime.now(timezone.utc)
+    not_before = datetime.fromisoformat(info["not_before"])
+    not_after = datetime.fromisoformat(info["not_after"])
+    days = (not_after - now).days
+    if now < not_before:
+        problem, code = f"not valid before {not_before:%Y-%m-%d %H:%M} UTC; check the server clock", RED
+    elif now >= not_after:
+        problem, code = f"expired on {not_after:%Y-%m-%d}", RED
+    elif days < CERTIFICATE_WARNING_DAYS:
+        problem, code = f"expires in {days} day{'' if days == 1 else 's'}", YELLOW
+    else:
+        problem, code = None, None
+    return not_before, not_after, days, code, problem
+
+
+def expiry(not_after, days):
+    if days < 0:
+        return f"{not_after:%Y-%m-%d} (expired)"
+    return f"{not_after:%Y-%m-%d} ({days} day{'' if days == 1 else 's'} left)"
+
+
+def certificate_section(term, data):
+    """The status Certificate section from an inspect result."""
+    if "certificate_info" not in data:
+        if "certificate_error" in data:
+            term.section("Certificate", f"unavailable: {data['certificate_error']}", RED)
+        return
+    info = data["certificate_info"]
+    _, not_after, days, code, problem = certificate_dates(info)
+    action = "check the server clock" if problem and "clock" in problem else "raven web certificate renew"
+    term.section("Certificate", f"{problem.split(';')[0]} -> {action}" if problem else None, code)
+    term.row("Names", ", ".join(info["san"]) or "none (no subject alternative names)")
+    term.row("Expires", expiry(not_after, days), code=code)
+    term.row("SHA-256", info["fingerprint"], wrap=False)
+    if info.get("origin_covered") is False:
+        origin = (data.get("config") or {}).get("origin", "the saved origin")
+        term.row("Origin", f"{origin} is not covered -> raven web certificate renew --name HOST", code=RED)
 
 
 def autostart_summary(unit):
@@ -871,7 +932,8 @@ def check_data(report):
             problems.append(f"{name} has mode {item['mode']:04o}, expected 0600")
     if problems:
         report.add("fail", "Data volume", "; ".join(problems),
-                   root_helper(["sh", "-c", f"chown -R {uid}:{gid} /data && chmod 700 /data && chmod 600 /data/*"]))
+                   root_helper(["sh", "-c", f"chown -R {uid}:{gid} /data && find /data -type d -exec chmod 700 {{}} + "
+                                "&& find /data -type f -exec chmod 600 {} +"]))
     else:
         report.add("ok", "Data volume", f"{VOLUME}, uid {uid}, mode 0700, all files present")
     return data
@@ -903,7 +965,7 @@ def check_certificate(report, data):
     now = datetime.now(timezone.utc)
     names = ", ".join(info["san"]) or "no SAN"
     days = (not_after - now).days
-    renewal = "renewal is not available yet (roadmap M8)"
+    renewal = "raven web certificate renew"
     if now < not_before:
         report.add("fail", "Certificate", f"{names}, not valid before {not_before:%Y-%m-%d %H:%M} UTC",
                    "check the server clock")
@@ -1017,7 +1079,7 @@ def check_gateway_broker(report):
 
 def https_probe(host, port, origin, certificate):
     """Return (status, problem) for GET /login/ as a browser on the configured origin would send it."""
-    context = ssl.create_default_context(cadata=certificate)
+    context = trusting(certificate)
     try:
         connection = socket.create_connection((host, port), timeout=PROBE_TIMEOUT)
     except OSError as error:
@@ -1113,6 +1175,188 @@ def doctor():
     return report.failed
 
 
+def certificate_helper(action, payload):
+    """A certificate helper action whose failure reads as the reason alone; no key material can be in it."""
+    try:
+        return helper(action, payload)
+    except RequestError as error:
+        raise RequestError(redact(str(error)).removeprefix("Raven configuration: ")) from None
+
+
+def show_certificate():
+    """raven web certificate info: read the certificate in the data volume; change nothing."""
+    require_data()
+    data = helper("inspect")
+    if "certificate_info" not in data:
+        raise RequestError(f"Cannot read tls.crt: {data.get('certificate_error', 'unknown error')}")
+    info = data["certificate_info"]
+    not_before, not_after, days, code, problem = certificate_dates(info)
+    term = Terminal()
+    print(term.paint("HTTPS certificate", BOLD) + f" ({VOLUME}:/data/tls.crt)")
+    term.row("Names", ", ".join(info["san"]) or "none (no subject alternative names)")
+    term.row("Valid", f"{not_before:%Y-%m-%d %H:%M} to {not_after:%Y-%m-%d %H:%M} UTC")
+    text = expiry(not_after, days)
+    if problem:
+        text += " -> check the server clock" if "clock" in problem else " -> raven web certificate renew"
+    term.row("Expires", text, code=code)
+    term.row("SHA-256", info["fingerprint"], wrap=False)
+    origin = (data.get("config") or {}).get("origin")
+    if origin and info.get("origin_covered") is not None:
+        if info["origin_covered"]:
+            term.row("Origin", f"{origin} is covered")
+        else:
+            term.row("Origin", f"{origin} is not covered -> raven web certificate renew --name HOST", code=RED)
+    term.row("Issuer", issuer(info))
+    print()
+    term.write("", "Trust: on each PC, register the output of raven web certificate after checking that its SHA-256 "
+               f"matches the one above ({TRUST_GUIDE}).", 0)
+
+
+def issuer(info):
+    chain = info.get("chain", 1)
+    text = "self-signed" if info.get("self_signed") else "issued by a CA"
+    return text + (f", chain of {chain} certificates" if chain > 1 else "")
+
+
+def read_pem(path, label):
+    """The text of a small PEM file; its content never appears in a message."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as error:
+        raise RequestError(f"Cannot read {label} {path}: {error.strerror}") from None
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(descriptor)
+        raise RequestError(f"{label} {path} is not a regular file")
+    with os.fdopen(descriptor, "rb") as source:
+        data = source.read(MAX_PEM_FILE + 1)
+    if len(data) > MAX_PEM_FILE:
+        raise RequestError(f"{label} {path} is larger than {MAX_PEM_FILE // 1024} KiB, too large for a PEM file")
+    if not data.isascii():
+        raise RequestError(f"{label} {path} is not a PEM file: it holds binary data (DER needs converting to PEM)")
+    return data.decode("ascii"), info
+
+
+def certificate_request(args):
+    if args.certificate_action == "renew":
+        if not 1 <= args.days <= CERTIFICATE_MAX_DAYS:
+            raise RequestError(f"--days must be from 1 to {CERTIFICATE_MAX_DAYS}")
+        return {"mode": "renew", "names": args.name, "days": args.days}
+    certificate, _ = read_pem(args.certificate, "CERT")
+    key, info = read_pem(args.key, "KEY")
+    if stat.S_IMODE(info.st_mode) & 0o044:
+        print(f"raven web: warning: KEY {args.key} is readable by other users (mode {stat.S_IMODE(info.st_mode):04o}); "
+              f"chmod 600 {shlex.quote(str(args.key))}", file=sys.stderr)
+    return {"mode": "import", "certificate": certificate, "key": key}
+
+
+def running_origins(current):
+    """The origin a running gateway serves, when it differs from the saved one it must stay covered too."""
+    snapshot = origin_snapshot(current) if current and current["State"]["Running"] else None
+    return [snapshot] if snapshot else []
+
+
+def confirm_replacement(check):
+    info = check["info"]
+    term = Terminal()
+    not_after = datetime.fromisoformat(info["not_after"])
+    print(term.paint("Replace the HTTPS certificate of " + NAME, BOLD))
+    term.row("Names", ", ".join(info["san"]))
+    if "days" in info:
+        term.row("Expires", f"{not_after:%Y-%m-%d} (valid for {info['days']} day{'' if info['days'] == 1 else 's'})")
+    else:
+        term.row("Expires", expiry(not_after, (not_after - datetime.now(timezone.utc)).days))
+    if "fingerprint" in info:
+        term.row("SHA-256", info["fingerprint"], wrap=False)
+    term.row("Key", info["key_type"])
+    term.row("Issuer", issuer(info))
+    print()
+    term.write("", "PCs that trust the current certificate will not trust the new one; register the new one on each "
+               f"PC afterwards ({TRUST_GUIDE}). The gateway restarts if it is running; the account, browser logins "
+               "and desktops stay.", 0)
+    try:
+        answer = input("Type yes to replace it: ")
+    except EOFError:
+        answer = ""
+    return answer.strip().lower() == "yes"
+
+
+def restart_gateway(config, certificate):
+    """Restart the gateway container in place, keeping its settings, and wait until HTTPS serves certificate."""
+    docker("container", "restart", "--time", "10", NAME)
+    wait_for_https(config, certificate)
+
+
+def roll_back(result, config, error):
+    print(f"raven web: the gateway did not serve the new certificate: {redact(str(error))}", file=sys.stderr)
+    backup = f"{VOLUME}:/data/{result['backup']}"
+    if not result["complete_backup"]:
+        print(f"raven web: {backup} has no complete previous pair to restore; run raven web doctor", file=sys.stderr)
+        return 1
+    try:
+        restored = certificate_helper("certificate-restore", {"backup": result["backup"].split("/", 1)[1]})
+        restart_gateway(config, restored["certificate"])
+    except (RequestError, OSError, ValueError, subprocess.TimeoutExpired) as failure:
+        print(f"raven web: restoring the previous certificate failed too: {redact(str(failure))}", file=sys.stderr)
+        print(f"raven web: the previous pair is in {backup}; run raven web doctor", file=sys.stderr)
+        return 1
+    print("raven web: restored the previous certificate; HTTPS answers with it again and nothing else changed",
+          file=sys.stderr)
+    return 1
+
+
+def replace_certificate(request):
+    """Back up, write, restart and verify, or put the previous pair back; run under manager_lock."""
+    current = inspect_owned("container", NAME)
+    running = bool(current and current["State"]["Running"] and not current["State"].get("Restarting"))
+    published = binding(current) if running else None
+    result = certificate_helper("certificate-apply", {**request, "origins": running_origins(current)})
+    for warning in result["warnings"]:
+        print(f"raven web: warning: {warning}", file=sys.stderr)
+    term = Terminal()
+    term.write("", f"Previous certificate saved: {VOLUME}:/data/{result['backup']}", 0, wrap=False)
+    if running:
+        config = {**published, "origin": running_origin(current, result["config"])}
+        try:
+            restart_gateway(config, result["certificate"])
+        except (RequestError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+            return roll_back(result, config, error)
+        term.write("", f"Gateway restarted; {config['origin']} answers with the new certificate.", 0)
+    elif current and current["State"]["Running"]:
+        term.write("", "The gateway keeps restarting after failures; it reads the new certificate when it starts. "
+                   "raven web doctor shows why it fails.", 0)
+    else:
+        term.write("", "The gateway is not running; raven web start will serve the new certificate.", 0)
+    info = result["info"]
+    _, not_after, days, code, _ = certificate_dates(info)
+    print()
+    print(term.paint("New certificate", BOLD))
+    term.row("Names", ", ".join(info["san"]))
+    term.row("Expires", expiry(not_after, days), code=code)
+    term.row("SHA-256", info["fingerprint"], wrap=False)
+    print()
+    term.write("", "Next: register the new certificate on each PC (raven web certificate; check that its SHA-256 "
+               f"matches the one above; {TRUST_GUIDE}). Until then browsers warn about it. The account, browser "
+               "logins and desktops are unchanged.", 0)
+    return 0
+
+
+def change_certificate(args):
+    """raven web certificate renew|import: validate, confirm, then replace under the manager lock."""
+    if not args.yes and not sys.stdin.isatty():
+        raise RequestError("Replacing the certificate needs confirmation: run it in a terminal, or add -y")
+    require_data()
+    request = certificate_request(args)
+    check = certificate_helper("certificate-check",
+                               {**request, "origins": running_origins(inspect_owned("container", NAME))})
+    for warning in check["warnings"]:
+        print(f"raven web: warning: {warning}", file=sys.stderr)
+    if not args.yes and not confirm_replacement(check):
+        raise RequestError("Cancelled; the certificate is unchanged")
+    with manager_lock():
+        return replace_certificate(request)
+
+
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
@@ -1136,7 +1380,22 @@ def arguments():
     commands.add_parser("serve", help="keep the gateway up and run the broker (used by the systemd unit)")
     change = commands.add_parser("password", help="change the account password and revoke logins")
     change.add_argument("--username", required=True)
-    commands.add_parser("certificate", help="print the public HTTPS certificate")
+    certificate = commands.add_parser("certificate", help="print the public HTTPS certificate; info, renew, import",
+                                      description="Without a subcommand, print the public HTTPS certificate chain.")
+    subcommands = certificate.add_subparsers(dest="certificate_action", metavar="{info,renew,import}")
+    subcommands.add_parser("info", help="show the names, validity and SHA-256 of the HTTPS certificate")
+    renew = subcommands.add_parser("renew", help="replace the certificate with a new self-signed one")
+    renew.add_argument("--name", action="append", default=[], metavar="NAME",
+                       help="another DNS name or IP address to cover besides the browser origin (repeatable)")
+    renew.add_argument("--days", type=int, default=365, help=f"validity in days, 1 to {CERTIFICATE_MAX_DAYS} "
+                       "(default 365)")
+    load = subcommands.add_parser("import", help="install a prepared certificate chain and its private key")
+    load.add_argument("certificate", metavar="CERT", type=Path,
+                      help="PEM certificate, server certificate first, then any intermediate certificates")
+    load.add_argument("key", metavar="KEY", type=Path, help="PEM private key without a passphrase")
+    for command in (renew, load):
+        command.add_argument("-y", "--yes", action="store_true",
+                             help="replace without asking; PCs must register the new certificate afterwards")
     return parser.parse_args()
 
 
@@ -1167,6 +1426,11 @@ def main():
     if args.action == "disable":
         disable()
         return
+    if args.action == "certificate" and args.certificate_action == "info":
+        show_certificate()
+        return
+    if args.action == "certificate" and args.certificate_action:
+        return change_certificate(args)
     managed = args.action == "start" and (autostart() or {}).get("enabled", False)
     with manager_lock():
         if args.action == "init":

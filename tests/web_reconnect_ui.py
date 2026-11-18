@@ -12,6 +12,10 @@ from playwright.sync_api import Error as PlaywrightError, expect, sync_playwrigh
 ORIGIN = "https://raven.test"
 CSRF_TOKEN = "ui-fixture"
 SOURCE = Path("/source")
+# The page asks for the certificate when it loads; one far from expiry shows no notice.
+CERTIFICATE = {"names": ["raven.test"], "not_before": "2025-12-01T00:00:00+00:00",
+               "not_after": "2026-12-01T00:00:00+00:00", "days_left": 300,
+               "fingerprint": ":".join(["5A"] * 32), "origin_covered": True}
 GENERATION = "a" * 64
 DELAYS_MS = (1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000, 30000)
 MAX_ATTEMPTS = len(DELAYS_MS)
@@ -101,6 +105,8 @@ class Desk:
             route.fulfill(content_type="text/javascript", body=RFB_FIXTURE)
         elif path == "/favicon.ico":
             route.fulfill(status=204)
+        elif key == "GET /api/certificate/":
+            route.fulfill(json=CERTIFICATE)
         elif key == "GET /login/":
             self.requests.append(key)
             route.fulfill(content_type="text/html", body="<!doctype html><title>login fixture</title>")

@@ -11,13 +11,13 @@
 - [x] M5 — 세션 안의 파일 탐색기
 - [x] M6 — 웹 파일 패널과 업로드·다운로드
 - [x] M7 — 실행 상태를 유지하는 일시정지·이어하기
-- [ ] M8 — 인증서 상태·내보내기·갱신
+- [x] M8 — 인증서 상태·내보내기·갱신
 - [ ] M9 — 로그인 기기 목록과 접속 해제
 - [ ] M10 — 세션 홈·웹 설정 백업과 복원
 - [ ] M11 — 디스크 checkpoint 가능성 검증
 - [ ] M12 — 검증한 checkpoint의 저장·복원 기능
 
-현재: M7 완료. 다음 구현 대상은 M8이다.
+현재: M8 완료. 다음 구현 대상은 M9이다.
 
 ## 상태 보존의 의미
 
@@ -177,6 +177,13 @@
 - 잘못된 키, 다른 hostname, 만료 인증서를 기존 설정 변경 없이 거부한다.
 - 갱신·가져오기 후 HTTPS 로그인과 WebSocket이 동작하고 계정·데스크톱 데이터가 유지된다.
 - 실패 시 이전 설정으로 복구되고, 로그와 공개 응답에 개인 키가 없다.
+
+완료: 2026-11-18.
+
+- 구현: `raven web certificate info`·`renew [--name] [--days]`·`import CERT KEY`(맨 `certificate`는 공개 PEM 출력 그대로). 검증·생성·백업·적용은 네트워크 없는 도우미 컨테이너(`service_config.py`의 `certificate-check`·`certificate-apply`·`certificate-restore`)가 하고 키는 표준 입력으로만 넘긴다. 키 일치, 키 종류(RSA ≥ 2048, EC P-256/384), 유효 기간, origin hostname SAN, serverAuth를 적용 전에 검사한다. `/data/backups/tls-<UTC>/`에 백업(5개 유지) → 원자적 쓰기 → 게이트웨이 컨테이너 재시작(`docker restart`, 저장만 한 설정은 적용하지 않음) → 새 인증서로 HTTPS 확인, 실패하면 되돌리고 다시 확인한다. 터미널 확인이나 `-y` 없이는 바꾸지 않고 자동 갱신은 없다. `status`의 Certificate 절과 doctor의 30일 경고·`renew` 조치, 게이트웨이의 `GET /api/certificate/`·`download/`, 웹 머리글의 `인증서` 대화상자와 만료 알림.
+- 검증: [인증서 통합 시험](../tests/web_certificate_e2e.py)이 격리 instance에서 renew(`--name`)와 CA 체인 import 뒤 HTTPS 로그인·데스크톱 WebSocket, 맞지 않는 키·다른 hostname·만료 인증서 거절 시 파일·컨테이너 불변, HTTPS에 쓸 수 없는 인증서의 되돌리기, 포트만 바꾼 configure의 인증서 유지, 계정·데스크톱 유지, systemd 관리 상태의 교체, 로그·출력·API 응답에 개인 키 없음을 확인했다. 단위 시험(검증 규칙, 백업, 되돌리기, 확인 절차, API)과 가짜 API 화면 시험(`web_certificate_ui.py`)도 있다. 실제 Windows·Chrome에서 새 인증서를 다시 신뢰 등록하는 것은 시험하지 않았다.
+- 남은 제약: 확인 실패 시 게이트웨이 시작 제한 시간(15초)을 기다린 뒤 되돌린다. 재시작·확인 중 Ctrl-C는 되돌리지 않는다. 처음 신뢰는 SSH로 본 fingerprint를 기준으로 하며 웹에서 받은 파일만으로 신뢰하지 않게 안내한다.
+- 문서: [인증서 확인과 교체](./web.md#인증서-확인과-교체), [Windows에서 인증서 신뢰](./web.md#windows에서-인증서-신뢰).
 
 ## M9 — 로그인 기기 목록과 접속 해제
 

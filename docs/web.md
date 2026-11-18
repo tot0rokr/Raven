@@ -41,7 +41,7 @@ ssh -N -L 8443:127.0.0.1:8443 junho@server
 1. 신뢰하는 SSH 연결의 서버 셸에서 현재 인증서의 SHA-256 fingerprint를 확인한다. 인증서를 교체하면 값이 바뀌므로 이전에 복사해 둔 값 대신 현재 값을 확인한다.
 
    ```bash
-   raven web certificate | openssl x509 -noout -fingerprint -sha256
+   raven web certificate info      # SHA-256 줄
    ```
 
 2. 접속 PC의 PowerShell에서 공개 인증서를 가져온다. ASCII로 저장해 PowerShell 버전에 따른 텍스트 인코딩 차이를 피한다.
@@ -67,6 +67,34 @@ ssh -N -L 8443:127.0.0.1:8443 junho@server
 5. Chrome을 완전히 종료했다가 다시 열고 SSH 터널을 유지한 상태에서 `https://localhost:8443`으로 접속한다. `localhost`용 인증서는 서버 IP로 접속할 때의 주소 불일치를 해결하지 않는다.
 
 `-user`는 PC 전체가 아닌 현재 사용자의 인증서 저장소를 선택한다. Chrome은 이 저장소에 명시적으로 등록한 인증서를 신뢰 판단에 사용한다. [Microsoft certutil 설명](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/certutil#-addstore), [Chrome 신뢰 저장소 설명](https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/faq.md#how-does-the-chrome-certificate-verifier-integrate-with-platform-trust-stores-for-local-trust-decisions)을 참고한다.
+
+웹 화면 머리글의 `인증서`도 같은 이름, 유효 기간, SHA-256을 보이고 `인증서 받기`로 공개 인증서(`raven-<hostname>.crt`)를 내려받는다. 다만 아직 신뢰하지 않은 연결에서는 중간에서 바꿔친 인증서가 보일 수 있으므로, 처음 신뢰할 때는 위 1번처럼 SSH로 본 SHA-256과 비교한 뒤 등록한다.
+
+## 인증서 확인과 교체
+
+```bash
+raven web certificate                          # 공개 인증서(PEM, 체인 포함)를 출력한다
+raven web certificate info                     # 이름(SAN), 유효 기간, 남은 날, SHA-256, origin을 덮는지
+raven web certificate renew                    # 새 키와 self-signed 인증서로 바꾼다(365일)
+raven web certificate renew --name raven.example.test --days 400
+raven web certificate import server.crt server.key
+```
+
+- `renew`는 새 키로 self-signed 인증서를 만든다. 이름(SAN)은 저장된 origin의 hostname에 `--name`(DNS 이름이나 IP, 여러 번)을 더한 것이다. `--days`는 1–825일, 기본 365일이다.
+- `import`는 준비된 인증서(PEM, leaf 먼저 그다음 중간 인증서)와 암호 없는 키(PEM)를 가져온다. 인증서 파일에는 인증서만 있어야 한다. 키 파일이 그룹이나 다른 사용자에게 읽히면 경고한다.
+- 바꾸기 전에 확인한다. 하나라도 맞지 않으면 아무것도 바꾸지 않고 이유를 보인다.
+  - 키가 인증서와 맞는지
+  - 키 종류: RSA 2048비트 이상, EC P-256·P-384(Ed25519와 암호 걸린 키는 거절)
+  - 유효 기간: 이미 시작했고(서버 시계 5분 여유) 하루 넘게 남았는지. 30일 안에 끝나면 경고만 한다.
+  - 저장된 origin(실행 중인 origin이 다르면 그것도)의 hostname을 SAN이 정확히 덮는지. wildcard는 쓰지 않는다.
+  - extended key usage가 있으면 serverAuth를 포함하는지
+- 터미널에서는 새 인증서의 이름, 만료일, SHA-256을 보이고 `yes`를 입력받는다. 스크립트에서는 `-y`를 붙여야 하며, 없으면 거절한다. 만료가 다가와도 알아서 바꾸지 않는다.
+- 순서: 지금 인증서와 키를 데이터 volume의 `/data/backups/tls-<UTC 시각>/`에 백업(최근 5개 유지) → 새 쌍을 임시 파일로 쓰고 바꿔 넣음 → 게이트웨이 컨테이너를 다시 띄움 → 새 인증서로 HTTPS 응답 확인. 확인이 실패하면 이전 쌍을 되돌리고 게이트웨이를 다시 띄워 HTTPS를 확인한 뒤 종료 코드 1로 끝난다. 게이트웨이가 꺼져 있으면 파일만 바꾸고 다음 `raven web start`가 쓴다.
+- 게이트웨이만 다시 뜨므로 계정, 브라우저 로그인, 데스크톱, 저장했지만 아직 적용하지 않은 설정은 그대로다. 자동 기동(systemd)의 중계도 그대로 돈다.
+- 바꾼 뒤에는 PC마다 [Windows에서 인증서 신뢰](#windows에서-인증서-신뢰)를 새 인증서로 다시 한다. 그전까지 브라우저는 경고한다.
+- 개인 키(`/data/tls.key`)는 내보내지 않는다. 키는 도우미 컨테이너에 표준 입력으로만 넘기고 명령 인자, 환경 변수, 출력, 로그에 남기지 않는다. 가져온 인증서는 인증서만 다시 인코딩해 저장한다.
+- 포트만 바꾸는 `configure`는 인증서를 다시 만들지 않는다. 브라우저 주소의 hostname을 바꿀 때는 먼저 `renew --name 새이름`으로 새 이름을 덮게 한 뒤 `configure --origin`을 한다.
+- `raven web status`의 `Certificate` 절과 웹 화면은 만료 30일 전부터 경고하고, 만료되면 오류로 보인다.
 
 ## 접속 설정 저장
 
@@ -105,7 +133,7 @@ raven web start
 raven web status
 ```
 
-터널은 `127.0.0.1:10443:127.0.0.1:9444`를 연결하고 브라우저는 `https://localhost:10443`으로 연다. 포트만 바꾸면 기존 localhost 인증서를 계속 사용할 수 있다. hostname/IP는 현재 인증서의 SAN과 정확히 일치해야 하며 wildcard SAN은 지원하지 않는다. 인증서 교체는 M8의 범위다. `:08443`, 확장 IPv6, percent escape처럼 브라우저가 다른 주소로 정규화하는 표기는 거부한다. 기본 HTTPS 포트는 `:443`을 생략한다.
+터널은 `127.0.0.1:10443:127.0.0.1:9444`를 연결하고 브라우저는 `https://localhost:10443`으로 연다. 포트만 바꾸면 기존 localhost 인증서를 계속 사용할 수 있다. hostname/IP는 현재 인증서의 SAN과 정확히 일치해야 하며 wildcard SAN은 지원하지 않는다. 다른 hostname을 쓰려면 먼저 `raven web certificate renew --name 새이름`으로 인증서를 바꾼다([인증서 확인과 교체](#인증서-확인과-교체)). `:08443`, 확장 IPv6, percent escape처럼 브라우저가 다른 주소로 정규화하는 표기는 거부한다. 기본 HTTPS 포트는 `:443`을 생략한다.
 
 ## 상태 확인
 
@@ -124,6 +152,11 @@ Service
   Autostart enabled; starts at boot
   Listen    127.0.0.1:9444 -> container 8443
   Image     raven-web:latest 26e4765c66d8
+
+Certificate
+  Names     localhost
+  Expires   2027-11-02 (349 days left)
+  SHA-256   59:1E:C9:69:C9:7E:78:3B:D8:95:15:E3:92:EC:9A:45:8B:5F:F2:F8:68:C8:CC:9B:50:DE:53:29:6F:09:1E:19
 
 Settings    same as running
   Saved     127.0.0.1:9444, https://localhost:8443
@@ -202,7 +235,7 @@ doctor는 서비스를 시작·중지하지 않고 설정·계정·runtime 파�
 | `Gateway->broker  the gateway cannot reach the broker`   | runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있다. `raven web start`가 컨테이너를 다시 만든다. |
 | `Settings  saved settings are not applied yet`           | 저장한 설정이 아직 적용되지 않았다. `raven web stop` 후 `raven web start`                             |
 | `Settings  the next start cannot listen`                 | 다른 프로세스가 포트를 쓴다. 그 프로세스를 끄거나 `raven web configure --port`로 바꾼다.               |
-| `Certificate  ... expired`, `HTTPS  the served certificate has expired` | 인증서가 만료됐다. 갱신 기능은 아직 없다([M8](./roadmap.md#m8--인증서-상태내보내기갱신)). |
+| `Certificate  ... expired`, `HTTPS  the served certificate has expired` | 인증서가 만료됐다. `raven web certificate renew` 후 PC에 새 인증서를 신뢰 등록한다(30일 미만이면 `warn`과 같은 조치). |
 | `HTTPS  the gateway serves a certificate other than tls.crt` | 실행 중인 컨테이너가 이전 인증서를 쓴다. `raven web stop` 후 `raven web start`                   |
 | `Data volume  /data belongs to uid N`                    | 다른 uid로 만든 volume이다. 출력된 root 도우미 명령으로 소유자를 되돌린다.                             |
 
@@ -259,6 +292,7 @@ API의 오류 응답은 `error` 문장과 함께 고정된 `code`를 준다: `au
   - RAM은 계속 차지하고, 서버를 재부팅하면 일시정지 상태가 사라진다. `run --host`로 띄운 호스트 앱과 네트워크 상대편의 연결은 멈추거나 유지되지 않는다. CLI의 `raven pause`, `raven resume`과 같은 동작이다([일시정지와 이어하기](./usage.md#일시정지와-이어하기)).
   - 화면을 보는 중에 다른 곳(CLI, 다른 탭)에서 멈추면 화면에 `이어하고 연결`이 뜬다. 멈춘 세션의 연결 요청은 거절(409 `session_paused`)하고 같은 안내를 보인다.
   - 일시정지·이어하기 요청도 고유 컨테이너 ID를 검사한다. `파일`은 호스트 폴더라서 멈춘 동안에도 쓴다.
+- 머리글의 `인증서`로 지금 인증서의 이름, 유효 기간, SHA-256을 보고 공개 인증서를 받는다([인증서 확인과 교체](#인증서-확인과-교체)). 만료 30일 전부터 세션 목록 위에 갱신 안내가 뜬다.
 - 세션 목록으로 돌아가면 해당 화면 연결만 끊는다. 로그아웃하면 같은 로그인 세션으로 연 다른 탭의 화면 연결도 닫는다.
 - 새 세션에서 이름, 창 관리자, 초기 해상도, 시작 명령을 정한다. 생성이 끝나면 화면에 연결한다. 이름은 영문자로 시작하는 64자 이하의 영문·숫자·`_`·`.`·`-` 조합이다.
 - 이름 변경은 실행 중인 앱에 영향을 주지 않는다. 명령 실행은 선택한 세션 컨테이너 안에서 shell 명령을 시작한다. 명령은 4096자 이하이며 호스트 직접 실행 옵션은 제공하지 않는다.
@@ -346,7 +380,7 @@ raven web disable         # unit을 지운다. 실행 중인 게이트웨이는 
 
 - 이미지: `raven-web:latest`. `RAVEN_WEB_IMAGE`로 변경한다. 데스크톱 이미지와 별도로 빌드한다.
 - 컨테이너: `raven-<user>-web`. 웹 전용 `raven.web.uid` label을 사용하며 기존 `raven ls`에는 나타나지 않는다.
-- 데이터 volume: `raven-<user>-web-data`. `/data`의 `db.sqlite3`, `secret.key`, `config.json`, 설정 변경 전 백업, `tls.crt`, `tls.key`를 보관한다. NFS 홈을 사용하지 않는다.
+- 데이터 volume: `raven-<user>-web-data`. `/data`의 `db.sqlite3`, `secret.key`, `config.json`, 설정 변경 전 백업, `tls.crt`, `tls.key`, 인증서 교체 전 백업(`backups/tls-<UTC 시각>/`, 최근 5개)을 보관한다. NFS 홈을 사용하지 않는다.
 - 호스트 runtime 디렉터리: `${XDG_RUNTIME_DIR:-/tmp}/raven-web-<uid>-web`. `broker.sock`, `broker.log`, `manager.lock`, 디렉터리 교체를 알아보는 `runtime.id`를 둔다.
 - 프로세스: `raven_web_host.py`와 웹 컨테이너. 호스트에 Python 패키지를 설치하지 않는다.
 - 업로드 임시 폴더: `~/Downloads/.raven-uploads` (`0700`). 웹에서 파일을 처음 올릴 때 중계가 만들고, 받는 중인 파일(`<token>.part`)을 둔다.
@@ -377,6 +411,7 @@ python3 tests/web_clipboard_e2e.py
 python3 tests/web_files_ui.py
 python3 tests/web_files_e2e.py
 python3 tests/web_pause_e2e.py
+python3 tests/web_certificate_e2e.py
 python3 tests/pause_e2e.py
 python3 tests/web_e2e.py
 ```
@@ -391,13 +426,15 @@ doctor 통합 시험은 정상 설치, 적용 대기 설정, 다음 시작 포�
 
 파일 화면 시험(`web_files_ui.py`)은 실제 template·JavaScript·CSS와 메모리 안의 가짜 파일 API로 PC와 휴대폰 크기에서 대화상자 열기, 경로 이동, 여러 조각 업로드의 sha256, 진행률, 취소, 덮어쓰기 선택, 오류 문구, 대화상자를 닫은 뒤의 업로드, 페이지 이탈 경고를 검사한다. 파일 통합 시험(`web_files_e2e.py`)은 임시 HOME의 실제 게이트웨이·중계와 openbox 시험 세션을 쓴다. 브라우저의 로그인 cookie로 파일 API를 불러 여러 조각의 한글 이름 파일과 하위 폴더 업로드를 세션 안의 sha256으로, 세션이 만든 파일의 다운로드를 브라우저 쪽 sha256으로 맞춘다. 올린 파일의 권한·그룹, 취소 뒤 임시 파일, 덮어쓰기 거절과 동의, 올리는 중 같은 이름이 생긴 경우, 실제 대화상자의 파일 선택과 다운로드 링크, 세션이 심은 symlink·`..`·절대 경로·막힌 파일·FIFO·크기 초과·비로그인·CSRF 거절도 확인한다. Downloads는 임시 HOME 아래라서 사용자의 파일을 건드리지 않는다.
 
+인증서 통합 시험(`web_certificate_e2e.py`)은 격리한 instance에서 `info`, 터미널 없이 `-y` 없는 교체 거절, `renew --name`(같은 컨테이너, 새 인증서로 HTTPS 로그인과 시험 데스크톱 WebSocket, 이전 인증서 거절), CA가 발급한 leaf+중간 인증서 체인 `import`(root만 신뢰하고 로그인·WebSocket), 맞지 않는 키·다른 hostname·만료 인증서 거절(tls 파일 hash, 백업, 게이트웨이 컨테이너 ID·시작 시각 불변), HTTPS에서 쓸 수 없는 인증서의 되돌리기, 포트만 바꾼 `configure`와 stop·start 뒤 같은 인증서, 백업 권한, 계정·`secret.key`·데스크톱 유지, systemd unit이 관리하는 상태의 교체(MainPID 불변), 게이트웨이 로그·broker.log·journal·CLI 출력·API 응답에 `PRIVATE KEY`와 키 내용이 없음을 확인한다.
+
 일시정지 통합 시험은 두 가지다. `pause_e2e.py`는 임시 설정의 xmonad 시험 세션에서 200MiB 메모리 표식을 가진 계산 프로세스의 PID·표식·버퍼 sha256이 일시정지·이어하기 뒤에 같은지, 멈춘 동안 카운터와 cgroup CPU 사용량이 그대로이고 메모리는 유지되는지, xterm에 치다 만 입력이 이어한 뒤 그대로 제출되는지, 세션 안 X11 뷰어가 끊기는지, attach·run·shell 등이 멈춘 세션을 켜거나 바꾸지 않고 거절하는지, 이어한 뒤 PCManFM·Edge·kime가 동작하는지를 본다. 따로 띄운 중계로 목록의 메모리·CPU·뷰어 값과 세 오류 code도 확인한다. `web_pause_e2e.py`는 실제 게이트웨이와 브라우저로 화면 툴바의 일시정지, 멈춘 카드, 멈춘 세션 열기의 409, 카드의 이어하기, 연결 중에 CLI로 멈췄을 때의 `이어하고 연결`을 확인하고, 컨테이너가 다시 시작되지 않았는지(시작 시각) 본다.
 
 자원 시험은 Linux cgroup v2에서 메모리·swap·CPU·process/thread 상한과 동시에 수행하는 비밀번호 검증 5개의 동작을 확인한다. 임시 컨테이너를 시작하기 전에 Docker 설정의 상한부터 검사하므로 제한 없는 컨테이너에서 부하를 발생시키지 않는다.
 
 화면 통합 시험에는 기존 `raven:latest` 세션 이미지가 필요하다. 서로 다른 서버·브라우저 포트를 로컬 TCP 전달기로 연결해 HTTPS 로그인과 WSS/RFB 화면 수신을 확인한다. 이는 실제 접속 PC의 SSH 인증 시험과 구분한다. 웹 서비스 stop/start 후 인증서와 데스크톱 ID가 유지되는지, HTTPS API로 별도 시험 세션을 생성·변경·삭제하고 명령이 시험 컨테이너 안에서 실행되는지 확인한다. 화면 캡처는 출력에 나온 임시 디렉터리에 남긴다. `RAVEN_WEB_BROWSER_IMAGE=headless-browser:1.63.0`을 지정하면 로그인 전 화면과 noVNC JavaScript 로딩도 브라우저에서 검사한다. 브라우저 자동 로그인은 수행하지 않는다.
 
-`python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 이어서 가짜 noVNC 모듈과 멈춘 페이지 시계로 자동 재접속의 지연 간격, 매 시도의 새 접속 정보, 10번 한도, 로그인 만료·세션 삭제·세션 중지·사용자 종료·로그아웃에서 멈추는지를 검사한다. 일시정지 시나리오(`web_pause_ui.py`)도 함께 돌려 카드의 상태·통계 줄, 카드와 툴바의 일시정지·이어하기, 일시정지에서 멈추는 재접속과 `이어하고 연결`, 409 처리, 휴대폰 배치를 본다. template은 이미지가 아니라 작업 트리의 것을 쓴다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
+`python3 tests/web_ui_check.py`는 실제 template·JavaScript·CSS와 별도 API fixture로 관리 화면의 입력, CSRF 전달, 삭제 확인, PC·모바일 배치를 검사한다. 이어서 가짜 noVNC 모듈과 멈춘 페이지 시계로 자동 재접속의 지연 간격, 매 시도의 새 접속 정보, 10번 한도, 로그인 만료·세션 삭제·세션 중지·사용자 종료·로그아웃에서 멈추는지를 검사한다. 일시정지 시나리오(`web_pause_ui.py`)와 인증서 시나리오(`web_certificate_ui.py`: 대화상자의 각 값, 휴대폰 폭의 fingerprint 줄바꿈, 다운로드 링크, 만료 29·0·-3일 알림과 30일 이상에서 없음, API 실패에도 페이지 동작)도 함께 돌려 카드의 상태·통계 줄, 카드와 툴바의 일시정지·이어하기, 일시정지에서 멈추는 재접속과 `이어하고 연결`, 409 처리, 휴대폰 배치를 본다. template은 이미지가 아니라 작업 트리의 것을 쓴다. 기존 `headless-browser:1.63.0` 이미지를 사용하며 실제 로그인이나 세션 변경은 수행하지 않는다.
 
 `python3 tests/web_module_loading.py`는 실제 noVNC module graph에 WebCodecs API 누락·예외·미완료 상태를 주입한다. 목록을 먼저 표시하는지, 모듈 로딩이 제한 시간 안에 완료되는지, decoder가 정리되는지와 정상 H.264 지원을 검사한다. 시험용 HTML·API 응답을 사용하며 실제 로그인을 수행하지 않는다. 모바일 크기의 Chromium 시험이며 실제 Android 기기의 확인을 대신하지 않는다. 로컬 호환성 수정의 범위는 [noVNC 브라우저 검사](../web/novnc/README.md)에 기록한다.
 

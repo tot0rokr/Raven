@@ -12,6 +12,10 @@ ORIGIN = "https://raven.test"
 CSRF_TOKEN = "ui-fixture"
 CREATED_GENERATION = "b" * 64
 SOURCE = Path("/source")
+# The page asks for the certificate when it loads; one far from expiry shows no notice.
+CERTIFICATE = {"names": ["raven.test"], "not_before": "2025-12-01T00:00:00+00:00",
+               "not_after": "2026-12-01T00:00:00+00:00", "days_left": 300,
+               "fingerprint": ":".join(["5A"] * 32), "origin_covered": True}
 RFB_FIXTURE = """
 export default class RFB extends EventTarget {
   constructor() {
@@ -59,6 +63,9 @@ def serve(route):
         return
     if path == "/favicon.ico":
         route.fulfill(status=204)
+        return
+    if path == "/api/certificate/" and request.method == "GET":
+        route.fulfill(json=CERTIFICATE)
         return
     body = request.post_data_json if request.post_data else None
     if path.startswith("/api/") and request.method != "GET":

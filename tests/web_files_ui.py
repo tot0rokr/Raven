@@ -77,6 +77,10 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
 TOKEN = re.compile(r"[A-Za-z0-9_-]{32}")
 UPLOAD_ROUTE = re.compile(r"/api/files/uploads/([^/]+)/(finish/)?")
 MTIME = 1_763_000_000.0
+# The page asks for the certificate when it loads; one far from expiry shows no notice.
+CERTIFICATE = {"names": ["raven.test"], "not_before": "2025-12-01T00:00:00+00:00",
+               "not_after": "2026-12-01T00:00:00+00:00", "days_left": 300,
+               "fingerprint": ":".join(["5A"] * 32), "origin_covered": True}
 SESSION = {"id": "41", "name": "files", "state": "running", "wm": "xmonad", "geometry": "1600x900",
            "display": "141", "generation": "a" * 64, "command": "xterm"}
 
@@ -194,6 +198,8 @@ def make_handler(state, html):
                 return
             if key == "GET /api/sessions/":
                 self.reply(200, {"sessions": [SESSION]})
+            elif key == "GET /api/certificate/":
+                self.reply(200, CERTIFICATE)
             elif key == "POST /api/sessions/41/open/":
                 self.reply(200, {"name": "files", "password": "fixture-only", "websocket": "/ws/sessions/41/"})
             elif key == "GET /api/files/":
@@ -405,7 +411,7 @@ def browser():
         watch(page)
         page.goto(origin + "/", wait_until="networkidle")
         expect(page.locator("#session-count")).to_have_text("1")
-        assert state.static_queries == {"/static/app.js": "v=6", "/static/style.css": "v=6"}, state.static_queries
+        assert state.static_queries == {"/static/app.js": "v=7", "/static/style.css": "v=7"}, state.static_queries
         dialog = page.locator("#files-dialog")
         rows = page.locator("#files-list .file-row")
         crumbs = page.locator("#files-breadcrumb li")

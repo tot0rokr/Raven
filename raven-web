@@ -371,11 +371,14 @@ def runtime_id():
 
 
 def runtime_current(current):
+    # Name this directory first: a gateway from before runtime.id existed mounts it too and then sees the same token,
+    # while one mounting a replaced directory does not.
+    expected = runtime_id()
     try:
         result = docker("exec", NAME, "cat", f"/run/raven/{RUNTIME_ID}", check=False, timeout=PROBE_TIMEOUT * 3)
     except subprocess.TimeoutExpired:
         return False
-    return result.returncode == 0 and result.stdout.strip() == runtime_id()
+    return result.returncode == 0 and result.stdout.strip() == expected
 
 
 def systemctl(*arguments, check=False):

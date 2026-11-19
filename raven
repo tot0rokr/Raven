@@ -11,6 +11,7 @@ user=$(id -un | tr -c 'A-Za-z0-9_.\n-' '_')
 confdir=${XDG_CONFIG_HOME:-$HOME/.config}/raven
 statedir=${XDG_STATE_HOME:-$HOME/.local/state}/raven/$(hostname)
 rundir=${XDG_RUNTIME_DIR:-/tmp}/raven-$(id -u)
+backupdir=${XDG_DATA_HOME:-$HOME/.local/share}/raven/backups
 display_base=100
 port_base=15900
 default_cmd=xterm
@@ -34,6 +35,8 @@ usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        raven pause [-t] TARGET                         freeze a session's apps, keeping them in memory
        raven resume [-t] TARGET                        continue a paused session
        raven recreate [-a | [-t] TARGET]               move sessions onto the current image
+       raven backup [-t] TARGET [-o FILE] [--stop]     save a session's home and settings to a file
+       raven restore FILE [-s NAME] [-w WM] [-g WxH] [CMD...]   make a new session from a backup
        raven build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        raven addon ls | enable NAME | disable NAME | new NAME [PKG...]
        raven menu edit | show [-t TARGET] | sync
@@ -51,6 +54,13 @@ home: files under ~/.config/raven/home go into every session home (symlinks foll
 attach: -d detaches other viewers of the session.
 pause: viewers are disconnected and the apps stop where they are; the session keeps its
   memory until resume, and a server reboot loses that state. run --host apps keep running.
+backup: a running session is frozen (docker pause) while its home is read and continues
+  afterwards with its apps; the backup is like a power cut at that moment. A paused session
+  is backed up as it is and stays paused. --stop instead stops the session (its apps end,
+  unsaved work is lost) and starts it again afterwards. The file goes to
+  ~/.local/share/raven/backups unless -o is given; ~/Downloads is not in it.
+restore: always makes a new session; its name, window manager, size and command come from
+  the backup unless given. Nothing is left behind when the backup is refused.
 EOF
 }
 
@@ -769,6 +779,555 @@ cmd_recreate() {
     done
 }
 
+# Session backups: an uncompressed tar holding manifest.json, then home.tar.gz (the home
+# volume packed with numeric owners). The python3 below runs in throwaway containers of a
+# session image: with the home read-only to pack it, with nothing but the backup on stdin to
+# check it, and with only the new home volume to unpack it. Its errors start with "raven:".
+backup_helper() {
+    cat <<'PYTHON'
+import hashlib, io, json, os, re, stat, subprocess, sys, tarfile, threading, time
+
+HOME, UID = b"/home/raven", 60000
+LINE = re.compile(rb'(\S)\S{9} ([0-9]+)/([0-9]+) +\S+ [^"]* ("(?:[^"\\]|\\.)*")(?: (->|link to) ("(?:[^"\\]|\\.)*"))?')
+KINDS = {b"c": "a character device", b"b": "a block device", b"p": "a FIFO", b"s": "a socket"}
+ESCAPES = {b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v"}
+
+
+class Refused(Exception):
+    pass
+
+
+def show(path):
+    return repr(path.decode("utf-8", "backslashreplace"))
+
+
+def unquote(quoted):
+    return re.sub(rb"\\([0-7]{1,3}|.)", lambda m: bytes([int(m[1], 8) & 255]) if m[1][:1].isdigit()
+                  else ESCAPES.get(m[1], m[1]), quoted[1:-1])
+
+
+def inside(path):
+    """Components of a member path; an absolute path or a .. component leaves the home."""
+    if not path or path.startswith(b"/") or b".." in path.split(b"/"):
+        raise Refused(f"member {show(path)} points outside the home")
+    return tuple(c for c in path.split(b"/") if c not in (b"", b"."))
+
+
+def check_members(lines):
+    """Check the tar -tv listing of a home archive; return (entries, entries not owned by UID)."""
+    entries = foreign = 0
+    links, files, paths = set(), set(), []
+    for line in lines:
+        m = LINE.fullmatch(line)
+        if not m or (m[5] == b"->") != (m[1] == b"l") or (m[5] == b"link to") != (m[1] == b"h"):
+            raise Refused("cannot read the member list of the home archive")
+        name = unquote(m[4])
+        path = inside(name)
+        if m[1] not in b"-dlh":
+            raise Refused(f"member {show(name)} is {KINDS.get(m[1], 'a special file')}; "
+                          "only files, directories and links are restored")
+        if m[1] == b"h":
+            target = inside(unquote(m[6]))
+            if target not in files:
+                raise Refused(f"hard link {show(name)} points to {show(unquote(m[6]))}, "
+                              "which is not a file earlier in the archive")
+            paths.append(target)
+        if not path and m[1] != b"d":
+            raise Refused("the top of the home archive is not a directory")
+        if path == (b"Downloads",) and m[1] != b"d":
+            raise Refused("Downloads in the home archive is not a directory")
+        if m[1] == b"l":
+            links.add(path)
+        if m[1] != b"d":
+            files.add(path)
+        paths.append(path)
+        entries += 1
+        foreign += int(m[2]) != UID or int(m[3]) != UID
+    # A member under a symlink would be written wherever the link points
+    for path in paths:
+        for i in range(1, len(path)):
+            if path[:i] in links:
+                raise Refused(f"member {show(b'/'.join(path))} lies under the symbolic link "
+                              f"{show(b'/'.join(path[:i]))}")
+    if not entries:
+        raise Refused("the home archive is empty")
+    return entries, foreign
+
+
+def tar(*arguments, **options):
+    return subprocess.Popen(["tar", *arguments], env={"PATH": os.environ["PATH"], "LC_ALL": "C", "TZ": "UTC"},
+                            **options)
+
+
+def pump(source, sink):
+    """Copy source to sink, which may stop reading early; return (bytes, sha256) of all of source."""
+    digest, count, open_ = hashlib.sha256(), 0, True
+    try:
+        while chunk := source.read(1 << 20):
+            digest.update(chunk)
+            count += len(chunk)
+            if open_:
+                try:
+                    sink.write(chunk)
+                except BrokenPipeError:
+                    open_ = False
+    finally:
+        try:
+            sink.close()
+        except BrokenPipeError:
+            pass
+    return count, digest.hexdigest()
+
+
+def list_members(source):
+    """Stream a home archive through tar -tv: (bytes, sha256, tar status, listing lines, tar errors)."""
+    process = tar("-tvz", "--numeric-owner", "--full-time", "--quoting-style=c", "-f", "-",
+                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out = {}
+    readers = [threading.Thread(target=lambda: out.update(lines=process.stdout.read().splitlines()), daemon=True),
+               threading.Thread(target=lambda: out.update(errors=process.stderr.read()), daemon=True)]
+    for reader in readers:
+        reader.start()
+    count, digest = pump(source, process.stdin)
+    for reader in readers:
+        reader.join()
+    return count, digest, process.wait(), out["lines"], out["errors"]
+
+
+def text(value, where, empty=False):
+    if not isinstance(value, str) or (not value and not empty) or len(value) > 4096 \
+            or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in value):
+        raise Refused(f"manifest: {where} must be text without control characters")
+    return value
+
+
+def number(value, where):
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise Refused(f"manifest: {where} must be a whole number")
+    return value
+
+
+def section(manifest, key):
+    if not isinstance(manifest.get(key), dict):
+        raise Refused(f"manifest: {key} is missing")
+    return manifest[key]
+
+
+def no_duplicates(pairs):
+    if len({k for k, _ in pairs}) != len(pairs):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def not_a_number(constant):
+    raise ValueError(constant)
+
+
+def read_manifest(data):
+    try:
+        manifest = json.loads(data.decode("utf-8"), object_pairs_hook=no_duplicates, parse_constant=not_a_number)
+    except ValueError:
+        raise Refused("manifest.json is not valid JSON") from None
+    if not isinstance(manifest, dict) or manifest.get("format") != "raven-session-backup":
+        raise Refused("not a Raven session backup")
+    version = manifest.get("version")
+    if version != 1 or isinstance(version, bool):
+        raise Refused(f"backup format version {version!r} is not supported (this raven reads version 1)")
+    session, image, home = section(manifest, "session"), section(manifest, "image"), section(manifest, "home")
+    info = {"user": text(manifest.get("user"), "user"), "host": text(manifest.get("host"), "host"),
+            "created": text(manifest.get("created"), "created"), "id": text(session.get("id"), "session.id"),
+            "name": "" if session.get("name") is None else text(session.get("name"), "session.name"),
+            "cmd": text(session.get("cmd"), "session.cmd"), "wm": text(session.get("wm"), "session.wm"),
+            "geometry": text(session.get("geometry"), "session.geometry"),
+            "uid": text(session.get("uid"), "session.uid", empty=True),
+            "image_tag": text(image.get("tag"), "image.tag", empty=True),
+            "image_id": text(image.get("id"), "image.id"),
+            "features": text(image.get("features"), "image.features", empty=True),
+            "sha256": text(home.get("sha256"), "home.sha256"), "size": number(home.get("size"), "home.size"),
+            "entries": number(home.get("entries"), "home.entries")}
+    text(manifest.get("downloads"), "downloads")
+    if home.get("file") != "home.tar.gz":
+        raise Refused("manifest: home.file must be home.tar.gz")
+    if not re.fullmatch(r"[0-9a-f]{64}", info["sha256"]):
+        raise Refused("manifest: home.sha256 is not a sha256")
+    if not re.fullmatch(r"[0-9]+", info["id"]):
+        raise Refused("manifest: session.id must be a number")
+    # The same rules as raven new -s
+    if info["name"] and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", info["name"]):
+        raise Refused(f"manifest: session name {info['name']!r} must start with a letter and hold only letters, "
+                      "digits, '_', '.', '-'")
+    if info["wm"] not in ("xmonad", "openbox"):
+        raise Refused(f"manifest: window manager must be xmonad or openbox: {info['wm']!r}")
+    if not re.fullmatch(r"[0-9]+x[0-9]+", info["geometry"]):
+        raise Refused(f"manifest: geometry must look like 1600x900: {info['geometry']!r}")
+    return info
+
+
+def open_backup():
+    """The backup on stdin: an uncompressed tar of exactly manifest.json, then home.tar.gz."""
+    archive = tarfile.open(fileobj=sys.stdin.buffer, mode="r|")
+    first = archive.next()
+    if first is None or first.name != "manifest.json" or first.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+        raise Refused("the first member must be the file manifest.json")
+    if first.size > 1 << 20:
+        raise Refused("manifest.json is larger than 1 MiB")
+    info = read_manifest(archive.extractfile(first).read())
+    second = archive.next()
+    if second is None or second.name != "home.tar.gz" or second.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+        raise Refused("the second member must be the file home.tar.gz")
+    if second.size != info["size"]:
+        raise Refused(f"home.tar.gz is {second.size} bytes, the manifest says {info['size']}")
+    return archive, second, info
+
+
+def close_backup(archive, count, digest, info):
+    if count != info["size"]:
+        raise Refused("the backup file is truncated")
+    if digest != info["sha256"]:
+        raise Refused("home.tar.gz does not match the sha256 in the manifest; the file is damaged")
+    if archive.next() is not None:
+        raise Refused("the backup has members besides manifest.json and home.tar.gz")
+    while rest := archive.fileobj.read(1 << 16):
+        if rest.strip(b"\0"):
+            raise Refused("the backup has data after its end")
+
+
+def check():
+    archive, member, info = open_backup()
+    count, digest, status, lines, errors = list_members(archive.extractfile(member))
+    close_backup(archive, count, digest, info)
+    said = errors.decode("utf-8", "backslashreplace").strip().replace("\n", "; ")
+    if status:
+        raise Refused(f"the home archive is damaged ({said})")
+    try:
+        entries, foreign = check_members(lines)
+    except Refused as error:
+        raise Refused(f"{error} ({said})" if said else str(error)) from None
+    # tar warns when it would change a name, e.g. strip ../ from a hard link target
+    if said:
+        raise Refused(f"the home archive has unsafe names ({said})")
+    if entries != info["entries"]:
+        raise Refused(f"the home archive has {entries} entries, the manifest says {info['entries']}")
+    info["foreign"] = foreign
+    for key, value in info.items():
+        print(f"{key}={value}")
+
+
+def fail(error):
+    raise error
+
+
+def extract(sha256):
+    archive, member, info = open_backup()
+    if info["sha256"] != sha256:
+        raise Refused("the backup file changed after it was checked")
+    process = tar("-C", HOME, "-xpz", "--numeric-owner", "-f", "-", stdin=subprocess.PIPE)
+    count, digest = pump(archive.extractfile(member), process.stdin)
+    status = process.wait()
+    close_backup(archive, count, digest, info)
+    if status:
+        raise Refused("tar could not unpack the home")
+    # Where the shared ~/Downloads is mounted, as in a new session's home
+    os.makedirs(HOME + b"/Downloads", 0o755, exist_ok=True)
+    # The session user owns its whole home; modes stay as they were
+    for top, directories, files in os.walk(HOME, onerror=fail):
+        for path in [top] + [os.path.join(top, n) for n in directories + files]:
+            st = os.lstat(path)
+            if st.st_uid != UID or st.st_gid != UID:
+                os.lchown(path, UID, UID)
+
+
+def backup(user, host, created, sid, name, cmd, wm, geometry, uid, tag, image_id, features):
+    keep, skipped = [], []
+    for top, directories, files in os.walk(HOME, onerror=fail):
+        directories.sort()
+        here = b"." + top[len(HOME):]
+        keep.append(here)
+        # Symlinks to directories are listed with the directories but not walked into
+        for n in sorted(files + [d for d in directories if os.path.islink(os.path.join(top, d))]):
+            mode = os.lstat(os.path.join(top, n)).st_mode
+            (keep if stat.S_ISREG(mode) or stat.S_ISLNK(mode) else skipped).append(here + b"/" + n)
+    if skipped:
+        print(f"raven: left out {len(skipped)} special file(s) (sockets, FIFOs, devices), which a restore refuses: "
+              + ", ".join(show(p) for p in skipped[:5]) + (", ..." if len(skipped) > 5 else ""), file=sys.stderr)
+    process = tar("-C", HOME, "--null", "--verbatim-files-from", "--no-recursion", "-T", "-", "--numeric-owner",
+                  "-czf", "/tmp/home.tar.gz", stdin=subprocess.PIPE)
+    process.communicate(b"".join(p + b"\0" for p in keep))
+    if process.returncode:
+        raise Refused("tar could not pack the home")
+    size = os.path.getsize("/tmp/home.tar.gz")
+    with open("/tmp/home.tar.gz", "rb") as source:
+        count, digest, status, lines, errors = list_members(source)
+    if status or errors or count != size:
+        raise Refused("cannot read back the home archive")
+    entries, _ = check_members(lines)
+    manifest = {"format": "raven-session-backup", "version": 1, "created": created, "user": user, "host": host,
+                "session": {"id": sid, "name": name or None, "cmd": cmd, "wm": wm, "geometry": geometry, "uid": uid},
+                "image": {"tag": tag, "id": image_id, "features": features},
+                "home": {"file": "home.tar.gz", "sha256": digest, "size": size, "entries": entries},
+                "downloads": "not included"}
+    data = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as archive, \
+            open("/tmp/home.tar.gz", "rb") as home:
+        for member, length, source in (("manifest.json", len(data), io.BytesIO(data)), ("home.tar.gz", size, home)):
+            entry = tarfile.TarInfo(member)
+            entry.size, entry.mode, entry.mtime = length, 0o600, int(time.time())
+            archive.addfile(entry, source)
+
+
+try:
+    {"check": check, "extract": extract, "backup": backup}[sys.argv[1]](*sys.argv[2:])
+except Refused as error:
+    print(f"raven: {error}", file=sys.stderr)
+    sys.exit(3)
+except (tarfile.TarError, EOFError) as error:
+    print(f"raven: the backup file is truncated or not a tar archive ({error})", file=sys.stderr)
+    sys.exit(3)
+PYTHON
+}
+
+# docker run of the backup helper: OPTIONS... IMAGE -c "$(backup_helper)" ARGS...
+# --log-driver none keeps the archive streams out of docker's container logs.
+run_helper() {
+    docker run --rm --network none --log-driver none --entrypoint python3 "$@"
+}
+
+# Bytes as KiB below 1 MiB, else as size_text does
+file_size_text() {
+    if [ "$1" -lt 1048576 ]; then echo "$((($1 + 1023) / 1024))KiB"; else size_text "$1"; fi
+}
+
+backup_tmp= backup_restart= backup_unpause=
+# On an exit before the backup is finished: drop the partial file, and start the session
+# again when the backup stopped it
+backup_cleanup() {
+    local rc=$?
+    [ -z "$backup_tmp" ] || rm -f "$backup_tmp"
+    if [ -n "$backup_unpause" ]; then
+        if docker unpause "$(cname "$backup_unpause")" >/dev/null 2>&1; then
+            echo "raven: session $backup_unpause continues" >&2
+        else
+            echo "raven: session $backup_unpause is still frozen; continue it with: raven resume $backup_unpause" >&2
+        fi
+    fi
+    if [ -n "$backup_restart" ]; then
+        if docker start "$(cname "$backup_restart")" >/dev/null 2>&1; then
+            echo "raven: session $backup_restart started again" >&2
+        else
+            echo "raven: session $backup_restart did not start again; start it with: raven attach $backup_restart" >&2
+        fi
+    fi
+    exit "$rc"
+}
+
+cmd_backup() {
+    local target= out= stop=0 usage='usage: raven backup [-t] TARGET [-o FILE] [--stop]'
+    local id c state name cmd geometry wm img now tmp size entries freeze=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t | -o)
+                [ $# -ge 2 ] || die "$1 needs an argument"
+                if [ "$1" = -t ]; then target=$2; else out=$2; fi
+                shift 2 ;;
+            --stop) stop=1; shift ;;
+            -*) die "$usage" ;;
+            *) [ -z "$target" ] || die "$usage"; target=$1; shift ;;
+        esac
+    done
+    [ -n "$target" ] || die "$usage"
+    id=$(resolve "$target")
+    c=$(cname "$id")
+    state=$(field "$id" 4)
+    # Files that apps are still writing would not match each other in the backup: freeze them
+    # while the home is read (or stop them with --stop); a paused session is frozen already
+    case "$state" in
+        paused) ;;
+        running) [ "$stop" = 1 ] || freeze=1 ;;
+        restarting)
+            [ "$stop" = 1 ] || die "session $id is restarting; back it up when it runs, or stopped with:" \
+                "raven backup $id --stop" ;;
+        *) stop=0 ;;
+    esac
+    docker volume inspect "$(vname "$id")" >/dev/null 2>&1 || die "session $id has no home volume $(vname "$id")"
+    name=$(name_of "$id")
+    now=$(date -u +%s)
+    if [ -z "$out" ]; then
+        # The backup holds the session's files (browser profiles, keys): only the owner reads it
+        (umask 077 && mkdir -p "$backupdir") || die "cannot create $backupdir"
+        chmod 700 "$backupdir"
+        out=$backupdir/session-$id-${name:-noname}-$(date -u -d "@$now" +%Y%m%dT%H%M%SZ).tar
+    fi
+    [ ! -e "$out" ] && [ ! -L "$out" ] || die "$out already exists"
+    cmd=$(label_of "$c" raven.cmd)
+    geometry=$(label_of "$c" raven.geometry)
+    wm=$(label_of "$c" raven.wm)
+    img=$(docker inspect -f '{{.Image}}' "$c")
+
+    # Written under a temporary name next to the file (mktemp makes it 0600), renamed when complete
+    tmp=$(mktemp "$(dirname -- "$out")/.$(basename -- "$out").XXXXXX") || die "cannot write in $(dirname -- "$out")"
+    backup_tmp=$tmp
+    trap backup_cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ "$stop" = 1 ]; then
+        echo "raven: stopping session $id${name:+ ($name)} for the backup; its apps end and unsaved work in them is lost" >&2
+        backup_restart=$id
+        [ "$state" != paused ] || docker unpause "$c" >/dev/null
+        docker stop "$c" >/dev/null
+    elif [ "$freeze" = 1 ]; then
+        echo "raven: freezing session $id${name:+ ($name)} while its home is read; its apps and viewers continue afterwards" >&2
+        backup_unpause=$id
+        docker pause "$c" >/dev/null || die "session $id could not be frozen; nothing was backed up"
+    elif [ "$state" = paused ]; then
+        echo "raven: session $id${name:+ ($name)} is paused; its files are backed up as they are and it stays paused" >&2
+    fi
+    # Sessions made before window managers were selectable run openbox
+    run_helper --user 0 --mount "type=volume,src=$(vname "$id"),dst=/home/raven,readonly,volume-nocopy" \
+        "$img" -c "$(backup_helper)" backup "$user" "$(hostname)" "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" \
+        "$id" "$name" "${cmd:-$default_cmd}" "${wm:-openbox}" "${geometry:-$default_geometry}" \
+        "$(label_of "$c" raven.uid)" "$(docker inspect -f '{{.Config.Image}}' "$c")" "$img" \
+        "$(label_of "$c" raven.features)" > "$tmp" || die "session $id was not backed up"
+    if [ -n "$backup_unpause" ]; then
+        backup_unpause=
+        docker unpause "$c" >/dev/null || die "session $id is still frozen; continue it with: raven resume $id"
+    fi
+    entries=$(tar -xOf "$tmp" manifest.json | sed -n 's/^ *"entries": \([0-9]*\).*/\1/p') \
+        && [ -n "$entries" ] || die "session $id was not backed up: cannot read back $tmp"
+    chmod 600 "$tmp"
+    # A hard link never replaces a file that appeared meanwhile; mv where links are not supported
+    if ln -T -- "$tmp" "$out" 2>/dev/null; then
+        rm -f "$tmp"
+    else
+        [ ! -e "$out" ] && [ ! -L "$out" ] || die "$out already exists"
+        mv -T -- "$tmp" "$out" || die "cannot rename $tmp to $out"
+    fi
+    backup_tmp=
+    size=$(stat -c %s "$out")
+    echo "raven: backed up session $id${name:+ ($name)}: $entries entries, $(file_size_text "$size")" >&2
+    echo "raven: ~/Downloads is not included; it is a shared host folder, not part of the session home" >&2
+    echo "raven: the file is not encrypted; only you can read it (mode 600)" >&2
+    if [ "$freeze" = 1 ] || { [ "$state" = paused ] && [ "$stop" = 0 ]; }; then
+        echo "raven: the backup is like a power cut at that moment: work that apps held only in memory is not in it" >&2
+    fi
+    printf '%s\n' "$out"
+    if [ -n "$backup_restart" ]; then
+        backup_restart=
+        ensure_up "$id"
+        echo "raven: started session $id again; its start command ran anew" >&2
+    fi
+    trap - EXIT HUP INT TERM
+}
+
+restore_id=
+# On an exit before the restored session is up: remove what restore made for it
+restore_cleanup() {
+    local rc=$?
+    if [ -n "$restore_id" ]; then
+        docker rm -f "$(cname "$restore_id")" >/dev/null 2>&1 || true
+        docker volume rm "$(vname "$restore_id")" >/dev/null 2>&1 || true
+        rm -f "$statedir/$restore_id.name" "$statedir/$restore_id.home" \
+            "$rundir/$restore_id.xauth" "$rundir/$restore_id.log"
+        echo "raven: removed the unfinished session $restore_id; nothing else was changed" >&2
+    fi
+    exit "$rc"
+}
+
+cmd_restore() {
+    local file= name= wm= geometry= usage='usage: raven restore FILE [-s NAME] [-w WM] [-g WxH] [CMD...]'
+    local info from owner made current foreign cmd i id d p
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -s | -w | -g)
+                [ $# -ge 2 ] || die "$1 needs an argument"
+                case "$1" in
+                    -s) name=$2 ;;
+                    -w) wm=$2 ;;
+                    *) geometry=$2 ;;
+                esac
+                shift 2 ;;
+            --) shift; break ;;
+            -*) die "$usage" ;;
+            *) [ -z "$file" ] || break; file=$1; shift ;;
+        esac
+    done
+    if [ -z "$file" ] && [ $# -gt 0 ]; then
+        file=$1
+        shift
+    fi
+    [ -n "$file" ] || die "$usage"
+    [ -f "$file" ] && [ -r "$file" ] || die "cannot read $file"
+    [ -z "$wm" ] || check_wm "$wm"
+    [ -z "$geometry" ] || check_geometry "$geometry"
+    [ -z "$name" ] || check_name "$name"
+    need_image
+
+    # Everything is checked before anything is made. The file goes in on stdin: through a bind
+    # mount a container could not read a 0600 file on an NFS home.
+    info=$(run_helper -i "$image" -c "$(backup_helper)" check < "$file") \
+        || die "$file was not restored; nothing was created"
+    from=$(restore_info "$info" name)
+    [ -n "$wm" ] || wm=$(restore_info "$info" wm)
+    check_wm "$wm"
+    [ -n "$geometry" ] || geometry=$(restore_info "$info" geometry)
+    check_geometry "$geometry"
+    cmd=${*:-$(restore_info "$info" cmd)}
+    if [ -z "$name" ] && [ -n "$from" ]; then
+        for i in $(ids); do
+            [ "$(name_of "$i")" != "$from" ] \
+                || die "name '$from' from the backup is used by session $i; give another with: raven restore FILE -s NAME"
+        done
+        check_name "$from"
+        name=$from
+    fi
+    owner=$(restore_info "$info" user)
+    echo "raven: backup of session $(restore_info "$info" id)${from:+ ($from)} made by $owner" \
+        "on $(restore_info "$info" host) at $(restore_info "$info" created)" >&2
+    [ "$owner" = "$user" ] || echo "raven: warning: the backup belongs to user $owner, not $user" >&2
+    made=$(restore_info "$info" image_id)
+    current=$(docker image inspect -f '{{.Id}}' "$image")
+    [ "$made" = "$current" ] \
+        || echo "raven: warning: the backup was made with image $(restore_info "$info" image_tag)" \
+            "($(echo "$made" | cut -c 1-19)); the session gets the current $image ($(echo "$current" | cut -c 1-19))" >&2
+    foreign=$(restore_info "$info" foreign)
+    [ "$foreign" = 0 ] \
+        || echo "raven: warning: $foreign entries belong to other users; they are given to the session user 60000" >&2
+
+    id=$(free_id)
+    d=$(free_display)
+    p=$((port_base + d - display_base))
+    # docker volume create would reuse a volume that another raven made meanwhile
+    if docker volume inspect "$(vname "$id")" >/dev/null 2>&1; then
+        die "home volume $(vname "$id") appeared meanwhile; nothing was created, try again"
+    fi
+    trap restore_cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    docker volume create "$(vname "$id")" >/dev/null
+    restore_id=$id
+    # A root helper unpacks into the new volume, without the image's home copied in first, and
+    # gives every entry to the session user; the content must still match the checked sha256
+    run_helper -i --user 0 --mount "type=volume,src=$(vname "$id"),dst=/home/raven,volume-nocopy" \
+        "$image" -c "$(backup_helper)" extract "$(restore_info "$info" sha256)" < "$file" \
+        || die "$file was not restored"
+    mkdir -p "$HOME/Downloads" "$statedir"
+    rm -f "$statedir/$id.name" "$statedir/$id.home"
+    [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
+    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
+    ensure_up "$id"
+    restore_id=
+    trap - EXIT HUP INT TERM
+    echo "raven: restored session $id${name:+ ($name)} with $wm, $geometry: $cmd" >&2
+    echo "raven: ~/Downloads was not in the backup; the session shares the current ~/Downloads" >&2
+    echo "raven: attach with: raven attach $id" >&2
+}
+
+# Value of KEY in the KEY=VALUE lines of a checked backup (values have no line breaks)
+restore_info() {
+    printf '%s\n' "$1" | sed -n "s/^$2=//p"
+}
+
 enabled_addons() {
     if [ -f "$confdir/addons.enabled" ]; then
         grep -vE '^[[:space:]]*(#|$)' "$confdir/addons.enabled" || true
@@ -1252,7 +1811,7 @@ cmd_uninstall() {
     echo "  $statedir, $rundir and the host relay"
     [ "$config" = 0 ] || echo "  $confdir (menu, wallpaper, addons, personal files)"
     [ "$images" = 0 ] || echo "  images $image, $core_image unless another session uses them"
-    echo "kept: ~/Downloads and its files, the raven checkout, ~/.local/bin/raven"
+    echo "kept: ~/Downloads and its files, session backups in $backupdir, the raven checkout, ~/.local/bin/raven"
     [ "$dry" = 0 ] || return 0
     if [ "$yes" = 0 ]; then
         [ -t 0 ] || die "stdin is not a terminal; pass -y to confirm"
@@ -1280,7 +1839,8 @@ cmd_uninstall() {
             fi
         done
     fi
-    echo "raven: removed. Left to do by hand: rm ~/.local/bin/raven and the checkout;" \
+    echo "raven: removed. Session backups stay in $backupdir; delete them yourself if unwanted." >&2
+    echo "raven: left to do by hand: rm ~/.local/bin/raven and the checkout;" \
         "chmod g-ws ~/Downloads undoes the shared-group setting" >&2
 }
 
@@ -1317,6 +1877,8 @@ case "$1" in
     pause) shift; cmd_pause "$@" ;;
     resume) shift; cmd_resume "$@" ;;
     recreate) shift; cmd_recreate "$@" ;;
+    backup) shift; cmd_backup "$@" ;;
+    restore) shift; cmd_restore "$@" ;;
     build) shift; cmd_build "$@" ;;
     addon) shift; cmd_addon "$@" ;;
     menu) shift; cmd_menu "$@" ;;

@@ -1,8 +1,11 @@
 import argparse
+import base64
+import binascii
 from contextlib import closing
 import datetime
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -12,13 +15,16 @@ import shutil
 import sqlite3
 import stat
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.exceptions import InvalidSignature, InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from raven_web.config import parse_origin
@@ -46,6 +52,30 @@ CERTIFICATE_ACTIONS = ("certificate-check", "certificate-apply", "certificate-re
 PEM_BLOCK = re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END \1-----", re.DOTALL)
 ENCRYPTED_HEADER = re.compile(r"^Proc-Type:[ \t]*4,ENCRYPTED", re.MULTILINE)
 CURVES = {"secp256r1": "EC P-256", "secp384r1": "EC P-384"}
+# Encrypted settings backups (raven web backup and restore)
+BACKUP_ACTIONS = ("backup", "restore-check", "restore")
+BACKUP_MAGIC = b"RAVENWEB1\n"
+BACKUP_FORMAT = "raven-web-backup"
+BACKUP_VERSION = 1
+SCRYPT = {"n": 32768, "r": 8, "p": 1}
+SALT_BYTES = 16
+NONCE_BYTES = 12
+MAX_HEADER = 1024
+MANIFEST = "manifest.json"
+# The order of the archive members after manifest.json; db.sqlite3 is also the first file a restore replaces.
+BACKUP_FILES = ("db.sqlite3", "secret.key", "config.json", "tls.crt", "tls.key")
+DATABASE_SIDECARS = ("db.sqlite3-journal", "db.sqlite3-wal", "db.sqlite3-shm")
+MAX_DATABASE = 16 * 1024 * 1024
+MAX_MEMBER = {MANIFEST: 1024 * 1024, "db.sqlite3": MAX_DATABASE, "secret.key": 4096,
+              "config.json": MAX_CONFIG_BYTES, "tls.crt": MAX_TLS_BYTES, "tls.key": MAX_TLS_BYTES}
+MAX_BACKUP_BYTES = 24 * 1024 * 1024
+# A restore request carries the encrypted file in base64 next to the passphrase.
+MAX_BACKUP_REQUEST = MAX_BACKUP_BYTES * 4 // 3 + 64 * 1024
+MIN_PASSPHRASE = 12
+MAX_PASSPHRASE = 1024
+SECRET_KEY = re.compile(rb"[A-Za-z0-9_-]{50,1024}\Z")
+PRE_RESTORE = "pre-restore-"
+UNDECRYPTABLE = "Cannot decrypt the backup: the passphrase is wrong or the file is damaged"
 
 
 class ConfigurationError(ValueError):
@@ -63,6 +93,10 @@ def _read_file(path):
 
 def _read_config(state):
     raw = _read_file(state / "config.json")
+    return raw, _parse_config(raw)
+
+
+def _parse_config(raw):
     if not raw or len(raw) > MAX_CONFIG_BYTES:
         raise ConfigurationError("config.json is empty or exceeds 64 KiB")
     try:
@@ -71,7 +105,7 @@ def _read_config(state):
         raise ConfigurationError("config.json is not valid JSON") from error
     if not isinstance(config, dict) or not isinstance(config.get("origin"), str):
         raise ConfigurationError("config.json must contain an origin string")
-    return raw, config
+    return config
 
 
 def _snapshot(state):
@@ -429,8 +463,10 @@ def _lifetime_warnings(not_after, now):
     return []
 
 
-def _check_pair(chain, key, required, now, minimum=MINIMUM_LIFETIME):
-    """Refuse a pair the gateway or browsers cannot use for the required (hostname, origin) pairs; return warnings."""
+def _check_pair(chain, key, required, now, minimum=MINIMUM_LIFETIME, dates=True):
+    """Refuse a pair the gateway or browsers cannot use for the required (hostname, origin) pairs; return warnings.
+
+    dates=False leaves the validity period to the caller (a restore puts back even an expired certificate)."""
     leaf = chain[0]
     try:
         public_keys = [_spki(certificate.public_key()) for certificate in chain]
@@ -456,11 +492,11 @@ def _check_pair(chain, key, required, now, minimum=MINIMUM_LIFETIME):
         if not {ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.ANY_EXTENDED_KEY_USAGE} & set(usage):
             raise ConfigurationError("CERT is not for HTTPS servers: its extended key usage lacks serverAuth")
     not_before, not_after = leaf.not_valid_before_utc, leaf.not_valid_after_utc
-    if not_before > now + CLOCK_SKEW:
+    if dates and not_before > now + CLOCK_SKEW:
         raise ConfigurationError(f"CERT is not valid until {_moment(not_before)}; check its dates and the server clock")
-    if not_after <= now:
+    if dates and not_after <= now:
         raise ConfigurationError(f"CERT expired on {_moment(not_after)}")
-    if not_after <= now + minimum:
+    if dates and not_after <= now + minimum:
         raise ConfigurationError(f"CERT expires on {_moment(not_after)}, in less than a day")
     names = _names(leaf)
     for hostname, origin in required:
@@ -468,6 +504,8 @@ def _check_pair(chain, key, required, now, minimum=MINIMUM_LIFETIME):
             listed = ", ".join(names) if names else "no names (no subject alternative names)"
             wildcard = "; wildcard names do not count" if any("*" in name for name in names) else ""
             raise ConfigurationError(f"CERT covers {listed}, but not {hostname}, the hostname of {origin}{wildcard}")
+    if not dates:
+        return []
     warnings = _lifetime_warnings(not_after, now)
     if not_before > now:
         warnings.append(f"The new certificate is valid only from {_moment(not_before)}, which is still ahead by this "
@@ -527,8 +565,8 @@ def _backups(root):
     return [path for _, path in sorted(entries)]
 
 
-def _backup(state, now):
-    """Copy the current pair to backups/tls-<UTC>/ (0700, files 0600); keep the newest KEEP_BACKUPS of them."""
+def _backup_directory(state, stamp, kind):
+    """A new private backups/<stamp>[-N]/ directory (0700) in the data volume."""
     root = state / BACKUPS
     try:
         os.mkdir(root, 0o700)
@@ -536,7 +574,6 @@ def _backup(state, now):
         if not stat.S_ISDIR(root.lstat().st_mode):
             raise ConfigurationError(f"{BACKUPS} in the data volume is not a directory") from None
     os.chmod(root, 0o700)
-    stamp = now.strftime("tls-%Y%m%dT%H%M%SZ")
     for suffix in ("", *(f"-{number}" for number in range(2, 1000))):
         target = root / (stamp + suffix)
         try:
@@ -545,8 +582,14 @@ def _backup(state, now):
         except FileExistsError:
             continue
     else:
-        raise ConfigurationError("Too many certificate backups within one second")
+        raise ConfigurationError(f"Too many {kind} backups within one second")
     os.chmod(target, 0o700)
+    return root, target
+
+
+def _backup(state, now):
+    """Copy the current pair to backups/tls-<UTC>/ (0700, files 0600); keep the newest KEEP_BACKUPS of them."""
+    root, target = _backup_directory(state, now.strftime("tls-%Y%m%dT%H%M%SZ"), "certificate")
     saved = []
     for name in TLS_FILES:
         if not (state / name).exists():
@@ -663,6 +706,375 @@ def _restore(state, payload, directory):
     return result
 
 
+def _sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _name_field(payload, key):
+    value = payload[key]
+    if not isinstance(value, str) or not 0 < len(value) <= 256 or not value.isprintable():
+        raise ConfigurationError(f"Expected a printable {key} name")
+    return value
+
+
+def _backup_request(payload, fields, minimum):
+    """The passphrase, host user and instance of a backup or restore request; the passphrase is never echoed."""
+    if not isinstance(payload, dict) or set(payload) != set(fields):
+        raise ConfigurationError(f"Expected an object containing {', '.join(fields)}")
+    passphrase = payload["passphrase"]
+    if not isinstance(passphrase, str) or not minimum <= len(passphrase) <= MAX_PASSPHRASE:
+        raise ConfigurationError(f"The passphrase must have {MIN_PASSPHRASE} to {MAX_PASSPHRASE} characters")
+    return passphrase, _name_field(payload, "user"), _name_field(payload, "instance")
+
+
+def _derive(passphrase, salt):
+    return Scrypt(salt=salt, length=32, **SCRYPT).derive(passphrase.encode("utf-8"))
+
+
+def _encrypt(plaintext, passphrase):
+    """RAVENWEB1, a JSON header line, then AES-256-GCM over plaintext with both lines as associated data."""
+    salt, nonce = secrets.token_bytes(SALT_BYTES), secrets.token_bytes(NONCE_BYTES)
+    header = {"kdf": "scrypt", **SCRYPT, "salt": base64.b64encode(salt).decode("ascii"),
+              "nonce": base64.b64encode(nonce).decode("ascii")}
+    associated = BACKUP_MAGIC + json.dumps(header).encode("ascii") + b"\n"
+    return associated + AESGCM(_derive(passphrase, salt)).encrypt(nonce, plaintext, associated)
+
+
+def _decrypt(data, passphrase):
+    """The plaintext of an encrypted backup; a wrong passphrase and any damage give the same error."""
+    if not data.startswith(BACKUP_MAGIC):
+        if data.startswith(BACKUP_MAGIC[:8]):
+            raise ConfigurationError("The file is a Raven web backup of an unsupported format version")
+        raise ConfigurationError("The file is not a Raven web settings backup (raven web backup makes one)")
+    end = data.find(b"\n", len(BACKUP_MAGIC), len(BACKUP_MAGIC) + MAX_HEADER)
+    try:
+        if end < 0:
+            raise ValueError("no header line")
+        header = json.loads(data[len(BACKUP_MAGIC):end])
+        if (not isinstance(header, dict) or set(header) != {"kdf", *SCRYPT, "salt", "nonce"}
+                or header["kdf"] != "scrypt"
+                or any(type(header[name]) is not int or header[name] != value for name, value in SCRYPT.items())
+                or not isinstance(header["salt"], str) or not isinstance(header["nonce"], str)):
+            raise ValueError("unexpected header")
+        salt = base64.b64decode(header["salt"], validate=True)
+        nonce = base64.b64decode(header["nonce"], validate=True)
+        if len(salt) != SALT_BYTES or len(nonce) != NONCE_BYTES:
+            raise ValueError("unexpected salt or nonce")
+        return AESGCM(_derive(passphrase, salt)).decrypt(nonce, data[end + 1:], data[:end + 1])
+    except (ValueError, TypeError, InvalidTag, binascii.Error):
+        raise ConfigurationError(UNDECRYPTABLE) from None
+
+
+def _archive(manifest, files, moment):
+    """An uncompressed tar of manifest.json and the state files, in a fixed order, as owner-only regular files."""
+    buffer = io.BytesIO()
+    members = ((MANIFEST, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()),
+               *((name, files[name]) for name in BACKUP_FILES))
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.mtime = len(data), 0o600, int(moment.timestamp())
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _unpack(plaintext):
+    """The members of a decrypted backup: exactly manifest.json and the state files, as regular files."""
+    names = [MANIFEST, *BACKUP_FILES]
+    try:
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:") as archive:
+            members = archive.getmembers()
+            if [member.name for member in members] != names or not all(member.isreg() for member in members):
+                raise ConfigurationError(f"The backup must hold exactly {', '.join(names)} as regular files")
+            contents = {}
+            for member in members:
+                if member.size > MAX_MEMBER[member.name]:
+                    raise ConfigurationError(f"{member.name} in the backup is too large")
+                contents[member.name] = archive.extractfile(member).read()
+    except (tarfile.TarError, EOFError):
+        raise ConfigurationError("The archive inside the backup is damaged") from None
+    return contents
+
+
+def _manifest(raw):
+    try:
+        manifest = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise ConfigurationError("manifest.json in the backup is not valid JSON") from None
+    if not isinstance(manifest, dict) or manifest.get("format") != BACKUP_FORMAT:
+        raise ConfigurationError("manifest.json does not describe a Raven web backup")
+    if type(manifest.get("version")) is not int or manifest["version"] != BACKUP_VERSION:
+        raise ConfigurationError(f"The backup has format version {manifest.get('version')!r}; this Raven reads "
+                                 f"version {BACKUP_VERSION}")
+    for key in ("created", "user", "instance", "origin", "fingerprint", "account"):
+        if not isinstance(manifest.get(key), str) or not manifest[key].isprintable():
+            raise ConfigurationError(f"manifest.json lacks a valid {key}")
+    try:
+        datetime.datetime.fromisoformat(manifest["created"])
+    except ValueError:
+        raise ConfigurationError("manifest.json lacks a valid created time") from None
+    files = manifest.get("files")
+    if (not isinstance(files, dict) or set(files) != set(BACKUP_FILES)
+            or not all(isinstance(value, str) and REVISION.fullmatch(value) for value in files.values())):
+        raise ConfigurationError(f"manifest.json must list the SHA-256 of {', '.join(BACKUP_FILES)}")
+    return manifest
+
+
+def _copy_database(source, target):
+    """A consistent copy of the live account database, even while the gateway writes it (SQLite backup API)."""
+    try:
+        info = source.lstat()
+    except FileNotFoundError:
+        raise ConfigurationError("Missing db.sqlite3; initialize the Raven web installation first") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigurationError("db.sqlite3 is not a regular file")
+    try:
+        with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)) as live, \
+                closing(sqlite3.connect(target)) as copy:
+            live.backup(copy)
+    except sqlite3.Error as error:
+        raise ConfigurationError(f"Cannot copy the account database ({error})") from None
+
+
+def _clean_database(path):
+    """Check a private copy of the account database and remove every browser login from it; return the account."""
+    try:
+        with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+            connection.execute("PRAGMA temp_store=MEMORY")
+            if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise ConfigurationError("db.sqlite3 fails the SQLite integrity check")
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"auth_user", "django_session"} <= tables:
+                raise ConfigurationError("db.sqlite3 is not a Raven web account database")
+            accounts = connection.execute("SELECT username FROM auth_user").fetchall()
+            if len(accounts) != 1:
+                raise ConfigurationError(f"db.sqlite3 holds {len(accounts)} accounts; Raven web needs exactly one")
+            # Logins are never carried over: their cookies must stay refused. VACUUM drops the deleted rows' bytes.
+            connection.execute("DELETE FROM django_session")
+            connection.execute("VACUUM")
+    except sqlite3.Error as error:
+        raise ConfigurationError(f"db.sqlite3 is not a usable SQLite database ({error})") from None
+    return accounts[0][0]
+
+
+def _check_contents(files, now):
+    """Refuse state files the gateway cannot run with; return their public summary and warnings."""
+    config = _parse_config(files["config.json"])
+    try:
+        certificate, key_text = files["tls.crt"].decode("ascii"), files["tls.key"].decode("ascii")
+    except UnicodeDecodeError:
+        raise ConfigurationError("tls.crt and tls.key must be PEM text") from None
+    # The rules of raven web configure, with the defaults raven web start would add to a never-started install.
+    revision = _sha256(files["config.json"])
+    _validate({"config": {"listen": "127.0.0.1", "port": 8443, **config}, "revision": revision},
+              {"config": config, "revision": revision, "certificate": certificate})
+    chain = _chain(certificate)
+    try:
+        key, key_type = _load_key(key_text)
+    except ConfigurationError as error:
+        raise ConfigurationError(f"tls.key: {error}") from None
+    origin = _origin(config["origin"])
+    _check_pair(chain, key, [(origin.hostname, config["origin"])], now, dates=False)
+    if not SECRET_KEY.fullmatch(files["secret.key"]):
+        raise ConfigurationError("secret.key is not a Raven web secret key")
+    leaf = chain[0]
+    not_before, not_after = leaf.not_valid_before_utc, leaf.not_valid_after_utc
+    warnings = []
+    if not_after <= now:
+        warnings.append(f"The certificate expired on {_moment(not_after)}; run raven web certificate renew "
+                        "before raven web start")
+    elif not_before > now + CLOCK_SKEW:
+        warnings.append(f"The certificate is not valid until {_moment(not_before)}; check the server clock")
+    elif (not_after - now).days < WARNING_DAYS:
+        warnings.append(f"The certificate expires on {not_after:%Y-%m-%d} ({(not_after - now).days} days left); "
+                        "renew it soon")
+    summary = {"origin": config["origin"], "fingerprint": _fingerprint(leaf), "names": _names(leaf),
+               "not_before": not_before.isoformat(), "not_after": not_after.isoformat(), "key_type": key_type,
+               **{key: config.get(key) for key in ("listen", "port", "ssh_target", "ssh_port")}}
+    return summary, warnings
+
+
+def _create_backup(state, payload):
+    """Snapshot, check and encrypt the state files; only the encrypted bytes and public facts leave the helper."""
+    passphrase, user, instance = _backup_request(payload, ("passphrase", "user", "instance"), MIN_PASSPHRASE)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # Writers in other helpers hold this lock exclusively; the gateway itself only writes db.sqlite3.
+        fcntl.flock(directory, fcntl.LOCK_SH)
+        with tempfile.TemporaryDirectory(prefix="raven-backup-") as scratch:
+            database = Path(scratch) / "db.sqlite3"
+            _copy_database(state / "db.sqlite3", database)
+            account = _clean_database(database)
+            files = {"db.sqlite3": database.read_bytes()}
+        for name in BACKUP_FILES[1:]:
+            files[name] = _read_file(state / name)
+    finally:
+        os.close(directory)
+    for name, data in files.items():
+        if len(data) > MAX_MEMBER[name]:
+            raise ConfigurationError(f"{name} is larger than a backup may hold")
+    try:
+        summary, warnings = _check_contents(files, now)
+    except ConfigurationError as error:
+        raise ConfigurationError(f"The data volume holds settings Raven cannot restore: {error}") from None
+    manifest = {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "created": now.isoformat(timespec="seconds"),
+                "user": user, "instance": instance, "origin": summary["origin"],
+                "fingerprint": summary["fingerprint"], "account": account,
+                "files": {name: _sha256(files[name]) for name in BACKUP_FILES}}
+    data = _encrypt(_archive(manifest, files, now), passphrase)
+    if len(data) > MAX_BACKUP_BYTES:
+        raise ConfigurationError(f"The backup would exceed {MAX_BACKUP_BYTES // (1024 * 1024)} MiB")
+    return {"data": base64.b64encode(data).decode("ascii"), "warnings": warnings,
+            "summary": {**summary, "created": manifest["created"], "account": account}}
+
+
+def _prepare_restore(payload, now):
+    """Decrypt and check a backup completely; return its manifest, the files to install and their summary."""
+    passphrase, user, instance = _backup_request(payload, ("passphrase", "user", "instance", "backup"), 1)
+    encoded = payload["backup"]
+    try:
+        data = base64.b64decode(encoded, validate=True) if isinstance(encoded, str) else None
+    except binascii.Error:
+        data = None
+    if data is None or len(data) > MAX_BACKUP_BYTES:
+        raise ConfigurationError("Expected the backup file in base64, at most "
+                                 f"{MAX_BACKUP_BYTES // (1024 * 1024)} MiB")
+    contents = _unpack(_decrypt(data, passphrase))
+    manifest = _manifest(contents.pop(MANIFEST))
+    for name in BACKUP_FILES:
+        if _sha256(contents[name]) != manifest["files"][name]:
+            raise ConfigurationError(f"{name} in the backup does not match the SHA-256 in its manifest")
+    if (manifest["user"], manifest["instance"]) != (user, instance):
+        raise ConfigurationError(f"The backup is from another installation (host user {manifest['user']}, "
+                                 f"instance {manifest['instance']}), not from host user {user}, instance "
+                                 f"{instance}; restore it there")
+    with tempfile.TemporaryDirectory(prefix="raven-restore-") as scratch:
+        database = Path(scratch) / "db.sqlite3"
+        _private_file(database, contents["db.sqlite3"])
+        try:
+            account = _clean_database(database)
+        except ConfigurationError as error:
+            raise ConfigurationError(f"The backup cannot be restored: {error}") from None
+        contents["db.sqlite3"] = database.read_bytes()
+    try:
+        summary, warnings = _check_contents(contents, now)
+    except ConfigurationError as error:
+        raise ConfigurationError(f"The backup cannot be restored: {error}") from None
+    for key, value in (("account", account), ("origin", summary["origin"]), ("fingerprint", summary["fingerprint"])):
+        if manifest[key] != value:
+            raise ConfigurationError(f"The backup cannot be restored: its manifest names another {key}")
+    summary = {**summary, "created": manifest["created"], "user": manifest["user"],
+               "instance": manifest["instance"], "account": account}
+    return contents, summary, warnings
+
+
+def _current(state):
+    """The origin and certificate the data volume holds now, or None when it holds no settings at all."""
+    if not state.is_dir() or not any((state / name).exists() for name in BACKUP_FILES):
+        return None
+    current = {"origin": None, "fingerprint": None}
+    try:
+        current["origin"] = _read_config(state)[1]["origin"]
+    except (OSError, ValueError):
+        pass
+    try:
+        current["fingerprint"] = _fingerprint(_chain(_read_file(state / "tls.crt").decode("ascii"))[0])
+    except (OSError, ValueError):
+        pass
+    return current
+
+
+def _check_restore(state, payload):
+    _, summary, warnings = _prepare_restore(payload, datetime.datetime.now(datetime.timezone.utc))
+    return {"backup": summary, "current": _current(state), "warnings": warnings}
+
+
+def _temporary(state, name, data):
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{name}.restore.", dir=state)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        os.unlink(temporary)
+        raise
+    return Path(temporary)
+
+
+def _save_current(state, now):
+    """Copy the state files that exist to backups/pre-restore-<UTC>/ (0700, files 0600); return it and their names."""
+    present = [name for name in (*BACKUP_FILES, *DATABASE_SIDECARS) if os.path.lexists(state / name)]
+    if not present:
+        return None, []
+    _, target = _backup_directory(state, now.strftime(PRE_RESTORE + "%Y%m%dT%H%M%SZ"), "pre-restore")
+    for name in present:
+        data = _read_file(state / name)
+        _private_file(target / name, data)
+        if _read_file(target / name) != data:
+            raise ConfigurationError("Verifying the copy of the current files failed")
+    _sync_directory(target)
+    _sync_directory(target.parent)
+    return target, present
+
+
+def _put_back(state, saved, present, directory):
+    for name in (*BACKUP_FILES, *DATABASE_SIDECARS):
+        if name in present:
+            os.replace(_temporary(state, name, _read_file(saved / name)), state / name)
+        else:
+            (state / name).unlink(missing_ok=True)
+    os.fsync(directory)
+
+
+def _problem(error):
+    return str(error) if isinstance(error, ConfigurationError) else (
+        getattr(error, "strerror", None) or type(error).__name__)
+
+
+def _restore_backup(state, payload, directory):
+    """Check the backup, keep the current files, then replace them one by one; any failure puts them back."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    contents, summary, warnings = _prepare_restore(payload, now)
+    try:
+        saved, present = _save_current(state, now)
+    except (OSError, ValueError) as error:
+        raise ConfigurationError(f"Saving the current files failed ({_problem(error)}); nothing was restored") from None
+    temporaries = {}
+    try:
+        for name in BACKUP_FILES:
+            temporaries[name] = _temporary(state, name, contents[name])
+        # A journal left next to the old database would be rolled into the restored one.
+        for name in DATABASE_SIDECARS:
+            (state / name).unlink(missing_ok=True)
+        for name in BACKUP_FILES:
+            os.replace(temporaries[name], state / name)
+            del temporaries[name]
+        os.fsync(directory)
+        for name in BACKUP_FILES:
+            if _read_file(state / name) != contents[name]:
+                raise ConfigurationError(f"{name} reads back differently")
+    except Exception as error:
+        for temporary in temporaries.values():
+            temporary.unlink(missing_ok=True)
+        kept = f"{BACKUPS}/{saved.name}" if saved else None
+        try:
+            if saved:
+                _put_back(state, saved, present, directory)
+            else:
+                for name in (*BACKUP_FILES, *DATABASE_SIDECARS):
+                    (state / name).unlink(missing_ok=True)
+        except Exception:
+            where = f"copy the files back from {kept}" if kept else "remove the data volume and restore again"
+            raise ConfigurationError(f"Restoring failed ({_problem(error)}), and so did putting the previous files "
+                                     f"back; {where}") from None
+        raise ConfigurationError(f"Restoring failed ({_problem(error)}); the previous files are back in place"
+                                 + (f" (a copy stays in {kept})" if kept else "")) from None
+    return {"backup": summary, "warnings": warnings, "saved": f"{BACKUPS}/{saved.name}" if saved else None}
+
+
 def _accounts(path):
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         total, active = connection.execute("SELECT COUNT(*), COALESCE(SUM(is_active), 0) FROM auth_user").fetchone()
@@ -710,8 +1122,12 @@ def execute(action, payload=None, state=None):
         return snapshot
     if action == "certificate-check":
         return _certificate_request(state, payload)
-    if action not in ("write", "certificate-apply", "certificate-restore"):
-        raise ConfigurationError("Expected read, validate, write, inspect or a certificate action")
+    if action == "backup":
+        return _create_backup(state, payload)
+    if action == "restore-check":
+        return _check_restore(state, payload)
+    if action not in ("write", "certificate-apply", "certificate-restore", "restore"):
+        raise ConfigurationError("Expected read, validate, write, inspect, a certificate or a backup action")
     directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(directory, fcntl.LOCK_EX)
@@ -719,6 +1135,8 @@ def execute(action, payload=None, state=None):
             return _certificate_request(state, payload, directory)
         if action == "certificate-restore":
             return _restore(state, payload, directory)
+        if action == "restore":
+            return _restore_backup(state, payload, directory)
         raw, snapshot = _snapshot(state)
         config, encoded = _validate(payload, snapshot)
         if config == snapshot["config"]:
@@ -735,13 +1153,15 @@ def execute(action, payload=None, state=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Read, validate, inspect or atomically update Raven web configuration "
-                                     "and its HTTPS certificate")
-    parser.add_argument("action", choices=("read", "validate", "write", "inspect", *CERTIFICATE_ACTIONS))
+                                     "and its HTTPS certificate; back up and restore it encrypted")
+    parser.add_argument("action", choices=("read", "validate", "write", "inspect", *CERTIFICATE_ACTIONS,
+                                           *BACKUP_ACTIONS))
     arguments = parser.parse_args()
     try:
         payload = None
         if arguments.action not in ("read", "inspect"):
-            limit = MAX_TLS_BYTES if arguments.action in CERTIFICATE_ACTIONS else MAX_CONFIG_BYTES
+            limit = (MAX_TLS_BYTES if arguments.action in CERTIFICATE_ACTIONS
+                     else MAX_BACKUP_REQUEST if arguments.action in BACKUP_ACTIONS else MAX_CONFIG_BYTES)
             data = sys.stdin.read(limit + 1)
             if len(data) > limit:
                 raise ConfigurationError(f"The request exceeds {limit // 1024} KiB")
@@ -751,9 +1171,9 @@ def main():
         print(f"Raven configuration: {error}", file=sys.stderr)
         return 1
     except Exception as error:
-        if arguments.action not in CERTIFICATE_ACTIONS:
+        if arguments.action not in (*CERTIFICATE_ACTIONS, *BACKUP_ACTIONS):
             raise
-        # A traceback could quote the request, and a certificate request carries a private key.
+        # A traceback could quote the request: a private key, or a backup passphrase.
         print(f"Raven configuration: unexpected {type(error).__name__}", file=sys.stderr)
         return 1
     return 0

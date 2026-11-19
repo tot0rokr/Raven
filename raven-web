@@ -2,8 +2,10 @@
 """Build, provision and run the single-account Raven web gateway."""
 
 import argparse
+import base64
 import contextlib
 import fcntl
+import getpass
 import http.client
 import ipaddress
 import json
@@ -41,7 +43,12 @@ CERTIFICATE_WARNING_DAYS = 30
 CERTIFICATE_MAX_DAYS = 825
 MAX_PEM_FILE = 128 * 1024
 TRUST_GUIDE = "docs/web.md, trusting the certificate on Windows"
-WRITE_ACTIONS = ("write", "certificate-apply", "certificate-restore")
+WRITE_ACTIONS = ("write", "certificate-apply", "certificate-restore", "restore")
+HOST_USER = pwd.getpwuid(os.getuid()).pw_name
+MIN_PASSPHRASE = 12
+MAX_PASSPHRASE = 1024
+MAX_BACKUP_FILE = 24 * 1024 * 1024
+BACKUP_EXTENSION = ".ravenweb"
 GATEWAY_BROKER = "/run/raven/broker.sock"
 LOGIN_ID = re.compile(r"[0-9a-f]{16}")
 LABEL_WIDTH = 9
@@ -150,17 +157,20 @@ def inspect_owned(kind, name):
     return item
 
 
-def container_args(readonly=False):
-    return [*resource_args(), "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges", "--pids-limit", "256",
-            "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount",
-            f"type=volume,src={VOLUME},dst=/data" + (",readonly" if readonly else "")]
+def container_args(readonly=False, volume=True):
+    """Options of a locked-down container as this account; volume=False leaves the data volume out."""
+    arguments = [*resource_args(), "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
+                 "--security-opt", "no-new-privileges", "--pids-limit", "256",
+                 "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m"]
+    if volume:
+        arguments += ["--mount", f"type=volume,src={VOLUME},dst=/data" + (",readonly" if readonly else "")]
+    return arguments
 
 
-def helper(action, payload=None):
+def helper(action, payload=None, volume=True):
     """Run one service_config.py action in a networkless helper container; a payload travels on stdin only."""
     result = docker("run", "--rm", "-i", "--pull", "never", "--network", "none",
-                    *container_args(readonly=action not in WRITE_ACTIONS), "--mount",
+                    *container_args(readonly=action not in WRITE_ACTIONS, volume=volume), "--mount",
                     f"type=bind,src={SOURCE / 'web/raven_web/service_config.py'},dst=/app/raven_config.py,readonly",
                     IMAGE, "python", "/app/raven_config.py", action,
                     input=None if payload is None else json.dumps(payload))
@@ -520,16 +530,21 @@ def start_unit():
     wait_for_broker(DOCKER_WAIT)
 
 
+def create_volume():
+    """The labelled data volume with an empty /data (0700) owned by this account."""
+    docker("volume", "create", "--label", f"{LABEL}={os.getuid()}", VOLUME)
+    docker("run", "--rm", "--network", "none", *resource_args(), "--user", "0", "--read-only",
+           "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+           "--security-opt", "no-new-privileges", "--mount", f"type=volume,src={VOLUME},dst=/data",
+           IMAGE, "python", "manage.py", "init-data", "--uid", str(os.getuid()), "--gid", str(os.getgid()))
+
+
 def initialize(args):
     current = inspect_owned("container", NAME)
     if current and current["State"]["Running"]:
         raise RequestError("Stop the web gateway before provisioning")
     if not inspect_owned("volume", VOLUME):
-        docker("volume", "create", "--label", f"{LABEL}={os.getuid()}", VOLUME)
-        docker("run", "--rm", "--network", "none", *resource_args(), "--user", "0", "--read-only",
-               "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
-               "--security-opt", "no-new-privileges", "--mount", f"type=volume,src={VOLUME},dst=/data",
-               IMAGE, "python", "manage.py", "init-data", "--uid", str(os.getuid()), "--gid", str(os.getgid()))
+        create_volume()
     docker("run", "--rm", "-it", "--network", "none", *container_args(), IMAGE,
            "python", "manage.py", "setup", "--username", args.username, "--origin", args.origin,
            capture=False)
@@ -1225,10 +1240,10 @@ def doctor():
     return report.failed
 
 
-def certificate_helper(action, payload):
-    """A certificate helper action whose failure reads as the reason alone; no key material can be in it."""
+def private_helper(action, payload, volume=True):
+    """A certificate or backup helper action whose failure reads as the reason alone; no secret can be in it."""
     try:
-        return helper(action, payload)
+        return helper(action, payload, volume)
     except RequestError as error:
         raise RequestError(redact(str(error)).removeprefix("Raven configuration: ")) from None
 
@@ -1344,7 +1359,7 @@ def roll_back(result, config, error):
         print(f"raven web: {backup} has no complete previous pair to restore; run raven web doctor", file=sys.stderr)
         return 1
     try:
-        restored = certificate_helper("certificate-restore", {"backup": result["backup"].split("/", 1)[1]})
+        restored = private_helper("certificate-restore", {"backup": result["backup"].split("/", 1)[1]})
         restart_gateway(config, restored["certificate"])
     except (RequestError, OSError, ValueError, subprocess.TimeoutExpired) as failure:
         print(f"raven web: restoring the previous certificate failed too: {redact(str(failure))}", file=sys.stderr)
@@ -1360,7 +1375,7 @@ def replace_certificate(request):
     current = inspect_owned("container", NAME)
     running = bool(current and current["State"]["Running"] and not current["State"].get("Restarting"))
     published = binding(current) if running else None
-    result = certificate_helper("certificate-apply", {**request, "origins": running_origins(current)})
+    result = private_helper("certificate-apply", {**request, "origins": running_origins(current)})
     for warning in result["warnings"]:
         print(f"raven web: warning: {warning}", file=sys.stderr)
     term = Terminal()
@@ -1397,14 +1412,267 @@ def change_certificate(args):
         raise RequestError("Replacing the certificate needs confirmation: run it in a terminal, or add -y")
     require_data()
     request = certificate_request(args)
-    check = certificate_helper("certificate-check",
-                               {**request, "origins": running_origins(inspect_owned("container", NAME))})
+    check = private_helper("certificate-check",
+                           {**request, "origins": running_origins(inspect_owned("container", NAME))})
     for warning in check["warnings"]:
         print(f"raven web: warning: {warning}", file=sys.stderr)
     if not args.yes and not confirm_replacement(check):
         raise RequestError("Cancelled; the certificate is unchanged")
     with manager_lock():
         return replace_certificate(request)
+
+
+def read_passphrase_file(path):
+    """The first line of a file only this account can read; its content never appears in a message."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as error:
+        raise RequestError(f"Cannot read --passphrase-file {path}: {error.strerror}") from None
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(descriptor)
+        raise RequestError(f"--passphrase-file {path} is not a regular file")
+    with os.fdopen(descriptor, "rb") as source:
+        mode = stat.S_IMODE(info.st_mode)
+        if info.st_uid != os.getuid():
+            raise RequestError(f"--passphrase-file {path} belongs to another user")
+        if mode & 0o077:
+            raise RequestError(f"--passphrase-file {path} has mode {mode:04o}; other users must not read it: "
+                               f"chmod 600 {shlex.quote(str(path))}")
+        data = source.read(MAX_PASSPHRASE * 4 + 3)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RequestError(f"--passphrase-file {path} is not UTF-8 text") from None
+    text = text.removesuffix("\n").removesuffix("\r")
+    if "\n" in text or "\r" in text:
+        raise RequestError(f"--passphrase-file {path} must hold the passphrase on a single line")
+    return text
+
+
+def passphrase(args, new):
+    """The backup passphrase from --passphrase-file or a terminal prompt (twice for a new backup).
+
+    It travels to the helper container on stdin only, never in an argument, the environment or any output."""
+    if args.passphrase_file:
+        text = read_passphrase_file(args.passphrase_file)
+    elif sys.stdin.isatty():
+        text = getpass.getpass("Passphrase for the new backup: " if new else "Backup passphrase: ")
+        if new:
+            check_passphrase(text, new)
+            if getpass.getpass("Repeat the passphrase: ") != text:
+                raise RequestError("The passphrases do not match; nothing was written")
+    else:
+        raise RequestError("A passphrase is needed: run it in a terminal, or give --passphrase-file FILE "
+                           "(mode 0600)")
+    check_passphrase(text, new)
+    return text
+
+
+def check_passphrase(text, new):
+    if len(text) < MIN_PASSPHRASE:
+        raise RequestError(f"Choose a passphrase of at least {MIN_PASSPHRASE} characters" if new else
+                           f"A backup passphrase has at least {MIN_PASSPHRASE} characters")
+    if len(text) > MAX_PASSPHRASE:
+        raise RequestError(f"A passphrase has at most {MAX_PASSPHRASE} characters")
+
+
+def backup_target(output):
+    """Where the new backup goes: -o FILE, which must not exist, or a new name in the private backups directory."""
+    if output is not None:
+        path = Path(os.path.abspath(output))
+        if os.path.lexists(path):
+            raise RequestError(f"{path} already exists; choose another -o FILE")
+        return path
+    data_home = os.environ.get("XDG_DATA_HOME", "")
+    directory = Path(data_home if os.path.isabs(data_home) else Path.home() / ".local/share") / "raven/backups"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise RequestError(f"{directory} must be a directory owned by you")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        directory.chmod(0o700)
+    stem = f"web-{INSTANCE}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+    for suffix in ("", *(f"-{number}" for number in range(2, 100))):
+        path = directory / f"{stem}{suffix}{BACKUP_EXTENSION}"
+        if not os.path.lexists(path):
+            return path
+    raise RequestError(f"Too many backups named {stem}; choose -o FILE")
+
+
+def write_private(path, data):
+    """Write a new 0600 file through a temporary name in its directory; never replace an existing file."""
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise RequestError(f"{path} appeared meanwhile; the backup was not written") from None
+        except OSError:
+            # A file system without hard links; the name was free a moment ago.
+            if os.path.lexists(path):
+                raise RequestError(f"{path} appeared meanwhile; the backup was not written") from None
+            os.rename(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def size_text(size):
+    if size < 1024:
+        return f"{size} bytes"
+    return f"{size / 1024:.0f} KiB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MiB"
+
+
+def warn(warnings):
+    for warning in warnings:
+        print(f"raven web: warning: {warning}", file=sys.stderr)
+
+
+def backup(args):
+    """raven web backup: an encrypted copy of the account, certificate, key, secret.key and saved settings."""
+    output = backup_target(args.output)
+    require_data()
+    phrase = passphrase(args, new=True)
+    with manager_lock():
+        result = private_helper("backup", {"passphrase": phrase, "user": HOST_USER, "instance": INSTANCE})
+    data = base64.b64decode(result["data"], validate=True)
+    write_private(output, data)
+    warn(result["warnings"])
+    summary = result["summary"]
+    term = Terminal()
+    print(term.paint("Web settings backup", BOLD) + f" of {VOLUME}")
+    term.row("File", str(output), wrap=False)
+    term.row("Size", f"{size_text(len(data))}, mode 0600, encrypted")
+    term.row("Account", summary["account"])
+    term.row("Browser", summary["origin"])
+    term.row("SHA-256", f"{summary['fingerprint']}", wrap=False)
+    print()
+    term.write("", "It holds the account and its password hash, the HTTPS certificate and private key, secret.key "
+               "and the saved settings, encrypted with the passphrase (scrypt, AES-256-GCM). Browser logins are not "
+               "included. Keep the passphrase: without it the backup cannot be restored.", 0)
+    term.write("", f"Restore: raven web stop, then raven web restore {shlex.quote(str(output))}", 0, wrap=False)
+
+
+def read_backup_file(path):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as error:
+        raise RequestError(f"Cannot read {path}: {error.strerror}") from None
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RequestError(f"{path} is not a regular file")
+    with os.fdopen(descriptor, "rb") as source:
+        data = source.read(MAX_BACKUP_FILE + 1)
+    if len(data) > MAX_BACKUP_FILE:
+        raise RequestError(f"{path} is larger than {MAX_BACKUP_FILE // (1024 * 1024)} MiB; it is not a Raven web "
+                           "backup")
+    return data
+
+
+def require_stopped():
+    """Refuse while the gateway or its systemd unit runs: a restore never swaps files under a live gateway."""
+    current = inspect_owned("container", NAME)
+    if current and current["State"]["Running"]:
+        raise RequestError("The web service is running; stop it before restoring: raven web stop")
+    unit = autostart()
+    if unit and unit.get("ActiveState") in ("active", "activating", "reloading"):
+        raise RequestError(f"{UNIT} is running; stop the web service before restoring: raven web stop")
+
+
+def describe_restore(check, path, exists):
+    """What a restore puts back and what changes, shown before the confirmation."""
+    saved, current = check["backup"], check["current"]
+    term = Terminal()
+    print(term.paint(f"Restore the web settings of {NAME}", BOLD) + f" from {path}")
+    term.row("Backup", f"{local_time(saved['created'])}, host user {saved['user']}, instance {saved['instance']}")
+    term.row("Account", f"{saved['account']} (the password it had then)")
+    browser = saved["origin"]
+    if current and current.get("origin") and current["origin"] != browser:
+        browser += f" (now {current['origin']})"
+    term.row("Browser", browser)
+    if saved.get("port") is not None:
+        term.row("Listen", f"{saved.get('listen') or '127.0.0.1'}:{saved['port']}")
+    else:
+        term.row("Listen", "not saved yet (raven web start chooses 127.0.0.1:8443)")
+    if saved.get("ssh_target"):
+        term.row("SSH", saved["ssh_target"] + (f", port {saved['ssh_port']}" if saved.get("ssh_port") else ""))
+    not_after = datetime.fromisoformat(saved["not_after"])
+    term.row("SHA-256", saved["fingerprint"], wrap=False)
+    term.row("Expires", expiry(not_after, (not_after - datetime.now(timezone.utc)).days))
+    print()
+    term.write("", "Restoring replaces the account and its password, the HTTPS certificate and private key, "
+               "secret.key, and the saved settings (browser origin, listen address and port, SSH target) with the "
+               "backup's. Browser logins are not restored: every login ends, and cookies from before the backup stay "
+               "refused.", 0)
+    if not exists:
+        term.write("", f"The data volume {VOLUME} does not exist; it is created first, as raven web init does.", 0)
+    elif current is None:
+        term.write("", f"The data volume {VOLUME} holds no settings yet.", 0)
+    else:
+        term.write("", f"The current files stay in {VOLUME}:/data/backups/pre-restore-<UTC time>/.", 0)
+    if current and current.get("fingerprint") == saved["fingerprint"]:
+        term.write("", "The certificate is the one in use now; PCs that trust it need nothing new.", 0)
+    elif current:
+        term.write("", "The certificate differs from the current one: register it on each PC again afterwards "
+                   f"({TRUST_GUIDE}).", 0)
+    else:
+        term.write("", f"Register the certificate on each PC that does not trust it yet ({TRUST_GUIDE}).", 0)
+
+
+def restore(args):
+    """raven web restore: check, confirm, keep the current files, then put the backup's in place; never start."""
+    if not args.yes and not sys.stdin.isatty():
+        raise RequestError("Restoring needs confirmation: run it in a terminal, or add -y")
+    require_stopped()
+    data = read_backup_file(args.file)
+    payload = {"passphrase": passphrase(args, new=False), "user": HOST_USER, "instance": INSTANCE,
+               "backup": base64.b64encode(data).decode("ascii")}
+    exists = inspect_owned("volume", VOLUME) is not None
+    check = private_helper("restore-check", payload, volume=exists)
+    warn(check["warnings"])
+    describe_restore(check, args.file, exists)
+    if not args.yes:
+        try:
+            answer = input("Type yes to restore: ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() != "yes":
+            raise RequestError("Cancelled; nothing was restored")
+    with manager_lock():
+        require_stopped()
+        created = inspect_owned("volume", VOLUME) is None
+        try:
+            if created:
+                create_volume()
+                print(f"Created the data volume {VOLUME}, as raven web init does")
+            result = private_helper("restore", payload)
+        except Exception:
+            if created:
+                docker("volume", "rm", VOLUME, check=False)
+                print(f"raven web: removed the data volume {VOLUME} created for this restore", file=sys.stderr)
+            raise
+    term = Terminal()
+    if result["saved"]:
+        term.write("", f"Previous files saved: {VOLUME}:/data/{result['saved']}", 0, wrap=False)
+    term.write("", f"Restored the web settings of {local_time(result['backup']['created'])}; every browser login "
+               "has ended.", 0)
+    term.write("", "Next: raven web start", 0, wrap=False)
+    current = check["current"] or {}
+    if current.get("fingerprint") != result["backup"]["fingerprint"]:
+        term.write("", "Then register the restored certificate on each PC that does not trust it yet: raven web "
+                   f"certificate, and check that its SHA-256 is the one above ({TRUST_GUIDE}).", 0)
 
 
 def arguments():
@@ -1453,6 +1721,16 @@ def arguments():
     for command in (renew, load):
         command.add_argument("-y", "--yes", action="store_true",
                              help="replace without asking; PCs must register the new certificate afterwards")
+    save = commands.add_parser("backup", help="write an encrypted backup of the account, certificate and settings")
+    save.add_argument("-o", "--output", type=Path, metavar="FILE",
+                      help="write FILE, which must not exist (default: a new file in "
+                           "${XDG_DATA_HOME:-~/.local/share}/raven/backups)")
+    put_back = commands.add_parser("restore", help="put an encrypted backup back into the stopped web service")
+    put_back.add_argument("file", type=Path, metavar="FILE", help="a file from raven web backup")
+    put_back.add_argument("-y", "--yes", action="store_true", help="restore without asking")
+    for command in (save, put_back):
+        command.add_argument("--passphrase-file", type=Path, metavar="FILE",
+                             help="read the passphrase from FILE (one line, mode 0600) instead of asking for it")
     return parser.parse_args()
 
 
@@ -1490,6 +1768,12 @@ def main():
         return change_certificate(args)
     if args.action == "logins" and not args.logins_action:
         show_logins()
+        return
+    if args.action == "backup":
+        backup(args)
+        return
+    if args.action == "restore":
+        restore(args)
         return
     managed = args.action == "start" and (autostart() or {}).get("enabled", False)
     with manager_lock():

@@ -343,6 +343,24 @@ raven web start
 - 웹 이미지를 갱신할 때는 `build`, `stop`, `start` 순서로 실행한다. 계정과 인증서는 유지된다.
 - runtime 디렉터리가 지워졌다가 다시 만들어져 웹 컨테이너가 이전 디렉터리를 보고 있으면 `start`가 컨테이너를 다시 만든다.
 
+## 웹 설정 백업과 복원
+
+```bash
+raven web backup                                   # 암호를 두 번 묻는다
+raven web backup -o ~/web.ravenweb --passphrase-file ~/.web-backup-pass
+raven web stop
+raven web restore ~/.local/share/raven/backups/web-web-20261119T020822Z.ravenweb
+raven web start
+```
+
+- 백업에는 웹 계정과 비밀번호 hash, HTTPS 인증서와 개인 키, `secret.key`, 저장된 설정(브라우저 주소, 서버 포트, SSH 대상)이 들어간다. 로그인 세션은 넣지 않는다. 언제나 암호로 암호화한다(scrypt로 키를 만들고 AES-256-GCM). 암호를 잃으면 복원할 수 없다.
+- 암호는 12자 이상이다. 터미널에서는 화면에 보이지 않게 묻고, 스크립트에서는 `--passphrase-file`(내 소유, 다른 사용자 권한 없는 `0600`·`0400` 파일, 한 줄)을 쓴다. 암호는 도우미 컨테이너에 표준 입력으로만 넘기고 출력·로그에 남기지 않는다.
+- 웹 서비스가 켜져 있어도 백업한다(DB는 SQLite backup API로 일관된 사본을 뜬다). 기본 저장 위치는 `~/.local/share/raven/backups/web-<instance>-<UTC 시각>.ravenweb`, 파일 `0600`이다.
+- 복원은 웹 서비스를 멈춘 상태(`raven web stop`)에서만 한다. 데이터 volume이 없으면 `init`처럼 만든다. 끝나도 서비스를 켜지 않으므로 `raven web start`를 실행한다.
+- 복원 전에 범위를 보이고 `yes`를 입력받는다(`-y`면 묻지 않음). 바뀌는 것: 계정과 비밀번호(백업 당시의 것), 인증서와 키, `secret.key`, 저장된 설정. 모든 브라우저 로그인은 끝나고 백업 전의 cookie로는 들어올 수 없다. 인증서가 지금과 다르면 PC마다 [다시 신뢰 등록](#windows에서-인증서-신뢰)한다.
+- 바꾸기 전 지금 파일을 데이터 volume의 `/data/backups/pre-restore-<UTC 시각>/`(`0700`, 파일 `0600`)에 남기고, 중간에 실패하면 그것으로 되돌린다. 이 사본은 자동으로 지우지 않는다.
+- 거절하는 것: 틀린 암호와 손상된 파일(같은 "Cannot decrypt" 메시지), 다른 호스트 사용자나 다른 instance의 백업, 계정이 하나가 아니거나 설정·인증서·키가 맞지 않는 내용. 거절할 때 기존 파일은 바뀌지 않는다. 만료된 인증서는 경고만 하고, 시작 전에 `raven web certificate renew`를 하라고 알린다.
+
 ## 자동 기동
 
 ```bash
@@ -393,6 +411,7 @@ raven web disable         # unit을 지운다. 실행 중인 게이트웨이는 
 - 데이터 volume: `raven-<user>-web-data`. `/data`의 `db.sqlite3`, `secret.key`, `config.json`, 설정 변경 전 백업, `tls.crt`, `tls.key`, 인증서 교체 전 백업(`backups/tls-<UTC 시각>/`, 최근 5개)을 보관한다. NFS 홈을 사용하지 않는다.
 - 호스트 runtime 디렉터리: `${XDG_RUNTIME_DIR:-/tmp}/raven-web-<uid>-web`. `broker.sock`, `broker.log`, `manager.lock`, 디렉터리 교체를 알아보는 `runtime.id`를 둔다.
 - 프로세스: `raven_web_host.py`와 웹 컨테이너. 호스트에 Python 패키지를 설치하지 않는다.
+- 웹 설정 백업: `~/.local/share/raven/backups/web-*.ravenweb` (`0600`, 암호화). 복원 전 사본은 데이터 volume의 `backups/pre-restore-*/`에 남는다.
 - 업로드 임시 폴더: `~/Downloads/.raven-uploads` (`0700`). 웹에서 파일을 처음 올릴 때 중계가 만들고, 받는 중인 파일(`<token>.part`)을 둔다.
 - systemd 사용자 unit: `~/.config/systemd/user/raven-web.service`. `enable`이 만들고 `disable`이 지운다. instance를 바꾸면 `raven-<instance>.service`다.
 
@@ -423,6 +442,8 @@ python3 tests/web_files_e2e.py
 python3 tests/web_pause_e2e.py
 python3 tests/web_certificate_e2e.py
 python3 tests/web_logins_e2e.py
+python3 tests/web_backup_e2e.py
+python3 tests/session_backup_e2e.py
 python3 tests/pause_e2e.py
 python3 tests/web_e2e.py
 ```
@@ -436,6 +457,8 @@ doctor 통합 시험은 정상 설치, 적용 대기 설정, 다음 시작 포�
 클립보드 통합 시험은 세션 이미지에 `xclip`만 더한 시험 이미지(`raven:clipboard-test`)로 데스크톱 두 개를 만들고 각각에 브라우저 뷰어를 붙인다. 뷰어 A에서 보낸 한글·여러 줄·탭 텍스트가 데스크톱 1의 CLIPBOARD와 PRIMARY에 그대로 들어가고 데스크톱 2에는 가지 않는지, 데스크톱 2에서 `xclip`으로 복사한 텍스트가 뷰어 B에만 나타나는지 확인한다. 이어서 PC 클립보드 가져오기·복사, 256KiB 한도(세션 클립보드가 바뀌지 않음), 세션 목록으로 돌아갈 때 비우기, 권한이 없는 브라우저의 안내와 모바일 배치를 확인하고, 게이트웨이 로그에 텍스트와 비밀번호가 없는지 본다. Xvnc는 한 뷰어가 보낸 클립보드를 다른 VNC 뷰어에 다시 보내지 않으므로, 세션 안의 X 앱(여기서는 `xclip`)을 거쳐 확인한다.
 
 파일 화면 시험(`web_files_ui.py`)은 실제 template·JavaScript·CSS와 메모리 안의 가짜 파일 API로 PC와 휴대폰 크기에서 대화상자 열기, 경로 이동, 여러 조각 업로드의 sha256, 진행률, 취소, 덮어쓰기 선택, 오류 문구, 대화상자를 닫은 뒤의 업로드, 페이지 이탈 경고를 검사한다. 파일 통합 시험(`web_files_e2e.py`)은 임시 HOME의 실제 게이트웨이·중계와 openbox 시험 세션을 쓴다. 브라우저의 로그인 cookie로 파일 API를 불러 여러 조각의 한글 이름 파일과 하위 폴더 업로드를 세션 안의 sha256으로, 세션이 만든 파일의 다운로드를 브라우저 쪽 sha256으로 맞춘다. 올린 파일의 권한·그룹, 취소 뒤 임시 파일, 덮어쓰기 거절과 동의, 올리는 중 같은 이름이 생긴 경우, 실제 대화상자의 파일 선택과 다운로드 링크, 세션이 심은 symlink·`..`·절대 경로·막힌 파일·FIFO·크기 초과·비로그인·CSRF 거절도 확인한다. Downloads는 임시 HOME 아래라서 사용자의 파일을 건드리지 않는다.
+
+웹 설정 백업 통합 시험(`web_backup_e2e.py`)은 격리 instance에서 실행 중 백업 → 비밀번호 변경·인증서 갱신·설정 변경 → stop → restore → start 뒤 예전 비밀번호로 로그인되고 새 비밀번호는 거절되는지, 인증서 fingerprint와 origin이 백업 때 것인지, 백업 전 cookie가 거절되고 로그인 목록이 비었는지, pre-restore 사본의 권한과 hash, 틀린 암호·손상·다른 instance·실행 중 복원의 거절과 volume 파일 불변, 백업 파일에 키·secret·비밀번호 hash·origin·cookie 평문이 없는지, 출력과 로그에 암호가 없는지, volume을 지운 뒤 복원을 확인한다. 세션 백업 통합 시험(`session_backup_e2e.py`)은 임시 설정의 시험 세션으로 켜진 세션을 얼려서 백업(같은 시작 시각·프로세스로 이어지고 그 백업이 같은 파일로 복원됨), 일시정지 세션 백업 뒤 일시정지 유지, `--stop`, 파일 권한, 한글·공백 경로·실행 비트·0600 파일·빈 디렉터리·symlink·hard link·다른 소유자 파일의 복원, 메타데이터와 옵션, 원본 세션 불변, 손상·경로 이탈·장치·FIFO·symlink 아래 항목 등 13가지 잘못된 백업의 거절과 흔적 없음을 확인한다.
 
 로그인 기기 통합 시험(`web_logins_e2e.py`)은 격리한 instance와 시험 데스크톱에 브라우저 두 개(A, B)로 로그인해 같은 화면을 연다. A의 목록에 둘과 현재 기기·화면 연결 수가 보이는지, A가 B를 해제하면 B의 WebSocket이 닫히고 B의 API가 401·로그인 화면이 되며 A 화면은 그대로인지, CLI `logins`와 `logins revoke`, `모두 해제` 뒤 저장해 둔 두 cookie가 API·WebSocket에서 거절되는지, `raven web password` 뒤 기존 cookie·WebSocket이 거절되는지, 로그와 응답에 cookie·비밀번호가 없는지 본다.
 

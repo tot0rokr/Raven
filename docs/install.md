@@ -178,11 +178,12 @@ raven kill t
 | 위치                               | 내용                                                                    | 만드는 때                                 |
 | ---------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------- |
 | `~/.config/raven/`                 | `menu.conf`, `wallpaper.*`, `addons.enabled`, `addons/`, `home/`        | `menu edit`, `wallpaper`, `addon`, 사용자 |
+| `~/.local/share/raven/backups/`    | 세션 백업(`raven backup`)과 웹 설정 백업(`raven web backup`). 디렉터리 `0700`, 파일 `0600` | `backup`, `web backup`                    |
 | `~/.local/state/raven/<hostname>/` | 세션 이름(`<id>.name`), 개인 설정 복사 기록(`<id>.home`)                | `new -s`, `rename`, 세션을 다룰 때        |
 | `$XDG_RUNTIME_DIR/raven-<uid>/`    | `run --host` 쿠키와 로그, 중계 로그 (`XDG_RUNTIME_DIR`가 없으면 `/tmp`) | `run --host`, 중계 시작                   |
 | `~/Downloads`                      | 없으면 만든다. 그룹 쓰기와 setgid를 켠다(`chmod g+rwxs`)                | 세션 컨테이너를 만들 때                   |
 | Docker 이미지                      | `raven-core:latest`, `raven:latest`(또는 `RAVEN_*_IMAGE`), 빌드 캐시    | `build`                                   |
-| Docker 컨테이너                    | `raven-<user>-<id>`. 홈 이전과 멈춘 세션 복사에 잠깐 쓰는 `--rm` 도우미 | `new`, `recreate`, 세션을 다룰 때         |
+| Docker 컨테이너                    | `raven-<user>-<id>`. 홈 이전, 멈춘 세션 복사, 백업·복원에 잠깐 쓰는 `--rm` 도우미(`--network none`) | `new`, `recreate`, 세션을 다룰 때         |
 | Docker volume                      | `raven-<user>-home-<id>`                                                | `new`                                     |
 | 호스트 프로세스                    | `raven-hostd` (같은 사용자로 실행, `raven hostd stop`으로 끝낸다)       | 세션을 다룰 때                            |
 | 소켓, 포트                         | 중계 `@raven-host-<uid>`, 세션의 X 화면과 `127.0.0.1:159xx` VNC 포트    | 실행 중                                   |
@@ -208,7 +209,7 @@ raven uninstall --config --images      # 설정과 이미지까지
 - `--config`: `~/.config/raven`(메뉴, 배경, addon, 개인 설정 파일).
 - `--images`: `RAVEN_IMAGE`, `RAVEN_CORE_IMAGE`. 다른 세션(다른 사용자 포함)이 쓰는 이미지는 남긴다.
 - `-y`는 확인 없이 지운다. 터미널이 아닌 곳에서 `-y` 없이 실행하면 멈춘다.
-- 지우지 않는 것: `~/Downloads`와 그 안의 파일, Raven 저장소, `~/.local/bin/raven`. 손으로 마무리한다.
+- 지우지 않는 것: `~/Downloads`와 그 안의 파일, 백업(`~/.local/share/raven/backups/`), Raven 저장소, `~/.local/bin/raven`. 손으로 마무리한다.
 
 ```bash
 rm ~/.local/bin/raven

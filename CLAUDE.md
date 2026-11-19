@@ -32,6 +32,7 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
 - 홈 overlay(`~/.config/raven/home`)는 세션 사용자 권한의 `tar --no-overwrite-dir`로 푼다. 이미 있는 디렉터리의 권한과 시각을 바꾸지 않기 위해서다. `docker cp`는 묶음의 디렉터리 항목으로 기존 디렉터리의 권한과 시각을 덮어써서 쓰지 않는다 (세션의 `~/.config`가 775로 바뀐 적이 있다). 새 세션과 멈춘 세션은 시작 전에 볼륨으로 풀어서 세션 hook이 처음부터 그 파일을 보게 한다.
 - 세션 메타데이터: 바뀌지 않는 값(id, display, port, cmd, geometry, user)은 container label, 바뀌는 값(이름)은 `~/.local/state/raven/<hostname>/`에 둔다.
 - 세션 홈은 named volume에 둔다. 홈 디렉터리는 NFS다.
+- 세션 백업(`raven backup`)은 켜진 세션을 홈을 읽는 동안 `docker pause`로 얼렸다가 이어 가고(뷰어는 끊지 않는다), 일시정지한 세션은 그대로 둔 채, 꺼진 세션은 그대로 묶는다. `--stop`은 껐다가 다시 켠다. 복원(`raven restore`)은 언제나 새 세션을 만든다. 묶기·검사·풀기는 `raven`에 들어 있는 python 도우미(`backup_helper`)가 세션 이미지의 `--rm --network none` 컨테이너에서 한다. 백업 파일은 NFS 홈의 0600 파일이라 컨테이너가 bind mount로 읽지 못하므로 표준 입력으로 넘긴다. `~/Downloads`는 넣지 않는다.
 - 호스트에 패키지를 설치하지 않는다.
 - 웹 파일 전송은 호스트 중계(`raven_web_host.py`의 `Files`)만 `~/Downloads`를 다룬다. 웹 컨테이너에 Downloads를 mount하지 않는다. 중계는 경로 구성 요소를 하나씩 `O_NOFOLLOW`로 연다. 세션이 Downloads에 아무 symlink나 만들 수 있고 중계는 호스트 사용자 권한이라, 따라가면 `~/.ssh` 같은 파일이 웹으로 나간다.
 - `--no-sandbox`를 쓰지 않는다.

@@ -13,6 +13,7 @@ Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스
 - 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 기본은 두벌식이고, VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 Shift+Space나 작업표시줄의 `한/A` 버튼으로 전환한다. 개인 설정으로 다른 자판과 키를 쓴다.
 - 개인 설정: `~/.config/raven/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다. 웹 화면의 `파일`로 PC와 이 폴더 사이에 파일을 올리고 내려받는다.
+- 백업: `raven backup`으로 세션 홈과 설정을 파일 하나에 담고, `raven restore`로 새 세션에 복원한다.
 - 일시정지: `raven pause`/`resume`(웹은 `일시정지`/`이어하기`)으로 앱을 메모리에 둔 채 멈췄다가 그 자리에서 이어간다. RAM은 계속 차지하고 서버 재부팅에는 남지 않는다.
 - 파일 관리자: `files` addon(PCManFM)으로 세션 안에서 홈과 `~/Downloads`의 파일을 찾아 열고 관리한다.
 - 구형 X 서버: XInput 2가 없는 Xming 6.9에서도 attach한다.
@@ -47,7 +48,7 @@ raven web start
 raven web status
 ```
 
-서버 포트와 브라우저 주소는 `raven web configure`로 저장한다. HTTPS 인증서는 `raven web certificate info`로 확인하고 `renew`·`import`로 바꾼다. 이후 `start`는 저장된 값을 사용하며 `status`에서 현재 주소와 SSH 터널 명령을 확인한다. 접속이 안 되면 `raven web doctor`로 원인과 조치를 확인한다. `raven web enable`은 웹 서비스를 systemd 사용자 서비스로 등록해 중계가 죽으면 다시 띄우고 부팅 때 시작한다.
+서버 포트와 브라우저 주소는 `raven web configure`로 저장한다. HTTPS 인증서는 `raven web certificate info`로 확인하고 `renew`·`import`로 바꾼다. 웹 설정은 `raven web backup`으로 암호화해 백업한다. 이후 `start`는 저장된 값을 사용하며 `status`에서 현재 주소와 SSH 터널 명령을 확인한다. 접속이 안 되면 `raven web doctor`로 원인과 조치를 확인한다. `raven web enable`은 웹 서비스를 systemd 사용자 서비스로 등록해 중계가 죽으면 다시 띄우고 부팅 때 시작한다.
 
 기존 X11 접속도 유지한다.
 

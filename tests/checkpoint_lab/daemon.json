@@ -1,0 +1,6 @@
+{
+  "experimental": true,
+  "features": { "containerd-snapshotter": true },
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "log-driver": "json-file"
+}

@@ -72,6 +72,7 @@ xmonad 세션에서는 `Alt+p`가 메뉴, `Alt+Shift+Enter`가 터미널, `Alt+j
 | [docs/install.md](./docs/install.md) | 서버와 클라이언트 준비, 설치, 여러 사용자, 제거       |
 | [docs/usage.md](./docs/usage.md)     | 명령별 사용법, 키, 데이터 위치, 환경 변수, 문제 해결  |
 | [docs/web.md](./docs/web.md)         | HTTPS 접속, 단일 계정, 인증서, 웹 서비스 운영          |
+| [docs/checkpoint.md](./docs/checkpoint.md) | 실행 상태를 디스크에 저장하는 checkpoint의 검증 기록과 판정 |
 | [docs/menu.md](./docs/menu.md)       | 메뉴 규칙 문법과 우선순위                             |
 | [docs/addons.md](./docs/addons.md)   | addon 작성법                                          |
 | [CLAUDE.md](./CLAUDE.md)             | 개발 지침: 파일 구성, 규칙, 검증 순서                 |

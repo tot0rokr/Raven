@@ -1,0 +1,5 @@
+#!/bin/sh
+# Installed as apparmor_parser in the lab only when the host already has docker-default loaded,
+# so the lab dockerd uses that profile and never loads or replaces policy in the host kernel.
+echo "raven-lab: refusing to load AppArmor policy into the host kernel: $*" >&2
+exit 1

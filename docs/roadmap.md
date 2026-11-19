@@ -14,10 +14,10 @@
 - [x] M8 — 인증서 상태·내보내기·갱신
 - [x] M9 — 로그인 기기 목록과 접속 해제
 - [x] M10 — 세션 홈·웹 설정 백업과 복원
-- [ ] M11 — 디스크 checkpoint 가능성 검증
-- [ ] M12 — 검증한 checkpoint의 저장·복원 기능
+- [x] M11 — 디스크 checkpoint 가능성 검증
+- [ ] M12 — 검증한 checkpoint의 저장·복원 기능 (보류: [M11 판정](./checkpoint.md#m12-판정))
 
-현재: M10 완료. 다음 구현 대상은 M11이다.
+현재: M11 완료. M12는 보류했다(Edge를 저장할 수 없고 운영 서버의 Docker·패키지를 바꿔야 한다). 계획한 마일스톤은 모두 끝났다.
 
 ## 상태 보존의 의미
 
@@ -246,9 +246,19 @@
 - M12 착수 여부를 판정한다. 지원 불가로 결론 나면 M12를 보류한다.
 - 작은 프로세스 성공만으로 전체 데스크톱이 지원된다고 판단하지 않는다.
 
+완료: 2026-11-19. 판정: M12 보류.
+
+- 방법: 운영 서버의 패키지와 Docker 설정을 바꾸지 않고, 이 서버 위의 격리된 privileged 시험 컨테이너 안에 experimental을 켠 dockerd와 CRIU를 두었다(Docker-in-Docker). 시험 컨테이너 안에서 `raven` CLI로 세션을 만들어 `run_container`의 옵션을 그대로 썼다. 다시 돌리는 법과 결과는 [디스크 checkpoint 검증](./checkpoint.md), 스크립트는 [tests/checkpoint_lab](../tests/checkpoint_lab).
+- 결과: 작은 메모리 프로세스(host network), Xvnc·xmonad/openbox·D-Bus·xterm, PCManFM·kime 세션이 저장·복원되고 시험 컨테이너 재시작(재부팅 흉내) 뒤에도 복원됐다. 복원 뒤 VNC 연결, 같은 창 목록, 같은 PID의 RAM 표식, 셸에 치다 만 명령이 남았다. 세션 하나 100–170 MiB, 저장 3–5초, 복원 2–3초. 조건: 재시작 정책 `no`, tint2를 멈춤, `file-locks`, 복원 때만 `mntns-compat-mode`, 뷰어 연결을 먼저 끊음, `run --host` 앱 없음.
+- 실패: Edge는 sandbox의 중첩 PID namespace 때문에 저장할 수 없다(CRIU 4.3.1). `--no-sandbox`로만 되는데 이 프로젝트는 쓰지 않는다. bridge·none 네트워크 컨테이너는 Docker 29.1.3에서 복원이 실패한다. `raven run`·`shell`로 띄운 프로세스와 canonical 모드 터미널의 치다 만 줄은 남지 않는다.
+- 운영에 필요한 변경: CRIU 설치(Ubuntu 24.04 archive에 없음), 공유 dockerd의 `experimental: true`와 재시작, root 소유 `/etc/criu/runc.conf`와 작업마다 바꾸는 옵션, 부팅 뒤 복원 실행. 운영 dockerd(systemd cgroup driver)와 실제 커널 재부팅은 시험하지 않았다.
+- 다시 볼 조건: 서버 관리자가 CRIU와 Docker experimental을 허락하거나 별도 호스트를 쓰고, Edge 같은 중첩 namespace 프로세스가 있는 세션은 저장 전에 거부하는 범위에 동의할 때.
+
 ## M12 — 검증한 checkpoint의 저장·복원 기능
 
 착수 조건: M11에서 지원 범위가 확인되고 필요한 운영 변경이 정해져 있어야 한다.
+
+상태: 보류(2026-11-19). M11에서 Edge 세션을 저장할 수 없고 운영 서버의 Docker·패키지를 바꿔야 한다고 판정했다. [다시 볼 조건](./checkpoint.md#m12-판정).
 
 - 실행 상태를 저장하고 중지한 뒤, checkpoint와 짝지은 파일 상태를 검증해 복원한다.
 - 새 요청과 뷰어를 막는 구간, 저장 완료, RAM 회수, 복원 준비, 실패 상태를 표시한다.

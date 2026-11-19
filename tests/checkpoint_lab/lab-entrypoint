@@ -1,0 +1,40 @@
+#!/bin/sh
+# Lab init: nest cgroup v2 like docker:dind, choose AppArmor or not, run the lab's own dockerd.
+set -eu
+
+# Processes cannot stay in a cgroup that delegates controllers; move them to a leaf first
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    mkdir -p /sys/fs/cgroup/init
+    xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || :
+    sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control
+fi
+
+# LAB_UID/LAB_GID: the lab user (who runs the raven CLI) gets the host user's ids, so it can
+# write the NFS directory that stands in for ~/Downloads, as on the server
+if [ -n "${LAB_UID:-}" ] && [ "$(id -u lab)" != "$LAB_UID" ]; then
+    userdel -r lab 2>/dev/null || true
+    groupadd -o -g "${LAB_GID:-$LAB_UID}" lab
+    useradd -o -m -u "$LAB_UID" -g "${LAB_GID:-$LAB_UID}" -G docker lab
+fi
+
+# LAB_APPARMOR=1: let inner containers run under the host's docker-default profile, as session
+# containers on the server do. securityfs is mounted read-only and apparmor_parser is a stub that
+# refuses, so the lab can apply the loaded profile but can never load or replace host policy.
+rm -f /usr/sbin/apparmor_parser
+if [ "${LAB_APPARMOR:-0}" = 1 ]; then
+    mountpoint -q /sys/kernel/security || mount -t securityfs -o ro securityfs /sys/kernel/security
+    if grep -q '^docker-default (enforce)$' /sys/kernel/security/apparmor/profiles 2>/dev/null; then
+        install -m 0755 /usr/local/lib/raven-lab/apparmor_parser /usr/sbin/apparmor_parser
+        echo "raven-lab: AppArmor on (host docker-default profile)" >&2
+    else
+        umount /sys/kernel/security 2>/dev/null || true
+        echo "raven-lab: docker-default is not loaded on the host; AppArmor off" >&2
+    fi
+else
+    ! mountpoint -q /sys/kernel/security || umount /sys/kernel/security 2>/dev/null || true
+    echo "raven-lab: AppArmor off" >&2
+fi
+
+mkdir -p /var/log/criu
+[ -e /etc/criu/runc.conf ] || cp /etc/criu/runc.conf.base /etc/criu/runc.conf
+exec dockerd --config-file /etc/docker/daemon.json

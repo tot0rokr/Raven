@@ -411,7 +411,7 @@ def browser():
         watch(page)
         page.goto(origin + "/", wait_until="networkidle")
         expect(page.locator("#session-count")).to_have_text("1")
-        assert state.static_queries == {"/static/app.js": "v=8", "/static/style.css": "v=8"}, state.static_queries
+        assert state.static_queries == {"/static/app.js": "v=9", "/static/style.css": "v=9"}, state.static_queries
         dialog = page.locator("#files-dialog")
         rows = page.locator("#files-list .file-row")
         crumbs = page.locator("#files-breadcrumb li")

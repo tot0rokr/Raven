@@ -42,6 +42,7 @@ Raven(Remote Access to Virtual Environment Nodes): tmux처럼 쓰는 지속형 X
 - 세션 시간대는 `run_container`가 서버의 것(`TZ`, 없으면 `/etc/localtime`)을 `-e TZ`로 넘긴다. 이미지에는 시간대를 넣지 않는다.
 - 앱의 기본 설정은 addon이 `/etc/xdg/<앱>`에 두고, 개인 설정(`~/.config/<앱>`, 홈 overlay)이 이긴다.
 - 일시정지한 세션(`docker pause`)에는 `docker exec`, `docker start`를 하지 않는다. `ensure_up`이 먼저 거절하고, 모든 세션을 도는 명령은 `running`만 다룬다. `pause`는 멈추기 전에 세션 안 X11 뷰어를 끝내고 `vncconfig -disconnect`로 웹 연결도 끊는다(멈춘 컨테이너의 뷰어 창은 사용자 X 서버에서 얼어붙는다).
+- 세션의 메모리·CPU 상한은 컨테이너 HostConfig에만 둔다(label에 넣지 않는다). `raven limit`이 `docker update --memory X --memory-swap X --cpus Y`로 실행 중에 바꾸고, `recreate`는 이전 컨테이너의 값을 이어받는다. 메모리는 사용량 + 64MiB보다 작게 줄이지 않는다(cgroup v2는 그런 상한을 받고 바로 OOM kill한다). `limit`의 거절 종료 코드 3·4·5는 중계가 오류 code로 바꾸는 계약이다.
 - 세션 안의 umask는 `002`다. entrypoint가 정하고, `docker exec`는 이를 물려받지 않으므로 사용자 명령을 실행하는 `run`, `shell`도 `umask 002`를 붙인다.
 - 구형 X 서버(Xming 6.9, XInput 1.x) 지원을 유지한다.
 - GHC는 빌드 단계에만 둔다. xmonad 실행 파일 이름은 `xmonad-x86_64-linux`로 둔다. 다른 이름이면 xmonad가 시작할 때마다 GHC로 다시 컴파일하려 한다. 재시작 키도 `restart "xmonad-x86_64-linux"`로 GHC 없이 재시작한다.

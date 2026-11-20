@@ -84,7 +84,8 @@ def wait(condition, what, seconds=30):
 
 
 def parse_size(text):
-    match = re.fullmatch(r"([0-9.]+)(MiB|GiB)", text)
+    """The use in raven ls's MEM column, USE/LIMIT (242MiB/2GiB)."""
+    match = re.fullmatch(r"([0-9.]+)(MiB|GiB)/([0-9.]+(MiB|GiB)|none)", text)
     assert match, text
     return float(match[1]) * (1024 ** 2 if match[2] == "MiB" else 1024 ** 3)
 
@@ -366,7 +367,8 @@ def main():
         assert rss * 1024 >= MARKER_SIZE, rss
         report["paused_memory"] = session.memory()
         row, lines = session.ls_row()
-        assert (row["state"], row["x11"], row["web"], row["cpu"]) == ("paused", "-", "-", "0%"), row
+        assert (row["state"], row["x11"], row["web"]) == ("paused", "-", "-") and \
+            re.fullmatch(r"0%/[0-9.]+", row["cpu"]), row
         assert parse_size(row["mem"]) >= MARKER_SIZE, row
         assert lines[-1] == "paused sessions keep their memory until resumed; a server reboot loses them", lines
         report["paused_ls"] = lines
@@ -406,7 +408,7 @@ def main():
         got = wait(lambda: (downloads / "m7-got").exists() and (downloads / "m7-got").read_text(), "the xterm input")
         assert got == TYPED, got
         row, _ = session.ls_row()
-        assert row["state"] == "running" and row["cpu"].endswith("%") and row["cpu"] != "?", row
+        assert row["state"] == "running" and re.fullmatch(r"[0-9]+%/[0-9.]+", row["cpu"]), row
         report["resumed_ls"] = row
 
         # Apps after resume

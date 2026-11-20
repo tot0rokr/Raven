@@ -35,6 +35,33 @@ const CERTIFICATE_UNAVAILABLE = "인증서 정보를 불러오지 못했습니�
 const LOGINS_UNAVAILABLE = "로그인 목록을 불러오지 못했습니다. 다시 시도해 주세요.";
 const LOGINS_NETWORK_ERROR = "로그인 목록을 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.";
 const LOGIN_DEVICES = { desktop: "데스크톱", mobile: "모바일" };
+const MIB = 1024 ** 2;
+const GIB = 1024 ** 3;
+// Limits are chosen in halves of a GiB and of a core; the server refuses memory below usage plus this headroom.
+const LIMIT_STEP = 0.5;
+const LIMIT_HEADROOM = 64 * MIB;
+// What a new session gets when its resource fields are left alone; only changed values are sent.
+const CREATE_LIMITS = { memory: 2, cpus: 2 };
+const UNLIMITED = "제한 없음";
+const LIMITS_PAUSED = "일시정지한 세션은 상한을 줄일 수 없습니다. 늘리기만 하거나, 이어하기를 누른 뒤 줄여 주세요.";
+const LIMIT_FIELDS = {
+  memory: {
+    label: "메모리", unit: " GiB", invalid: "메모리는 0.5 GiB 이상, 0.5 GiB 단위로 입력하세요.",
+    over: (total) => `메모리는 서버 전체(${total})보다 크게 정할 수 없습니다. 서버 전체를 쓰려면 최대를 고르세요.`,
+  },
+  cpus: {
+    label: "CPU", unit: "코어", invalid: "CPU는 0.5코어 이상, 0.5코어 단위로 입력하세요.",
+    over: (total) => `CPU는 서버 코어 수(${total})보다 크게 정할 수 없습니다. 모든 코어를 쓰려면 최대를 고르세요.`,
+  },
+};
+// Quick choices that name a share of the server instead of an amount; they are sent as they are.
+const SHARE_CHOICE = /^(?:max|[0-9]{1,3}%)$/;
+const SIZE_UNITS = {
+  "": 1, b: 1, byte: 1, bytes: 1, k: 1024, kb: 1024, kib: 1024, m: MIB, mb: MIB, mib: MIB,
+  g: GIB, gb: GIB, gib: GIB, t: 1024 * GIB, tb: 1024 * GIB, tib: 1024 * GIB,
+};
+// The refusal names the smallest memory it accepts, e.g. "The memory limit must be at least 1300MiB; ...".
+const LIMIT_MINIMUM = /(?:minimum|at least|최소)[^0-9]{0,24}?([0-9]+(?:\.[0-9]+)?)\s*(bytes?|[kmgt]i?b|[kmgt]|b)?(?![a-z])/i;
 
 async function loadViewerModule() {
   let timer;
@@ -84,6 +111,8 @@ let shownLogins = null;
 let loginsRequest = 0;
 let loginsBusy = false;
 let loginConfirm = null;
+// The limits the resource dialog opened with, as the text its fields showed.
+let limitsShown = null;
 
 function notice(id, message) {
   const target = element(id);
@@ -115,10 +144,14 @@ const ERROR_MESSAGES = new Map([
   ["session_not_paused", "세션이 일시정지 상태가 아닙니다. 다른 곳에서 이미 이어했거나 중지했을 수 있습니다."],
   ["session_not_running", "실행 중인 세션만 일시정지할 수 있습니다. 세션이 중지되었거나 다른 곳에서 바뀌었을 수 있습니다."],
   ["login_not_found", "이미 해제되었거나 만료된 로그인입니다."],
+  ["limit_invalid", "허용 범위를 벗어난 값입니다. 메모리는 0.5 GiB부터 서버 전체 메모리까지, CPU는 0.5코어부터 서버 코어 수까지 정할 수 있습니다."],
+  ["limit_below_usage", "메모리를 지금 사용량보다 적게 줄일 수 없습니다."],
 ]);
 
 function errorMessage(data) {
   const known = ERROR_MESSAGES.get(data.code);
+  // The server knows the upper bounds (its memory and cores); its reason names them.
+  if (known && data.code === "limit_invalid" && typeof data.error === "string" && data.error) return `${known} (${data.error})`;
   if (known) return known;
   if (typeof data.error !== "string") return "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
   if (data.code === "session_failed") return `세션 작업에 실패했습니다: ${data.error}`;
@@ -134,6 +167,7 @@ function apiError(status, data) {
   const error = new Error(errorMessage(data));
   error.status = status;
   error.code = data.code;
+  error.data = data;
   return error;
 }
 
@@ -179,6 +213,8 @@ function showDialog(kind, session = null) {
   for (const input of form.querySelectorAll("input")) input.setCustomValidity("");
   if (session) element(`${kind}-session-name`).textContent = sessionName(session);
   if (kind === "rename") element("rename-name").value = session.name || "";
+  if (kind === "limits") fillLimits(session);
+  if (kind === "create") resetCreateLimits();
   element(`${kind}-dialog`).showModal();
 }
 
@@ -186,16 +222,67 @@ function formatPercent(value) {
   return value > 0 && value < 0.5 ? "<1%" : `${Math.round(value)}%`;
 }
 
-// Live numbers for a running session; a paused one shows only the memory it keeps.
+// 2 → "2", 1.5 → "1.5", 0.68359375 → "0.68".
+function trimNumber(value, digits = 2) {
+  return String(Number(value.toFixed(digits)));
+}
+
+function limitParts(bytes) {
+  return bytes >= GIB ? [trimNumber(bytes / GIB), "GiB"] : [trimNumber(bytes / MIB, 0), "MiB"];
+}
+
+function formatLimit(bytes) {
+  return limitParts(bytes).join(" ");
+}
+
+function formatCores(cores) {
+  return `${trimNumber(cores)}코어`;
+}
+
+// A limit of 0 or none means the session has no limit; an answer without `limits` comes from before limits existed.
+function sessionLimits(session) {
+  const limits = session.limits;
+  if (!limits || typeof limits !== "object") return null;
+  const valid = (value) => (Number.isFinite(value) && value > 0 ? value : null);
+  return { memory: valid(limits.memory), cpus: valid(limits.cpus) };
+}
+
+// "1.2 / 2 GiB" when usage and limit share a unit, "512 MiB / 2 GiB" otherwise.
+function memoryPair(usage, limit) {
+  const used = formatSize(usage);
+  if (limit === null) return `${used} / ${UNLIMITED}`;
+  const [number, unit] = limitParts(limit);
+  const [usedNumber, usedUnit] = used.split(" ");
+  return `${usedUnit === unit ? usedNumber : used} / ${number} ${unit}`;
+}
+
+function limitOnly(label, limit, text) {
+  return limit === null ? `${label} ${UNLIMITED}` : `${label} 상한 ${text}`;
+}
+
+// Live numbers for a running session against its limits; a paused one shows the memory it keeps.
 function sessionStats(session) {
-  const memory = Number.isFinite(session.memory) && session.memory >= 0 ? formatSize(session.memory) : "";
+  const usage = Number.isFinite(session.memory) && session.memory >= 0 ? session.memory : null;
+  const memory = usage === null ? "" : formatSize(usage);
+  const limits = sessionLimits(session);
+  const memoryLimit = limits && limitOnly("메모리", limits.memory, limits.memory && formatLimit(limits.memory));
+  const cpuLimit = limits && limitOnly("CPU", limits.cpus, limits.cpus && formatCores(limits.cpus));
   if (session.state === "paused") {
-    return [memory ? `메모리 ${memory} 유지 중` : "메모리에 유지 중", "서버를 재부팅하면 사라집니다"];
+    let kept = memory ? `메모리 ${memory} 유지 중` : "메모리에 유지 중";
+    if (limits && memory && limits.memory !== null) kept = `메모리 ${memoryPair(usage, limits.memory)} 유지 중`;
+    else if (limits) kept += limits.memory === null ? ` (${UNLIMITED})` : ` (상한 ${formatLimit(limits.memory)})`;
+    return [kept, ...(limits ? [cpuLimit] : []), "서버를 재부팅하면 사라집니다"];
   }
-  if (session.state !== "running") return [];
+  if (session.state !== "running") return limits ? [memoryLimit, cpuLimit] : [];
   const stats = [];
-  if (memory) stats.push(`메모리 ${memory}`);
-  if (Number.isFinite(session.cpu) && session.cpu >= 0) stats.push(`CPU ${formatPercent(session.cpu)}`);
+  if (memory) stats.push(limits ? `메모리 ${memoryPair(usage, limits.memory)}` : `메모리 ${memory}`);
+  else if (limits) stats.push(memoryLimit);
+  if (Number.isFinite(session.cpu) && session.cpu >= 0) {
+    const cpu = `CPU ${formatPercent(session.cpu)}`;
+    stats.push(limits ? `${cpu} / ${limits.cpus === null ? UNLIMITED : formatCores(limits.cpus)}` : cpu);
+  } else if (limits) {
+    stats.push(cpuLimit);
+  }
   const viewers = session.viewers || {};
   const counts = [["X11", viewers.x11], ["웹", viewers.web]]
     .filter(([, count]) => Number.isInteger(count) && count >= 0)
@@ -1354,6 +1441,271 @@ async function closeViewer() {
   await refreshSessions();
 }
 
+// A resource field is a number with quick choices. A share of the server ("25%" … "max") empties the number and goes
+// to the server as it is, for it to resolve against its own memory and cores.
+function resourceShare(input) {
+  return input.dataset.share || "";
+}
+
+function shareLabel(share) {
+  return share === "max" ? "최대" : share;
+}
+
+// The server's memory (bytes) or cores the field was opened with; null when the gateway does not say.
+function resourceTotal(input) {
+  const total = Number(input.dataset.total);
+  return total > 0 ? total : null;
+}
+
+function setResourceTotal(input, total) {
+  if (total) input.dataset.total = String(total);
+  else delete input.dataset.total;
+}
+
+function formatAmount(kind, value) {
+  return kind === "memory" ? formatLimit(value) : formatCores(value);
+}
+
+function shareHelp(kind, share, total) {
+  const percent = share === "max" ? 100 : Number.parseInt(share, 10);
+  const amount = total === null ? "" : `(${formatAmount(kind, (total * percent) / 100)})`;
+  if (kind === "memory") return share === "max" ? `서버의 전체 메모리${amount}까지 씁니다.` : `서버 메모리의 ${share}${amount}까지 씁니다.`;
+  return share === "max" ? `서버의 모든 코어${amount}를 씁니다.` : `서버 코어의 ${share}${amount}까지 씁니다.`;
+}
+
+// Each session's limits carry the server's memory and cores; older gateways leave them out.
+function serverTotals(sessions) {
+  const valid = (value) => (Number.isFinite(value) && value > 0 ? value : null);
+  for (const session of sessions) {
+    const limits = session && session.limits;
+    if (!limits || typeof limits !== "object") continue;
+    const totals = { memory: valid(limits.server_memory), cpus: valid(limits.server_cpus) };
+    if (totals.memory !== null || totals.cpus !== null) return totals;
+  }
+  return { memory: null, cpus: null };
+}
+
+function syncResource(input) {
+  const field = input.closest(".resource-field");
+  const share = resourceShare(input);
+  field.classList.toggle("is-share", Boolean(share));
+  input.placeholder = share ? shareLabel(share) : input.dataset.placeholder || "";
+  input.required = input.dataset.required === "true" && !share;
+  field.querySelector(".share-help").textContent = share ? shareHelp(input.dataset.kind, share, resourceTotal(input)) : "";
+  const value = input.value === "" ? NaN : Number(input.value);
+  for (const choice of field.querySelectorAll("[data-choice]")) {
+    const pressed = SHARE_CHOICE.test(choice.dataset.choice)
+      ? choice.dataset.choice === share : !share && Number(choice.dataset.choice) === value;
+    choice.setAttribute("aria-pressed", String(pressed));
+  }
+}
+
+function setResource(input, value, share = "") {
+  input.value = share ? "" : value;
+  if (share) input.dataset.share = share;
+  else delete input.dataset.share;
+  input.setCustomValidity("");
+  syncResource(input);
+}
+
+function limitValue(kind, number) {
+  return kind === "memory" ? Math.round(number * GIB) : number;
+}
+
+// Why the server would refuse a typed value, or "" when it may go. Without the server's totals the upper bound is
+// left to the server.
+function resourceProblem(input) {
+  const kind = input.dataset.kind;
+  const number = input.value === "" ? NaN : Number(input.value);
+  if (!(number >= LIMIT_STEP) || !Number.isInteger(number / LIMIT_STEP)) return LIMIT_FIELDS[kind].invalid;
+  const total = resourceTotal(input);
+  if (total !== null && limitValue(kind, number) > total) return LIMIT_FIELDS[kind].over(formatAmount(kind, total));
+  return "";
+}
+
+function resourceText(input, kind) {
+  const { label, unit } = LIMIT_FIELDS[kind];
+  const share = resourceShare(input);
+  if (share) return `${label} ${shareLabel(share)}`;
+  return input.value === "" ? `${label} –` : `${label} ${trimNumber(Number(input.value))}${unit}`;
+}
+
+function updateCreateSummary() {
+  element("create-resources-summary").textContent =
+    `${resourceText(element("create-memory"), "memory")} · ${resourceText(element("create-cpus"), "cpus")}`;
+}
+
+function resetCreateLimits() {
+  element("create-resources").open = false;
+  // Every session of the list comes from this server, so any of them tells its totals.
+  const totals = serverTotals(shownSessions);
+  for (const kind of ["memory", "cpus"]) {
+    const input = element(`create-${kind}`);
+    setResourceTotal(input, totals[kind]);
+    setResource(input, String(CREATE_LIMITS[kind]));
+  }
+  updateCreateSummary();
+}
+
+function createUnchanged(input) {
+  return !resourceShare(input) && input.value !== "" && Number(input.value) === CREATE_LIMITS[input.dataset.kind];
+}
+
+// Only fields moved off the defaults are checked and sent; the rest keep the server's own defaults.
+function checkCreateLimits() {
+  for (const kind of ["memory", "cpus"]) {
+    const input = element(`create-${kind}`);
+    input.setCustomValidity(resourceShare(input) || createUnchanged(input) ? "" : resourceProblem(input));
+  }
+}
+
+function createLimits() {
+  const limits = {};
+  for (const kind of ["memory", "cpus"]) {
+    const input = element(`create-${kind}`);
+    if (resourceShare(input)) limits[kind] = resourceShare(input);
+    else if (!createUnchanged(input)) limits[kind] = limitValue(kind, Number(input.value));
+  }
+  return limits;
+}
+
+function fillLimits(session) {
+  const limits = sessionLimits(session) || { memory: null, cpus: null };
+  const totals = serverTotals([session]);
+  limitsShown = {
+    memory: limits.memory === null ? "" : trimNumber(limits.memory / GIB),
+    cpus: limits.cpus === null ? "" : trimNumber(limits.cpus),
+  };
+  for (const kind of ["memory", "cpus"]) {
+    const input = element(`limits-${kind}`);
+    input.dataset.placeholder = limitsShown[kind] ? "" : UNLIMITED;
+    setResourceTotal(input, totals[kind]);
+    setResource(input, limitsShown[kind]);
+    // With the server's totals known, the current limit also shows as its share of the server.
+    const limit = limits[kind];
+    let current = "";
+    if (totals[kind] !== null) {
+      current = limit === null ? `지금 ${UNLIMITED}`
+        : `지금 상한 ${formatAmount(kind, limit)} · 서버의 ${formatPercent((limit / totals[kind]) * 100)}`;
+    }
+    element(`limits-${kind}-current`).textContent = current;
+  }
+  const { state } = session;
+  const live = state === "running" || state === "paused";
+  let memory = live ? "" : "꺼져 있어 사용량이 없습니다";
+  if (live && Number.isFinite(session.memory) && session.memory >= 0) {
+    memory = `지금 ${formatSize(session.memory)} ${state === "paused" ? "유지 중" : "사용 중"}`;
+  }
+  let cpu = live ? "" : "꺼져 있어 사용량이 없습니다";
+  if (state === "paused") cpu = "멈춰 있어 CPU를 쓰지 않습니다";
+  else if (live && Number.isFinite(session.cpu) && session.cpu >= 0) cpu = `지금 CPU ${formatPercent(session.cpu)} 사용 중`;
+  element("limits-memory-usage").textContent = memory;
+  element("limits-cpus-usage").textContent = cpu;
+  element("limits-paused").hidden = state !== "paused";
+}
+
+// undefined: left as it opened; null: changed to something the server would refuse; else the value to send.
+function limitChange(kind) {
+  const input = element(`limits-${kind}`);
+  if (resourceShare(input)) return resourceShare(input);
+  const shown = limitsShown[kind];
+  const text = input.value;
+  if (text === shown || (text !== "" && shown !== "" && Number(text) === Number(shown))) return undefined;
+  const problem = resourceProblem(input);
+  if (problem) {
+    input.setCustomValidity(problem);
+    return null;
+  }
+  return limitValue(kind, Number(text));
+}
+
+function minimumFromMessage(text) {
+  if (typeof text !== "string") return null;
+  const match = LIMIT_MINIMUM.exec(text);
+  if (!match) return null;
+  const unit = (match[2] || "").toLowerCase();
+  const value = Number(match[1]) * SIZE_UNITS[unit];
+  // A bare number is bytes only when it is large enough to be a memory size.
+  if (!unit && value < MIB) return null;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Round up, so the number shown is never below what the server accepts.
+function formatMinimum(bytes) {
+  if (bytes < GIB) return `${Math.ceil(bytes / MIB - 1e-9)} MiB`;
+  return `${trimNumber(Math.ceil((bytes / GIB) * 100 - 1e-9) / 100)} GiB`;
+}
+
+// The minimum comes from the answer, else from the usage this list showed plus the server's headroom.
+function belowUsageMessage(data, session) {
+  const base = ERROR_MESSAGES.get("limit_below_usage");
+  let minimum = data && Number.isFinite(data.minimum) && data.minimum > 0 ? data.minimum : minimumFromMessage(data && data.error);
+  if (minimum === null && Number.isFinite(session.memory) && session.memory >= 0) minimum = session.memory + LIMIT_HEADROOM;
+  if (minimum === null) return `${base} 지금 사용량보다 큰 값으로 정해 주세요.`;
+  const shown = formatMinimum(minimum);
+  const step = `${trimNumber(Math.max(LIMIT_STEP, Math.ceil(minimum / GIB / LIMIT_STEP - 1e-9) * LIMIT_STEP))} GiB`;
+  if (step === shown) return `${base} ${step} 이상으로 정해 주세요.`;
+  return `${base} 최소 ${shown}가 필요합니다. ${step} 이상으로 정해 주세요.`;
+}
+
+function limitsMessage(error, session) {
+  if (error instanceof TypeError) return REQUEST_NETWORK_ERROR;
+  if (error.code === "session_paused") return LIMITS_PAUSED;
+  if (error.code === "limit_below_usage") return belowUsageMessage(error.data, session);
+  return error.message;
+}
+
+async function saveLimits(event) {
+  event.preventDefault();
+  const dialog = element("limits-dialog");
+  const form = element("limits-form");
+  const session = operationSession;
+  if (dialog.dataset.busy || !session) return;
+  const body = { generation: session.generation };
+  for (const kind of ["memory", "cpus"]) {
+    const change = limitChange(kind);
+    if (change === null) {
+      element(`limits-${kind}`).reportValidity();
+      return;
+    }
+    if (change !== undefined) body[kind] = change;
+  }
+  if (Object.keys(body).length === 1) {
+    dialog.close();
+    return;
+  }
+  const controls = [...form.elements];
+  controls.forEach((control) => { control.disabled = true; });
+  dialog.dataset.busy = "true";
+  notice("limits-error", "");
+  let changed = null;
+  let failure = null;
+  try {
+    const result = await api(sessionPath(session.id, "limits"), "POST", body);
+    if (result && result.session && result.session.id === session.id) changed = result.session;
+  } catch (error) {
+    failure = error;
+  } finally {
+    controls.forEach((control) => { control.disabled = false; });
+    delete dialog.dataset.busy;
+  }
+  if (leavingForLogin) return;
+  if (failure) {
+    notice("limits-error", limitsMessage(failure, session));
+    const memoryFirst = failure.code === "limit_below_usage" || !("cpus" in body);
+    element(memoryFirst ? "limits-memory" : "limits-cpus").focus();
+    // A session that changed underneath (recreated, removed) shows as it is now behind the dialog.
+    if (failure.code === "session_failed") refreshSessions();
+    return;
+  }
+  dialog.close();
+  notice("workspace-notice", "");
+  pendingFocus = { id: session.id, control: '[data-action="limits"]' };
+  if (changed) renderSessions(shownSessions.map((item) => (item.id === session.id ? { ...item, ...changed } : item)));
+  await refreshSessions();
+  pendingFocus = null;
+}
+
 function handleForm(kind, action) {
   const form = element(`${kind}-form`);
   const dialog = element(`${kind}-dialog`);
@@ -1369,6 +1721,11 @@ function handleForm(kind, action) {
     if (kind === "delete") {
       element("delete-name").setCustomValidity(fields.name === sessionName(session) ? "" : "세션 이름을 정확히 입력하세요.");
     }
+    // The create form skips the browser's own check so this runs: a bad value in the folded resource section has
+    // to be visible to be reported.
+    const resources = kind === "create" ? element("create-resources") : null;
+    if (resources) checkCreateLimits();
+    if (resources && [...resources.querySelectorAll("input")].some((input) => !input.checkValidity())) resources.open = true;
     if (!form.reportValidity()) return;
     const controls = [...form.elements];
     controls.forEach((control) => { control.disabled = true; });
@@ -1383,6 +1740,7 @@ function handleForm(kind, action) {
       dialog.close();
     } catch (error) {
       notice(`${kind}-error`, error.message);
+      if (resources && error.code === "limit_invalid") resources.open = true;
     } finally {
       controls.forEach((control) => { control.disabled = false; });
       delete dialog.dataset.busy;
@@ -1408,7 +1766,28 @@ for (const dialog of document.querySelectorAll("dialog")) {
     input.addEventListener("input", () => input.setCustomValidity(""));
   }
 }
-handleForm("create", (fields) => api("/api/sessions/", "POST", fields));
+handleForm("create", (fields) => api("/api/sessions/", "POST", { ...fields, ...createLimits() }));
+element("limits-form").addEventListener("submit", saveLimits);
+for (const field of document.querySelectorAll(".resource-field")) {
+  const input = field.querySelector("input");
+  const changed = () => {
+    if (input.form.id === "create-form") updateCreateSummary();
+  };
+  input.dataset.required = String(input.required);
+  input.addEventListener("input", () => {
+    delete input.dataset.share;
+    syncResource(input);
+    changed();
+  });
+  for (const choice of field.querySelectorAll("[data-choice]")) {
+    choice.addEventListener("click", () => {
+      const share = SHARE_CHOICE.test(choice.dataset.choice) ? choice.dataset.choice : "";
+      setResource(input, share ? "" : choice.dataset.choice, share);
+      changed();
+    });
+  }
+  syncResource(input);
+}
 handleForm("rename", (fields, session) => api(sessionPath(session.id, "rename"), "POST", { ...fields, generation: session.generation }));
 handleForm("run", (fields, session) => api(sessionPath(session.id, "run"), "POST", { ...fields, generation: session.generation }));
 handleForm("delete", (_fields, session) => api(sessionPath(session.id), "DELETE", { confirm: String(session.id), generation: session.generation }));

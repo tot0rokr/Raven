@@ -18,15 +18,22 @@ default_cmd=xterm
 default_geometry=1600x900
 default_addons=edge
 default_wm=${RAVEN_WM:-xmonad}
-session_memory=2g
-session_cpus=2
+default_memory=2g
+default_cpus=2
 session_pids=512
+# A running session's memory limit is never set closer than this to what it uses now
+memory_headroom=$((64 * 1048576))
+memory_floor=$((512 * 1048576))
+# The unit tests point these at a fake /proc and cgroup tree
+proc_root=${RAVEN_TEST_PROC:-/proc}
+cgroup_root=${RAVEN_TEST_CGROUP:-/sys/fs/cgroup}
 
 usage() {
     cat <<'EOF'
-usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session and attach (default)
+usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [-m SIZE] [-c CPUS] [CMD...]   create a session and attach (default)
        raven attach|a [-d] [-g WxH] [TARGET]           attach to a session
        raven ls                                        list sessions
+       raven limit [[-t] TARGET [-m SIZE] [-c CPUS]]   show or change memory and CPU limits
        raven rename [-t] TARGET NAME                   rename a session
        raven run [-t TARGET] [--host] CMD...           start an app in a session
        raven run [-t TARGET] @LABEL                    start a host entry of menu.conf
@@ -36,7 +43,7 @@ usage: raven [new] [-d] [-s NAME] [-g WxH] [-w WM] [CMD...]   create a session a
        raven resume [-t] TARGET                        continue a paused session
        raven recreate [-a | [-t] TARGET]               move sessions onto the current image
        raven backup [-t] TARGET [-o FILE] [--stop]     save a session's home and settings to a file
-       raven restore FILE [-s NAME] [-w WM] [-g WxH] [CMD...]   make a new session from a backup
+       raven restore FILE [-s NAME] [-w WM] [-g WxH] [-m SIZE] [-c CPUS] [CMD...]   make a new session from a backup
        raven build [DOCKER-BUILD-ARGS...]              build core + enabled addons
        raven addon ls | enable NAME | disable NAME | new NAME [PKG...]
        raven menu edit | show [-t TARGET] | sync
@@ -61,6 +68,12 @@ backup: a running session is frozen (docker pause) while its home is read and co
   ~/.local/share/raven/backups unless -o is given; ~/Downloads is not in it.
 restore: always makes a new session; its name, window manager, size and command come from
   the backup unless given. Nothing is left behind when the backup is refused.
+limits: -m SIZE (512m, 1.5g, 4g) and -c CPUS (0.5 up to the server's cores, two decimals) cap one
+  session; N% is a share of the server (1-100, at least 512MiB and 0.5 CPU) and max is all of it.
+  new and restore take RAVEN_MEMORY and RAVEN_CPUS, else 2g and 2. limit changes them at once,
+  also while the session runs (its apps keep running); memory cannot go below what the session
+  uses now + 64MiB, and a paused session can only be raised. limit without TARGET lists every
+  session. recreate keeps the limits.
 EOF
 }
 
@@ -324,15 +337,194 @@ host_tz() {
     echo "${z:-UTC}"
 }
 
-# Create the container for session $1; runtime needs come from the image's addon labels
+# Memory and CPU limits. Refusals of a value exit with 3, of a memory limit below what a running
+# session uses with 4, and of lowering a paused session with 5, so the web broker can tell them apart.
+limit_refused() {
+    local rc=$1
+    shift
+    echo "raven: $*" >&2
+    exit "$rc"
+}
+
+# The server's memory in bytes (MemTotal)
+server_memory() {
+    awk '$1 == "MemTotal:" { printf "%.0f\n", $2 * 1024; exit }' "$proc_root/meminfo" 2>/dev/null
+}
+
+# The cores sessions can use; OMP_NUM_THREADS would change what nproc says
+server_cpus() {
+    env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc
+}
+
+# Bytes of SIZE (512m, 1.5g, 4g, 25%, max) for a memory limit; $2 names it in refusals
+memory_bytes() {
+    local v=$1 what=${2:-memory} total b
+    total=$(server_memory)
+    [ -n "$total" ] || die "cannot read the server's memory from $proc_root/meminfo"
+    case "$v" in
+        max)
+            echo $((total / 1048576 * 1048576))
+            return 0 ;;
+        *%)
+            # A share of the server, in whole MiB
+            printf '%s\n' "$v" | grep -Eqx '[0-9]+(\.[0-9]{1,2})?%' \
+                || limit_refused 3 "$what must look like 512m, 1.5g, 4g, 25% or max: '$v'"
+            b=$(awk -v t="$total" -v p="${v%\%}" 'BEGIN {
+                if (p < 1 || p > 100) exit 1
+                printf "%.0f\n", int(t * p / 100 / 1048576 + 1e-9) * 1048576 }') \
+                || limit_refused 3 "$what must be a share from 1% to 100% of the server: '$v'"
+            [ "$b" -ge "$memory_floor" ] || limit_refused 3 "$what $v of the server's $(limit_text "$total") is" \
+                "$(limit_text "$b"), below the minimum 512MiB: '$v'"
+            echo "$b"
+            return 0 ;;
+    esac
+    printf '%s\n' "$v" | grep -Eqx '[0-9]+(\.[0-9]+)?[kKmMgG]' \
+        || limit_refused 3 "$what must look like 512m, 1.5g, 4g, 25% or max: '$v'"
+    b=$(printf '%s\n' "$v" | awk '{
+        u = tolower(substr($0, length($0))); n = substr($0, 1, length($0) - 1) + 0
+        b = int(n * (u == "k" ? 1024 : u == "m" ? 1048576 : 1073741824))
+        printf "%.0f\n", (b > 1e18 ? 1e18 : b) }')
+    [ "$b" -ge "$memory_floor" ] || limit_refused 3 "$what must be at least 512MiB: '$v'"
+    [ "$b" -le "$total" ] || limit_refused 3 "$what can be at most the server's memory, $(limit_text "$total"): '$v'"
+    echo "$b"
+}
+
+# Billionths of a CPU (Docker's NanoCpus) for CPUS (0.5, 2, 2.25, 25%, max); $2 names it in refusals
+cpus_nano() {
+    local v=$1 what=${2:-CPUs} n nano
+    n=$(server_cpus)
+    case "$v" in
+        max)
+            echo $((n * 1000000000))
+            return 0 ;;
+        *%)
+            # A share of the server's cores, to two decimals
+            printf '%s\n' "$v" | grep -Eqx '[0-9]+(\.[0-9]{1,2})?%' \
+                || limit_refused 3 "$what must be a number of cores like 1, 1.5 or 2.25, a share like 25%, or max: '$v'"
+            nano=$(awk -v n="$n" -v p="${v%\%}" 'BEGIN {
+                if (p < 1 || p > 100) exit 1
+                printf "%.0f\n", sprintf("%.2f", n * p / 100) * 1e9 }') \
+                || limit_refused 3 "$what must be a share from 1% to 100% of the server: '$v'"
+            [ "$nano" -ge 500000000 ] || limit_refused 3 "$what $v of the server's $n cores is" \
+                "$(cpus_text "$nano"), below the minimum 0.5: '$v'"
+            echo "$nano"
+            return 0 ;;
+    esac
+    printf '%s\n' "$v" | grep -Eqx '[0-9]+(\.[0-9]{1,2})?' \
+        || limit_refused 3 "$what must be a number of cores like 1, 1.5 or 2.25, a share like 25%, or max: '$v'"
+    nano=$(awk -v c="$v" 'BEGIN { x = c * 1e9; printf "%.0f\n", (x > 1e18 ? 1e18 : x) }')
+    [ "$nano" -ge 500000000 ] || limit_refused 3 "$what must be at least 0.5: '$v'"
+    [ "$nano" -le $((n * 1000000000)) ] || limit_refused 3 "$what can be at most the server's $n cores: '$v'"
+    echo "$nano"
+}
+
+# A limit in bytes as 512MiB, 2GiB or 1.5GiB (one decimal; whole GiB without one)
+limit_text() {
+    awk -v b="$1" 'BEGIN {
+        if (b < 1073741824) printf "%dMiB\n", b / 1048576
+        else if (b % 1073741824 == 0) printf "%dGiB\n", b / 1073741824
+        else printf "%.1fGiB\n", b / 1073741824 }'
+}
+
+# NanoCpus as cores: 2, 2.5, 0.75
+cpus_text() {
+    awk -v n="$1" 'BEGIN { s = sprintf("%.2f", n / 1e9); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'
+}
+
+# NanoCpus as an exact --cpus value
+cpus_arg() {
+    awk -v n="$1" 'BEGIN { s = sprintf("%.9f", n / 1e9); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'
+}
+
+# $1 as a share of $2: "25%", "12.5%" (at most one decimal)
+share_text() {
+    awk -v a="$1" -v b="$2" 'BEGIN { s = sprintf("%.1f", a * 100 / b); sub(/\.0$/, "", s); print s "%" }'
+}
+
+# True for a whole number above 0; Docker shows no limit as 0, -1 or <nil>
+positive() {
+    case "$1" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -gt 0 ]
+}
+
+# A memory limit with its share of the server: "8GiB (25% of 31.3GiB)", "31.3GiB (max)" when it is the
+# whole server (whole MiB), "none"; with $2 = brief only "8GiB" and "31.3GiB (max)"
+memory_limit_text() {
+    local total
+    positive "$1" || { echo none; return 0; }
+    total=$(server_memory)
+    if [ -z "$total" ]; then
+        limit_text "$1"
+    elif [ "$1" -ge $((total / 1048576 * 1048576)) ]; then
+        echo "$(limit_text "$1") (max)"
+    elif [ -n "${2:-}" ]; then
+        limit_text "$1"
+    else
+        echo "$(limit_text "$1") ($(share_text "$1" "$total") of $(limit_text "$total"))"
+    fi
+}
+
+# A CPU limit with its share of the server: "4 (25% of 16)", "16 (max)" when it is every core, "none";
+# with $2 = brief only "4" and "16 (max)"
+cpus_limit_text() {
+    local n
+    positive "$1" || { echo none; return 0; }
+    n=$(server_cpus)
+    if [ "$1" -ge $((n * 1000000000)) ]; then
+        echo "$(cpus_text "$1") (max)"
+    elif [ -n "${2:-}" ]; then
+        cpus_text "$1"
+    else
+        echo "$(cpus_text "$1") ($(share_text "$1" $((n * 1000000000))) of $n)"
+    fi
+}
+
+# NanoCpus as "2.5 cores (15.6% of 16)", "1 core (6.2% of 16)", "16 cores (max)" or "none"
+cores_text() {
+    local c
+    positive "$1" || { echo none; return 0; }
+    c=$(cpus_text "$1")
+    printf '%s core%s%s\n' "$c" "$([ "$c" = 1 ] || echo s)" "$(cpus_limit_text "$1" | sed 's/^[^ ]*//')"
+}
+
+# "memory limit 2GiB (6.4% of 31.3GiB), 2 cores (12.5% of 16)" for BYTES NANOCPUS
+limits_summary() {
+    printf 'memory limit %s, %s\n' "$(memory_limit_text "$1")" "$(cores_text "$2")"
+}
+
+# Limits of a new session: "BYTES NANOCPUS" from the -m and -c values when given ($1, $3 are 1),
+# else from RAVEN_MEMORY and RAVEN_CPUS, else the defaults; exits 3 on a bad value
+new_limits() {
+    local mem nano
+    if [ "$1" = 1 ]; then
+        mem=$(memory_bytes "$2" memory) || exit $?
+    elif [ -n "${RAVEN_MEMORY:-}" ]; then
+        mem=$(memory_bytes "$RAVEN_MEMORY" RAVEN_MEMORY) || exit $?
+    else
+        mem=$(memory_bytes "$default_memory") || exit $?
+    fi
+    if [ "$3" = 1 ]; then
+        nano=$(cpus_nano "$4" CPUs) || exit $?
+    elif [ -n "${RAVEN_CPUS:-}" ]; then
+        nano=$(cpus_nano "$RAVEN_CPUS" RAVEN_CPUS) || exit $?
+    else
+        nano=$(cpus_nano "$default_cpus") || exit $?
+    fi
+    echo "$mem $nano"
+}
+
+# Create the container for session $1; runtime needs come from the image's addon labels.
+# Limits: $7 memory bytes, $8 NanoCpus, $9 pids.
 run_container() {
-    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 seccomp shm uid
+    local id=$1 d=$2 p=$3 cmd=$4 geometry=$5 wm=$6 mem=$7 nano=$8 pids=$9 seccomp shm uid
     seccomp=$(docker image inspect -f '{{index .Config.Labels "raven.seccomp"}}' "$image")
     shm=$(docker image inspect -f '{{index .Config.Labels "raven.shm-size"}}' "$image")
     uid=$(docker image inspect -f '{{index .Config.Labels "raven.uid"}}' "$image")
     set -- --name "$(cname "$id")" --restart unless-stopped --init --network host
-    set -- "$@" --memory "$session_memory" --memory-swap "$session_memory" \
-        --cpus "$session_cpus" --pids-limit "$session_pids"
+    # The same memory as memory+swap: sessions get no swap
+    set -- "$@" --memory "$mem" --memory-swap "$mem" --cpus "$(cpus_arg "$nano")" --pids-limit "$pids"
     [ -z "$seccomp" ] || set -- "$@" --security-opt "seccomp=$seccomp"
     [ -z "$shm" ] || set -- "$@" --shm-size "$shm"
     # The session user is not the host user. The host user's group lets it share ~/Downloads,
@@ -399,13 +591,16 @@ check_wm() {
 
 cmd_new() {
     local detach=0 name= geometry=$default_geometry wm=$default_wm opt cmd id d p
+    local mem_set=0 mem= cpus_set=0 cpus= limits
     OPTIND=1
-    while getopts ds:g:w: opt; do
+    while getopts ds:g:w:m:c: opt; do
         case "$opt" in
             d) detach=1 ;;
             s) name=$OPTARG ;;
             g) geometry=$OPTARG ;;
             w) wm=$OPTARG ;;
+            m) mem_set=1 mem=$OPTARG ;;
+            c) cpus_set=1 cpus=$OPTARG ;;
             *) usage >&2; exit 2 ;;
         esac
     done
@@ -414,6 +609,7 @@ cmd_new() {
     check_wm "$wm"
     check_geometry "$geometry"
     [ -z "$name" ] || check_name "$name"
+    limits=$(new_limits "$mem_set" "$mem" "$cpus_set" "$cpus") || exit $?
     [ "$detach" = 1 ] || need_display
     need_image
 
@@ -423,9 +619,11 @@ cmd_new() {
     mkdir -p "$HOME/Downloads" "$statedir"
     rm -f "$statedir/$id.name" "$statedir/$id.home"
     [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
-    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
+    # shellcheck disable=SC2086
+    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm" $limits "$session_pids"
     ensure_up "$id"
-    echo "raven: created session $id${name:+ ($name)} with $wm" >&2
+    # shellcheck disable=SC2086
+    echo "raven: created session $id${name:+ ($name)} with $wm; $(limits_summary $limits)" >&2
     [ "$detach" = 1 ] || view "$id" "" 0
 }
 
@@ -454,9 +652,9 @@ cmd_attach() {
 cgroup_of() {
     local g
     [ "${1:-0}" -gt 0 ] || return 1
-    g=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null) || return 1
-    [ -n "$g" ] && [ -d "/sys/fs/cgroup$g" ] || return 1
-    echo "/sys/fs/cgroup$g"
+    g=$(sed -n 's/^0:://p' "$proc_root/$1/cgroup" 2>/dev/null) || return 1
+    [ -n "$g" ] && [ -d "$cgroup_root$g" ] || return 1
+    echo "$cgroup_root$g"
 }
 
 # "FILE USEC" for the CPU time used so far, from each cpu.stat file given
@@ -473,7 +671,7 @@ size_text() {
 x11_viewers() {
     local procs
     procs=$(cat "$1/cgroup.procs" 2>/dev/null) || return 1
-    echo "$procs" | sed 's|.*|/proc/&/comm|' | xargs -r cat 2>/dev/null | grep -cxE 'xt(iger|ight)vncviewer' || true
+    echo "$procs" | sed "s|.*|$proc_root/&/comm|" | xargs -r cat 2>/dev/null | grep -cxE 'xt(iger|ight)vncviewer' || true
 }
 
 # Established connections to the VNC port $1: X11 viewers and the web broker's
@@ -481,56 +679,90 @@ vnc_clients() {
     ss -Htn state established "( sport = :$1 )" | grep -c . || true
 }
 
+# Limits and processes of the sessions given on stdin (one id per line), with one docker inspect:
+# ID PID MEMORY NANOCPUS PIDS WM (PID 0 when stopped; no limit is 0, -1 or <nil>; WM may be empty)
+resources() {
+    while read -r id; do cname "$id"; done \
+        | xargs -r docker inspect -f '{{index .Config.Labels "raven.id"}} {{.State.Pid}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} {{index .Config.Labels "raven.wm"}}' \
+        2>/dev/null || true
+}
+
+# "ID CGROUP" for each line of resources() whose session has a readable cgroup
+cgroups_of() {
+    echo "$1" | while read -r id pid rest; do
+        g=$(cgroup_of "$pid") && echo "$id $g"
+    done || true
+}
+
+# One CPU sample for the cgroups in $1 ("ID CGROUP" lines): the time each used in a quarter
+# second. Sets cpu_s1, cpu_s2 ("FILE USEC" lines), cpu_t1, cpu_t2 (ns).
+cpu_s1= cpu_s2= cpu_t1=0 cpu_t2=0
+sample_cpu() {
+    local files
+    files=$(echo "$1" | awk 'NF == 2 { print $2 "/cpu.stat" }')
+    [ -n "$files" ] || return 0
+    cpu_t1=$(date +%s%N)
+    # shellcheck disable=SC2086
+    cpu_s1=$(cpu_usage $files)
+    sleep 0.25
+    cpu_t2=$(date +%s%N)
+    # shellcheck disable=SC2086
+    cpu_s2=$(cpu_usage $files)
+}
+
+# CPU use of cgroup $1 in the sample, one core = 100% ("12%"), or nothing when unknown
+cpu_percent() {
+    local a b e
+    [ -n "$1" ] || return 0
+    a=$(echo "$cpu_s1" | awk -v f="$1/cpu.stat" '$1 == f { print $2 }')
+    b=$(echo "$cpu_s2" | awk -v f="$1/cpu.stat" '$1 == f { print $2 }')
+    e=$(((cpu_t2 - cpu_t1) / 1000))
+    if [ -n "$a" ] && [ -n "$b" ] && [ "$e" -gt 0 ]; then
+        echo "$((((b - a) * 100 + e / 2) / e))%"
+    fi
+}
+
+# Memory use of cgroup $1 in bytes, or nothing
+memory_current() {
+    [ -n "$1" ] || return 0
+    cat "$1/memory.current" 2>/dev/null || true
+}
+
+# "used/limit" cell parts: a limit as 2GiB or none; cores as 2.5 or none
+short_memory_limit() { if positive "$1"; then limit_text "$1"; else echo none; fi; }
+short_cpus_limit() { if positive "$1"; then cpus_text "$1"; else echo none; fi; }
+
 cmd_ls() {
-    local out info groups files= s1= s2= t1=0 t2=0 e conns id display port state cmd name wm pid g x11 web cpu mem a b
+    local out info groups conns id display port state cmd name wm pid g x11 web cpu mem b lmem lcpu
     out=$(sessions | sort -n)
     [ -n "$out" ] || { echo "no sessions"; return 0; }
-    # One docker inspect for every session: init pid (0 when stopped) and window manager
-    info=$(echo "$out" | while read -r id display; do cname "$id"; done \
-        | xargs docker inspect -f '{{index .Config.Labels "raven.id"}} {{.State.Pid}} {{index .Config.Labels "raven.wm"}}' \
-        2>/dev/null) || true
-    groups=$(echo "$info" | while read -r id pid wm; do
-        g=$(cgroup_of "$pid") && echo "$id $g"
-    done) || true
-    for id in $(echo "$out" | awk '$4 == "running" { print $1 }'); do
-        g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
-        [ -z "$g" ] || files="$files $g/cpu.stat"
-    done
-    # One CPU sample for all sessions: the time used in a quarter second (one core is 100%)
-    if [ -n "$files" ]; then
-        t1=$(date +%s%N)
-        # shellcheck disable=SC2086
-        s1=$(cpu_usage $files)
-        sleep 0.25
-        t2=$(date +%s%N)
-        # shellcheck disable=SC2086
-        s2=$(cpu_usage $files)
-    fi
+    info=$(echo "$out" | awk '{ print $1 }' | resources)
+    groups=$(cgroups_of "$info")
+    # One CPU sample for all running sessions (one core is 100%)
+    sample_cpu "$(echo "$groups" | awk -v r="$(echo "$out" | awk '$4 == "running" { printf " %s ", $1 }')" \
+        'index(r, " " $1 " ")')"
     conns=$(ss -Htn state established 2>/dev/null | awk '{ n = split($3, a, ":"); print a[n] }') || true
-    printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-5s %-7s %s\n' \
+    printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-8s %-14s %s\n' \
         ID NAME STATE WM DISPLAY PORT X11 WEB CPU MEM CMD
     echo "$out" | while read -r id display port state cmd; do
         name=$(name_of "$id")
         # Sessions made before window managers were selectable run openbox
-        wm=$(echo "$info" | awk -v id="$id" '$1 == id { print $3 }')
+        wm=$(echo "$info" | awk -v id="$id" '$1 == id { print $6 }')
+        lmem=$(short_memory_limit "$(echo "$info" | awk -v id="$id" '$1 == id { print $3 }')")
+        lcpu=$(short_cpus_limit "$(echo "$info" | awk -v id="$id" '$1 == id { print $4 }')")
         g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
         x11=- web=- cpu=- mem=-
         case "$state" in
             running | paused)
                 mem='?'
-                if [ -n "$g" ] && b=$(cat "$g/memory.current" 2>/dev/null); then
-                    mem=$(size_text "$b")
-                fi ;;
+                b=$(memory_current "$g")
+                [ -z "$b" ] || mem=$(size_text "$b") ;;
         esac
         case "$state" in
             running)
-                cpu='?' x11='?' web='?'
-                a=$(echo "$s1" | awk -v f="$g/cpu.stat" '$1 == f { print $2 }')
-                b=$(echo "$s2" | awk -v f="$g/cpu.stat" '$1 == f { print $2 }')
-                e=$(((t2 - t1) / 1000))
-                if [ -n "$g" ] && [ -n "$a" ] && [ -n "$b" ] && [ "$e" -gt 0 ]; then
-                    cpu=$((((b - a) * 100 + e / 2) / e))%
-                fi
+                cpu=$(cpu_percent "$g")
+                cpu=${cpu:-?}
+                x11='?' web='?'
                 if [ -n "$g" ] && x11=$(x11_viewers "$g"); then
                     # The other connections to the VNC port are web viewers
                     web=$(($(echo "$conns" | grep -cx "$port" || true) - x11))
@@ -541,12 +773,172 @@ cmd_ls() {
             # Frozen, and pause disconnected every viewer
             paused) cpu=0% ;;
         esac
-        printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-5s %-7s %s\n' \
-            "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$x11" "$web" "$cpu" "$mem" "$cmd"
+        printf '%-4s %-16s %-8s %-8s %-8s %-6s %-4s %-4s %-8s %-14s %s\n' \
+            "$id" "${name:--}" "$state" "${wm:-openbox}" ":$display" "$port" "$x11" "$web" "$cpu/$lcpu" \
+            "$mem/$lmem" "$cmd"
     done
     if echo "$out" | awk '$4 == "paused" { found = 1 } END { exit !found }'; then
         echo "paused sessions keep their memory until resumed; a server reboot loses them"
     fi
+}
+
+# Show session $1's limits and use
+limit_show() {
+    local id=$1 name state info groups g mem cpu pids
+    name=$(name_of "$id")
+    state=$(field "$id" 4)
+    info=$(echo "$id" | resources)
+    groups=$(cgroups_of "$info")
+    g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
+    mem=- cpu=-
+    case "$state" in
+        running)
+            sample_cpu "$groups"
+            cpu=$(cpu_percent "$g")
+            cpu="${cpu:-?} (one core = 100%)" ;;
+        paused) cpu="0% (paused)" ;;
+    esac
+    case "$state" in
+        running | paused)
+            mem=$(memory_current "$g")
+            if [ -n "$mem" ]; then mem=$(size_text "$mem"); else mem='?'; fi ;;
+    esac
+    # shellcheck disable=SC2086
+    set -- $info
+    pids=none
+    ! positive "${5:-}" || pids=$5
+    echo "session $id${name:+ ($name)}: $state"
+    echo "memory  used $mem, limit $(memory_limit_text "${3:-}")"
+    echo "cpu     used $cpu, limit $(cores_text "${4:-}")"
+    echo "pids    limit $pids"
+}
+
+# Every session's limits and use, and whether the memory limits add up to more than the server has
+limit_table() {
+    local out info groups total sum=0 open=0 id display port state cmd name g mem cpu lmem lcpu pids rows
+    out=$(sessions | sort -n)
+    [ -n "$out" ] || { echo "no sessions"; return 0; }
+    total=$(server_memory)
+    [ -n "$total" ] || die "cannot read the server's memory from $proc_root/meminfo"
+    info=$(echo "$out" | awk '{ print $1 }' | resources)
+    groups=$(cgroups_of "$info")
+    sample_cpu "$(echo "$groups" | awk -v r="$(echo "$out" | awk '$4 == "running" { printf " %s ", $1 }')" \
+        'index(r, " " $1 " ")')"
+    printf '%-4s %-16s %-8s %-8s %-26s %-6s %-19s %s\n' ID NAME STATE MEM MEM-LIMIT CPU CPU-LIMIT PIDS
+    rows=$(echo "$out" | awk '{ print $1, $4 }')
+    for id in $(echo "$rows" | awk '{ print $1 }'); do
+        state=$(echo "$rows" | awk -v id="$id" '$1 == id { print $2 }')
+        name=$(name_of "$id")
+        # shellcheck disable=SC2046
+        set -- $(echo "$info" | awk -v id="$id" '$1 == id { print $3, $4, $5 }')
+        lmem=$(memory_limit_text "${1:-}")
+        lcpu=$(cpus_limit_text "${2:-}")
+        pids=none
+        ! positive "${3:-}" || pids=$3
+        # A session without a limit can take the whole server
+        if positive "${1:-}"; then sum=$((sum + $1)); else sum=$((sum + total)); open=$((open + 1)); fi
+        g=$(echo "$groups" | awk -v id="$id" '$1 == id { print $2 }')
+        mem=- cpu=-
+        case "$state" in
+            running | paused)
+                mem=$(memory_current "$g")
+                if [ -n "$mem" ]; then mem=$(size_text "$mem"); else mem='?'; fi ;;
+        esac
+        case "$state" in
+            running) cpu=$(cpu_percent "$g"); cpu=${cpu:-?} ;;
+            paused) cpu=0% ;;
+        esac
+        printf '%-4s %-16s %-8s %-8s %-26s %-6s %-19s %s\n' \
+            "$id" "${name:--}" "$state" "$mem" "$lmem" "$cpu" "$lcpu" "$pids"
+    done
+    printf 'memory limits add up to %s%s; the server has %s\n' "$(limit_text "$sum")" \
+        "$([ "$open" -eq 0 ] || echo " (a session without a limit counts as the whole server)")" \
+        "$(limit_text "$total")"
+    if [ "$sum" -gt "$total" ]; then
+        echo "warning: sessions may use more memory together than the server has; if they do, the kernel kills apps"
+    fi
+}
+
+# Change session $1's limits: $2 memory bytes and $3 NanoCpus, either empty to keep it
+limit_change() {
+    local id=$1 mem=$2 nano=$3 c name state old_mem old_nano pid g use need lower=0 now
+    c=$(cname "$id")
+    name=$(name_of "$id")
+    state=$(field "$id" 4)
+    # shellcheck disable=SC2046
+    set -- $(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.State.Pid}}' "$c")
+    old_mem=${1:-} old_nano=${2:-} pid=${3:-0}
+    # No limit (0) is more than any limit
+    if [ -n "$mem" ] && { ! positive "$old_mem" || [ "$mem" -lt "$old_mem" ]; }; then lower=1; fi
+    if [ -n "$nano" ] && { ! positive "$old_nano" || [ "$nano" -lt "$old_nano" ]; }; then lower=$((lower + 2)); fi
+    # Frozen processes cannot give memory back; the session can only grow until resumed
+    [ "$state" != paused ] || [ "$lower" -eq 0 ] \
+        || limit_refused 5 "session $id is paused; its limits can only be raised until it is resumed: raven resume $id"
+    # cgroup v2 takes a memory limit below the use and then kills apps until they fit
+    if [ $((lower % 2)) -eq 1 ]; then
+        g=$(cgroup_of "$pid") || g=
+        use=$(memory_current "$g")
+        if [ -n "$use" ]; then
+            need=$((use + memory_headroom))
+            [ "$mem" -ge "$need" ] || limit_refused 4 "session $id uses $(size_text "$use") of memory now;" \
+                "a limit below $(((need + 1048575) / 1048576))MiB (its use + 64MiB) would make the kernel kill its apps"
+        elif [ "$state" = running ]; then
+            die "cannot read the memory use of session $id; its limits were not changed"
+        fi
+    fi
+    set --
+    [ -z "$mem" ] || set -- --memory "$mem" --memory-swap "$mem"
+    [ -z "$nano" ] || set -- "$@" --cpus "$(cpus_arg "$nano")"
+    docker update "$@" "$c" >/dev/null || die "session $id: docker update failed; its limits were not changed"
+    # Docker keeps the limits with the container, so they also hold after a restart or reboot
+    now=$(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.NanoCpus}}' "$c")
+    # shellcheck disable=SC2086
+    set -- $now
+    { [ -z "$mem" ] || { [ "${1:-}" = "$mem" ] && [ "${2:-}" = "$mem" ]; }; } \
+        && { [ -z "$nano" ] || [ "${3:-}" = "$nano" ]; } \
+        || die "session $id: the limits did not change as asked (now memory ${1:-?}, swap ${2:-?}, NanoCpus ${3:-?})"
+    {
+        printf 'raven: session %s%s:' "$id" "${name:+ ($name)}"
+        [ -z "$mem" ] || printf ' memory limit %s -> %s' "$(memory_limit_text "$old_mem" brief)" \
+            "$(memory_limit_text "$mem" brief)"
+        [ -z "$mem" ] || [ -z "$nano" ] || printf ','
+        [ -z "$nano" ] || printf ' cpus %s -> %s' "$(cpus_limit_text "$old_nano" brief)" \
+            "$(cpus_limit_text "$nano" brief)"
+        case "$state" in
+            running | paused) echo "; applied now, its apps keep running" ;;
+            *) echo "; it gets them when it starts" ;;
+        esac
+    } >&2
+}
+
+cmd_limit() {
+    local target= mem= nano= mem_set=0 cpus_set=0 m= cpus= id
+    local usage='usage: raven limit [[-t] TARGET [-m SIZE] [-c CPUS]]'
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t | -m | -c)
+                [ $# -ge 2 ] || die "$1 needs an argument"
+                case "$1" in
+                    -t) target=$2 ;;
+                    -m) mem_set=1 m=$2 ;;
+                    *) cpus_set=1 cpus=$2 ;;
+                esac
+                shift 2 ;;
+            -*) die "$usage" ;;
+            *) [ -z "$target" ] || die "$usage"; target=$1; shift ;;
+        esac
+    done
+    if [ -z "$target" ]; then
+        [ "$mem_set$cpus_set" = 00 ] || die "name the session to change: raven limit [-t] TARGET [-m SIZE] [-c CPUS]"
+        limit_table
+        return
+    fi
+    # The values are checked before any session is looked up or changed
+    [ "$mem_set" = 0 ] || { mem=$(memory_bytes "$m" memory) || exit $?; }
+    [ "$cpus_set" = 0 ] || { nano=$(cpus_nano "$cpus" CPUs) || exit $?; }
+    id=$(resolve "$target")
+    [ "$mem_set$cpus_set" = 00 ] || limit_change "$id" "$mem" "$nano"
+    limit_show "$id"
 }
 
 cmd_rename() {
@@ -741,7 +1133,7 @@ cmd_resume() {
 }
 
 cmd_recreate() {
-    local all=0 target= opt id targets c cmd geometry wm
+    local all=0 target= opt id targets c cmd geometry wm defaults mem nano pids display port
     OPTIND=1
     while getopts at: opt; do
         case "$opt" in
@@ -759,6 +1151,8 @@ cmd_recreate() {
         targets=$(resolve "$target")
     fi
     need_image
+    # For sessions from before limits; checked before any session is stopped
+    defaults=$(new_limits 0 "" 0 "") || exit $?
     for id in $targets; do
         # Recreating ends the apps a pause keeps; only an explicit target does that
         if [ "$all" = 1 ] && [ "$(field "$id" 4)" = paused ]; then
@@ -769,11 +1163,20 @@ cmd_recreate() {
         cmd=$(label_of "$c" raven.cmd)
         geometry=$(label_of "$c" raven.geometry)
         wm=$(label_of "$c" raven.wm)
-        set -- "$(field "$id" 2)" "$(field "$id" 3)"
+        display=$(field "$id" 2)
+        port=$(field "$id" 3)
+        # The new container keeps the limits, also ones changed with raven limit
+        # shellcheck disable=SC2046
+        set -- $(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$c")
+        mem=${defaults% *} nano=${defaults#* } pids=$session_pids
+        ! positive "${1:-}" || mem=$1
+        ! positive "${2:-}" || nano=$2
+        ! positive "${3:-}" || pids=$3
         docker stop "$c" >/dev/null
         docker rm "$c" >/dev/null
         # Sessions made before window managers were selectable run openbox
-        run_container "$id" "$1" "$2" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}" "${wm:-openbox}"
+        run_container "$id" "$display" "$port" "${cmd:-$default_cmd}" "${geometry:-$default_geometry}" \
+            "${wm:-openbox}" "$mem" "$nano" "$pids"
         ensure_up "$id"
         echo "raven: recreated session $id" >&2
     done
@@ -1234,15 +1637,17 @@ restore_cleanup() {
 }
 
 cmd_restore() {
-    local file= name= wm= geometry= usage='usage: raven restore FILE [-s NAME] [-w WM] [-g WxH] [CMD...]'
-    local info from owner made current foreign cmd i id d p
+    local file= name= wm= geometry= usage='usage: raven restore FILE [-s NAME] [-w WM] [-g WxH] [-m SIZE] [-c CPUS] [CMD...]'
+    local info from owner made current foreign cmd i id d p mem_set=0 mem= cpus_set=0 cpus= limits
     while [ $# -gt 0 ]; do
         case "$1" in
-            -s | -w | -g)
+            -s | -w | -g | -m | -c)
                 [ $# -ge 2 ] || die "$1 needs an argument"
                 case "$1" in
                     -s) name=$2 ;;
                     -w) wm=$2 ;;
+                    -m) mem_set=1 mem=$2 ;;
+                    -c) cpus_set=1 cpus=$2 ;;
                     *) geometry=$2 ;;
                 esac
                 shift 2 ;;
@@ -1260,6 +1665,8 @@ cmd_restore() {
     [ -z "$wm" ] || check_wm "$wm"
     [ -z "$geometry" ] || check_geometry "$geometry"
     [ -z "$name" ] || check_name "$name"
+    # Limits are not in backups: -m and -c, else the defaults of new
+    limits=$(new_limits "$mem_set" "$mem" "$cpus_set" "$cpus") || exit $?
     need_image
 
     # Everything is checked before anything is made. The file goes in on stdin: through a bind
@@ -1314,11 +1721,14 @@ cmd_restore() {
     mkdir -p "$HOME/Downloads" "$statedir"
     rm -f "$statedir/$id.name" "$statedir/$id.home"
     [ -z "$name" ] || echo "$name" > "$statedir/$id.name"
-    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm"
+    # shellcheck disable=SC2086
+    run_container "$id" "$d" "$p" "$cmd" "$geometry" "$wm" $limits "$session_pids"
     ensure_up "$id"
     restore_id=
     trap - EXIT HUP INT TERM
     echo "raven: restored session $id${name:+ ($name)} with $wm, $geometry: $cmd" >&2
+    # shellcheck disable=SC2086
+    echo "raven: $(limits_summary $limits)" >&2
     echo "raven: ~/Downloads was not in the backup; the session shares the current ~/Downloads" >&2
     echo "raven: attach with: raven attach $id" >&2
 }
@@ -1870,6 +2280,7 @@ case "$1" in
     new) shift; cmd_new "$@" ;;
     attach | a) shift; cmd_attach "$@" ;;
     ls | list) shift; cmd_ls "$@" ;;
+    limit) shift; cmd_limit "$@" ;;
     rename) shift; cmd_rename "$@" ;;
     run) shift; cmd_run "$@" ;;
     shell) shift; cmd_shell "$@" ;;

@@ -1,3 +1,4 @@
+import math
 import re
 
 SESSION_ID = re.compile(r"(?:0|[1-9][0-9]{0,8})\Z")
@@ -24,6 +25,54 @@ def session_command(value):
     return value
 
 
+# Memory and CPU limits; the CLI checks them against the server's memory and cores.
+MIN_MEMORY = 512 * 1024 ** 2
+MAX_MEMORY = 1024 ** 5
+MIN_CPUS = 0.5
+MAX_CPUS = 1024
+# A share of the server from 1% to 100%, up to two decimals; the CLI resolves it and applies the minimums.
+SHARE = re.compile(r"(?:[1-9][0-9]?|100)(?:\.[0-9]{1,2})?%\Z")
+
+
+class LimitRequestError(ValueError):
+    code = "limit_invalid"
+
+
+def server_share(value):
+    return isinstance(value, str) and SHARE.match(value) is not None and 1 <= float(value[:-1]) <= 100
+
+
+def session_memory(value):
+    """Bytes, a whole number of MiB from 512 MiB; a share of the server like "25%"; or "max" for all of it."""
+    if value == "max" or server_share(value):
+        return value
+    if type(value) is not int or not MIN_MEMORY <= value <= MAX_MEMORY or value % 1024 ** 2:
+        raise LimitRequestError('Memory must be a whole number of MiB in bytes (at least 512 MiB), a share of the '
+                                'server from "1%" to "100%", or "max"')
+    return value
+
+
+def session_cpus(value):
+    """Cores from 0.5 with up to two decimals; a share of the server like "25%"; or "max" for every core."""
+    if value == "max" or server_share(value):
+        return value
+    if type(value) not in (int, float) or not math.isfinite(value) or not MIN_CPUS <= value <= MAX_CPUS \
+            or abs(value * 100 - round(value * 100)) > 1e-6:
+        raise LimitRequestError('CPUs must be a number of cores from 0.5 with up to two decimals, a share of the '
+                                'server from "1%" to "100%", or "max"')
+    return value
+
+
+def session_limits(data):
+    """The memory and cpus of a request that has them; an empty dict when it has neither."""
+    limits = {}
+    if "memory" in data:
+        limits["memory"] = session_memory(data["memory"])
+    if "cpus" in data:
+        limits["cpus"] = session_cpus(data["cpus"])
+    return limits
+
+
 def session_options(data):
     name = session_name(data.get("name"))
     wm = data.get("wm", "xmonad")
@@ -34,7 +83,7 @@ def session_options(data):
     if not match or not (320 <= int(match[1]) <= 7680 and 200 <= int(match[2]) <= 4320):
         raise ValueError("Geometry must be between 320x200 and 7680x4320")
     return {"name": name, "wm": wm, "geometry": geometry,
-            "command": session_command(data.get("command", "xterm"))}
+            "command": session_command(data.get("command", "xterm")), **session_limits(data)}
 
 
 # File transfers stay inside the host's ~/Downloads; the host broker repeats every check.

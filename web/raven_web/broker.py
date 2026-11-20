@@ -20,7 +20,9 @@ FILE_CODES = frozenset({
 })
 # Session states the host broker refuses an action in; the gateway answers them with 409.
 SESSION_CODES = frozenset({"session_paused", "session_not_paused", "session_not_running"})
-CODES = FILE_CODES | SESSION_CODES
+# Refused memory or CPU limits: out of range (400) or below the session's memory use (409).
+LIMIT_CODES = frozenset({"limit_invalid", "limit_below_usage"})
+CODES = FILE_CODES | SESSION_CODES | LIMIT_CODES
 
 
 class BrokerError(Exception):

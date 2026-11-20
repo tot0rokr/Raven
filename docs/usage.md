@@ -28,6 +28,7 @@
 | `raven pause`             | 세션의 앱을 메모리에 둔 채 멈춤                           |
 | `raven resume`            | 일시정지한 세션을 이어감                                  |
 | `raven kill`              | 세션과 홈 삭제                                            |
+| `raven limit`             | 세션의 메모리·CPU 상한 확인과 실행 중 변경                |
 | `raven backup`            | 세션 홈과 설정을 파일 하나로 백업                         |
 | `raven restore`           | 백업 파일로 새 세션을 만듦                                |
 | `raven recreate`          | 세션을 현재 이미지로 교체 (홈 유지)                       |
@@ -92,15 +93,15 @@ raven rename 0 browser
 ```
 
 ```
-ID   NAME             STATE    WM       DISPLAY  PORT   X11  WEB  CPU   MEM     CMD
-0    browser          running  xmonad   :100     15900  1    1    3%    1.2GiB  microsoft-edge
-1    work             paused   xmonad   :101     15901  -    -    0%    842MiB  xterm
-2    ob               exited   openbox  :102     15902  -    -    -     -       xterm
+ID   NAME             STATE    WM       DISPLAY  PORT   X11  WEB  CPU      MEM            CMD
+0    browser          running  xmonad   :100     15900  1    1    3%/2     1.2GiB/4GiB    microsoft-edge
+1    work             paused   xmonad   :101     15901  -    -    0%/2     842MiB/2GiB    xterm
+2    ob               exited   openbox  :102     15902  -    -    -/2      -/2GiB         xterm
 paused sessions keep their memory until resumed; a server reboot loses them
 ```
 
 - `X11`은 붙어 있는 X11 뷰어 수, `WEB`은 브라우저(웹 게이트웨이) 연결 수다.
-- `CPU`는 0.25초 동안 잰 사용률이다(코어 하나가 100%, 세션 상한은 CPU 2개). 막 이어간 세션은 잠깐 200%를 넘게 보일 수 있다. `MEM`은 세션 컨테이너의 메모리 사용량이다.
+- `CPU`는 0.25초 동안 잰 사용률(코어 하나가 100%)과 코어 상한, `MEM`은 세션 컨테이너의 메모리 사용량과 상한이다([자원 상한](#자원-상한)). 막 이어간 세션은 잠깐 상한보다 높게 보일 수 있다. 상한이 없으면 `none`이다.
 - 일시정지한 세션은 `X11`, `WEB`이 `-`이고 `MEM`은 그대로 남는다. 꺼진 세션은 네 칸 모두 `-`, 읽지 못한 값은 `?`다.
 - 창 관리자를 고를 수 있기 전에 만든 세션은 `WM`이 openbox다.
 
@@ -122,9 +123,28 @@ raven shell -t 0                       # 세션 안의 bash (DISPLAY 설정됨)
 
 세션 컨테이너는 `--restart unless-stopped`로 실행된다. VM이 재부팅되면 다시 뜨고, 시작 명령(`new`의 CMD)도 다시 실행된다. 열려 있던 다른 창은 다시 뜨지 않는다.
 
-- `new`와 `recreate`는 세션마다 메모리 2GiB, CPU 2개, process/thread 512개 상한을 적용하고 swap 사용을 차단한다. 한도를 넘는 앱은 종료될 수 있으므로 미저장 작업이 유지된다고 보장하지 않는다.
-- 이미 존재하는 데스크톱 컨테이너의 제한은 자동 변경하지 않는다. `docker update --memory 2g --memory-swap 2g --cpus 2 --pids-limit 512 raven-USER-ID`로 재시작 없이 적용한다. `USER`와 `ID`는 본인 세션의 실제 컨테이너 이름으로 바꾼다. 적용 전 `docker stats --no-stream`으로 현재 사용량이 새 상한보다 낮은지 확인한다.
-- 제한은 컨테이너의 앱에 적용된다. `--host` 앱과 호스트 중계에는 적용되지 않는다.
+- 세션마다 메모리·CPU 상한이 있고 process/thread는 512개까지다. swap은 쓰지 않는다. 메모리 상한을 넘는 앱은 커널이 종료할 수 있으므로 미저장 작업이 유지된다고 보장하지 않는다. 상한은 [자원 상한](#자원-상한)에서 정하고 바꾼다.
+- 상한은 컨테이너의 앱에 적용된다. `--host` 앱과 호스트 중계에는 적용되지 않는다.
+
+### 자원 상한
+
+```bash
+raven new -m 4g -c 3 -s big xterm      # 만들 때 정한다 (기본 2g, 2코어)
+raven limit big                        # 지금 상한과 사용량
+raven limit big -m 6g -c 4             # 실행 중에 바로 바꾼다. 앱은 그대로다
+raven limit big -m 25% -c 50%          # 서버 전체의 몫으로
+raven limit big -m max -c max          # 서버 전체 (100%와 같다)
+raven limit                            # 모든 세션의 상한·사용량과 메모리 상한 합계
+```
+
+- 메모리 `SIZE`는 `512m`, `1.5g`, `4g`처럼 단위(k, m, g)를 붙이고, CPU는 코어 수(`0.5`, `2.5`)다. `N%`(1–100)는 서버 메모리(`/proc/meminfo`)나 코어 수(`nproc`)의 몫, `max`는 서버 전체다. 비율과 `max`는 그때의 서버 값으로 계산해 숫자로 저장한다.
+- 범위: 메모리 512MiB–서버 전체, CPU 0.5–서버 코어 수(소수 둘째 자리까지). 비율로 계산한 값이 최솟값보다 작으면 거절한다.
+- `limit`의 변경은 `docker update`로 하므로 세션을 다시 시작하지 않는다. 바꾼 값은 컨테이너에 저장되어 재시작·재부팅 뒤에도 남고, `recreate`도 이어받는다. `restore`와 `new`는 `-m`, `-c`가 없으면 기본값을 쓴다.
+- 메모리를 지금 사용량 + 64MiB보다 작게 줄이는 것은 거절한다. 리눅스는 그런 상한을 받아들인 뒤 바로 앱을 종료하기 때문이다. 일시정지한 세션은 늘리기만 된다. 꺼진 세션은 범위 안이면 아무 값이나 된다.
+- 출력은 상한이 서버의 몇 %인지 함께 보인다(`3GiB (9.6% of 31.3GiB)`, 서버 전체면 `(max)`). 모든 세션의 메모리 상한 합이 서버 메모리를 넘으면 `raven limit`이 경고한다. 그 자체로 막지는 않지만, 세션들이 한꺼번에 상한까지 쓰면 커널이 앱을 종료한다.
+- 기본값은 환경 변수 `RAVEN_MEMORY`, `RAVEN_CPUS`로 바꾼다(같은 형식, 비율·`max` 가능).
+- 거절할 때 종료 코드: 3(값·범위), 4(사용량보다 작은 메모리), 5(일시정지 중 줄이기).
+- 웹 화면의 세션 카드 `자원`도 같은 일을 한다([화면 사용](./web.md#화면-사용)).
 
 | 데이터                                  | 재시작 (재부팅) | `recreate` | `kill` |
 | --------------------------------------- | --------------- | ---------- | ------ |
@@ -453,6 +473,8 @@ raven recreate -a                      # 모든 세션을 새 이미지로
 | 변수               | 의미                                       | 기본값                       |
 | ------------------ | ------------------------------------------ | ---------------------------- |
 | `RAVEN_WM`         | `new`의 기본 창 관리자                     | `xmonad`                     |
+| `RAVEN_MEMORY`     | `new`·`restore`의 기본 메모리 상한          | `2g`                         |
+| `RAVEN_CPUS`       | `new`·`restore`의 기본 CPU 상한             | `2`                          |
 | `RAVEN_IMAGE`      | 세션 이미지                                | `raven:latest`               |
 | `RAVEN_CORE_IMAGE` | core 이미지                                | `raven-core:latest`          |
 | `XDG_CONFIG_HOME`  | 설정 디렉터리 (`$XDG_CONFIG_HOME/raven`)   | `~/.config`                  |

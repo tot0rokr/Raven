@@ -295,6 +295,8 @@ class BackupCliTests(unittest.TestCase):
                 self.assertEqual(order, before + [["stop", f"raven-{USER}-{sid}"], ["run"],
                                                   ["start", f"raven-{USER}-{sid}"]])
                 self.assertEqual(self.docker_state()["sessions"][sid]["state"], "running")
+                # The same container starts again, so Docker keeps its limits; nothing makes a new one
+                self.assertEqual([c for c in self.calls() if c[0] in ("create", "update", "rm")], [])
 
     def test_backup_to_an_existing_file_is_refused_before_stopping(self):
         out = self.root / "exists.tar"
@@ -318,14 +320,15 @@ class BackupCliTests(unittest.TestCase):
     # restore
 
     def test_restore_usage_and_option_errors_create_nothing(self):
-        usage = "raven: usage: raven restore FILE [-s NAME] [-w WM] [-g WxH] [CMD...]\n"
+        usage = "raven: usage: raven restore FILE [-s NAME] [-w WM] [-g WxH] [-m SIZE] [-c CPUS] [CMD...]\n"
         for args, message in (((), usage), (("-s",), "raven: -s needs an argument\n"),
                               (("-x", str(self.backup_file)), usage),
                               ((str(self.root / "missing.tar"),), f"raven: cannot read {self.root / 'missing.tar'}\n"),
                               ((str(self.backup_file), "-w", "kde"),
                                "raven: window manager must be xmonad or openbox: 'kde'\n"),
                               ((str(self.backup_file), "-g", "big"), "raven: geometry must look like 1600x900: 'big'\n"),
-                              ((str(self.backup_file), "-s", "9lives"), "raven: name must start with a letter: '9lives'\n")):
+                              ((str(self.backup_file), "-s", "9lives"), "raven: name must start with a letter: '9lives'\n"),
+                              (("-c",), "raven: -c needs an argument\n")):
             with self.subTest(args=args):
                 self.log.write_text("")
                 result = self.raven("restore", *args)
@@ -377,6 +380,31 @@ class BackupCliTests(unittest.TestCase):
         self.assertEqual((labels["raven.wm"], labels["raven.geometry"], labels["raven.cmd"]),
                          ("xmonad", "640x480", "xterm -T x"))
         self.assertEqual((self.statedir / "4.name").read_text(), "other\n")
+
+    def test_restore_takes_limits_like_new_and_none_from_the_backup(self):
+        create_limits = lambda call: [call[call.index(flag) + 1]
+                                      for flag in ("--memory", "--memory-swap", "--cpus", "--pids-limit")]
+        result = self.raven("restore", str(self.backup_file), "-s", "big", "-m", "3g", "-c", "1.5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create, = self.calls("create")
+        self.assertEqual(create_limits(create), [str(3 * 1024 ** 3), str(3 * 1024 ** 3), "1.5", "512"])
+        self.assertRegex(result.stderr, r"raven: memory limit 3GiB \([0-9.]+% of [0-9.]+GiB\), 1.5 cores \([0-9.]+% of"
+                                        r" [0-9]+\)\n")
+        self.log.write_text("")
+        self.environment.update(RAVEN_MEMORY="1g", RAVEN_CPUS="1")
+        result = self.raven("restore", str(self.backup_file), "-s", "small")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(create_limits(self.calls("create")[0]), [str(1024 ** 3), str(1024 ** 3), "1", "512"])
+        # A bad value is refused before the backup is even checked
+        self.log.write_text("")
+        for options, message in ((("-m", "100m"), "raven: memory must be at least 512MiB: '100m'\n"),
+                                 (("-c", "lots"), "raven: CPUs must be a number of cores like 1, 1.5 or 2.25, a"
+                                                  " share like 25%, or max: 'lots'\n")):
+            with self.subTest(options=options):
+                result = self.raven("restore", str(self.backup_file), "-s", "bad", *options)
+                self.assertEqual((result.returncode, result.stderr), (3, message))
+        self.assertEqual(self.helper_runs(), [])
+        self.assertEqual(self.calls("create"), [])
 
     def test_restore_warns_about_another_user_and_image(self):
         self.update(backup=dict(BACKUP, user="someone", image_id="sha256:" + "a" * 64, foreign="2"))

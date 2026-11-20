@@ -3,6 +3,7 @@
 import base64
 import errno
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -74,6 +75,17 @@ SESSION_FAILURES = {
     "session_not_paused": "Session is not paused",
     "session_not_running": "Session is not running",
 }
+# Limit refusals of raven new and raven limit, told apart by the CLI's exit status.
+LIMIT_FAILURES = {
+    "limit_invalid": "Invalid memory or CPU limit",
+    "limit_below_usage": "The memory limit is below what the session uses now",
+}
+LIMIT_EXIT_CODES = {3: "limit_invalid", 4: "limit_below_usage", 5: "session_paused"}
+MAX_LIMIT_BYTES = 1 << 60
+MAX_LIMIT_CPUS = 100000
+# A share of the server, 1% to 100%, as raven new and raven limit take it
+SHARE = re.compile(r"(?:[1-9][0-9]?|100)(?:\.[0-9]{1,2})?%")
+BELOW_USAGE = re.compile(r"raven: session [0-9]+ uses ([0-9.]+[MG]iB) of memory now; a limit below ([0-9]+)MiB ")
 # Every session's CPU use is sampled once per listing, this far apart.
 CPU_SAMPLE_SECONDS = 0.25
 VIEWER_PROCESSES = frozenset({"xtigervncviewer", "xtightvncviewer"})
@@ -133,6 +145,83 @@ class FileError(RequestError):
 
 def session_failure(code, message=None):
     return RequestError(message or SESSION_FAILURES[code], code)
+
+
+def limit_failure(code, message=None):
+    return RequestError(message or LIMIT_FAILURES[code], code)
+
+
+def share(value):
+    """A share of the server ("25%", "12.5%") from 1% to 100%, or None."""
+    if isinstance(value, str) and SHARE.fullmatch(value) and 1 <= float(value[:-1]) <= 100:
+        return value
+    return None
+
+
+def checked_memory(request):
+    """A memory limit in bytes, a share like "25%" or "max", as the CLI's -m value; None when not given."""
+    value = request.get("memory")
+    if value is None:
+        return None
+    if value == "max" or share(value):
+        return value
+    if type(value) is not int or not 0 < value <= MAX_LIMIT_BYTES:
+        raise limit_failure("limit_invalid", 'Memory must be a number of bytes, a share like "25%" or "max"')
+    if value % (1 << 20) == 0:
+        return f"{value >> 20}m"
+    if value % 1024 == 0:
+        return f"{value >> 10}k"
+    raise limit_failure("limit_invalid", "Memory must be a whole number of KiB")
+
+
+def checked_cpus(request):
+    """A CPU limit in cores (up to two decimals), a share like "25%" or "max", as the CLI's -c value; None when not
+    given."""
+    value = request.get("cpus")
+    if value is None:
+        return None
+    if value == "max" or share(value):
+        return value
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= MAX_LIMIT_CPUS:
+        raise limit_failure("limit_invalid", 'CPUs must be a number of cores, a share like "25%" or "max"')
+    hundredths = round(value * 100)
+    if abs(value * 100 - hundredths) > 1e-6:
+        raise limit_failure("limit_invalid", "CPUs can have at most two decimals")
+    whole, fraction = divmod(hundredths, 100)
+    return str(whole) if not fraction else f"{whole}.{fraction:02d}".rstrip("0")
+
+
+def limit_options(memory, cpus):
+    return (["-m", memory] if memory is not None else []) + (["-c", cpus] if cpus is not None else [])
+
+
+def limit_refusal(status, stderr):
+    """The refusal for a limit exit status of the CLI, its message built from the CLI's last line."""
+    code = LIMIT_EXIT_CODES[status]
+    lines = stderr.decode(errors="replace").strip().splitlines()
+    line = lines[-1] if lines else ""
+    if code == "limit_below_usage":
+        match = BELOW_USAGE.match(line)
+        if match:
+            return limit_failure(code, f"The memory limit must be at least {match[2]}MiB; "
+                                       f"the session uses {match[1]} now")
+        return limit_failure(code)
+    if code == "session_paused":
+        return session_failure(code, "Session is paused; its limits can only be raised until it is resumed")
+    # "raven: memory must be at least 512MiB: '100m'" -> "Memory must be at least 512MiB"
+    message = re.sub(r": '[^']*'$", "", line.removeprefix("raven: "))
+    if message and len(message) <= 200 and message.isascii() and message.isprintable():
+        return limit_failure(code, message[0].upper() + message[1:])
+    return limit_failure(code)
+
+
+def limits_of(item, server):
+    """The container's limits, memory in bytes and cpus in cores (None when there is none), and the server's
+    memory and cores they are a share of."""
+    host = item.get("HostConfig") or {}
+    memory, nano = host.get("Memory"), host.get("NanoCpus")
+    return {"memory": memory if type(memory) is int and memory > 0 else None,
+            "cpus": nano / 1e9 if type(nano) is int and nano > 0 else None, **server}
 
 
 def established_ports(tables):
@@ -658,8 +747,11 @@ class Raven:
         self.environment = dict(os.environ)
         self.environment.pop("DISPLAY", None)
 
-    def execute(self, args):
+    def execute(self, args, limits=False):
         result = subprocess.run(args, capture_output=True, env=self.environment, timeout=COMMAND_TIMEOUT)
+        # raven new and raven limit refuse limits with their own exit statuses
+        if limits and result.returncode in LIMIT_EXIT_CODES:
+            raise limit_refusal(result.returncode, result.stderr)
         if result.returncode:
             raise RequestError("Raven operation failed; inspect the session with the CLI")
         return result
@@ -679,12 +771,29 @@ class Raven:
         if not SESSION_ID.fullmatch(sid):
             raise RequestError("Invalid session id")
         item = self.inspect(f"raven-{self.user}-{sid}")
-        if request.get("action") in ("rename", "delete", "run", "pause", "resume"):
+        if request.get("action") in ("rename", "delete", "run", "pause", "resume", "limits"):
             if checked_text(request, "generation", 64) != item["Id"]:
                 raise RequestError("Session changed; refresh the session list")
         return item
 
-    def describe(self, item, usage=None):
+    def server(self):
+        """The server's memory (MemTotal, bytes) and the cores raven new and raven limit allow (nproc)."""
+        memory = None
+        try:
+            for line in (self.proc / "meminfo").read_text().splitlines():
+                name, _, value = line.partition(":")
+                if name == "MemTotal" and value.split()[1:] == ["kB"]:
+                    memory = int(value.split()[0]) * 1024
+                    break
+        except (OSError, ValueError, IndexError):
+            memory = None
+        try:
+            cpus = len(os.sched_getaffinity(0))
+        except OSError:
+            cpus = None
+        return {"server_memory": memory, "server_cpus": cpus}
+
+    def describe(self, item, usage=None, server=None):
         labels = item["Config"]["Labels"]
         sid = labels["raven.id"]
         try:
@@ -693,10 +802,12 @@ class Raven:
             name = ""
         if usage is None:
             usage = self.usage([item])[item["Id"]]
+        if server is None:
+            server = self.server()
         return {"id": sid, "generation": item["Id"], "name": name, "state": item["State"]["Status"],
                 "wm": labels.get("raven.wm") or "openbox",
                 "geometry": labels["raven.geometry"], "command": labels["raven.cmd"],
-                "display": labels["raven.display"], **usage}
+                "display": labels["raven.display"], "limits": limits_of(item, server), **usage}
 
     def cgroup(self, item):
         """The container's cgroup v2 directory, found through its init process; None when unknown."""
@@ -809,7 +920,9 @@ class Raven:
         if not match or not (320 <= int(match[1]) <= 7680 and 200 <= int(match[2]) <= 4320):
             raise RequestError("Invalid geometry")
         command = checked_command(request, "xterm")
-        result = self.execute([self.cli, "new", "-d", "-s", name, "-g", geometry, "-w", wm, "--", command])
+        limits = limit_options(checked_memory(request), checked_cpus(request))
+        result = self.execute([self.cli, "new", "-d", "-s", name, "-g", geometry, "-w", wm, *limits, "--", command],
+                              limits=True)
         matches = re.findall(rb"^raven: created session ([0-9]+)(?: |\n)", result.stderr, re.MULTILINE)
         if not matches:
             raise RequestError("Session creation did not return an id; inspect raven ls")
@@ -821,11 +934,12 @@ class Raven:
             result = self.execute(["docker", "ps", "-aq", "--filter", f"label=raven.user={self.user}"])
             items = [self.inspect(cid) for cid in result.stdout.decode().split()]
             usage = self.usage(items)
-            sessions = [self.describe(item, usage[item["Id"]]) for item in items]
+            server = self.server()
+            sessions = [self.describe(item, usage[item["Id"]], server) for item in items]
             return sorted(sessions, key=lambda session: int(session["id"]))
         if action == "create":
             return self.create(request)
-        if action not in ("open", "rename", "delete", "run", "pause", "resume"):
+        if action not in ("open", "rename", "delete", "run", "pause", "resume", "limits"):
             raise RequestError("Unknown operation")
         if action == "delete" and checked_text(request, "confirm", 9) != request.get("id"):
             raise RequestError("Confirm the exact session ID before deleting it")
@@ -844,6 +958,13 @@ class Raven:
             if status != "running":
                 raise session_failure("session_not_running")
             self.execute([self.cli, "pause", "-t", sid])
+            return self.describe(self.session(request))
+        if action == "limits":
+            # The CLI checks the range, the use and a paused session, and changes the running container
+            limits = limit_options(checked_memory(request), checked_cpus(request))
+            if not limits:
+                raise limit_failure("limit_invalid", "Give a memory or CPU limit")
+            self.execute([self.cli, "limit", "-t", sid, *limits], limits=True)
             return self.describe(self.session(request))
         if action == "resume":
             if item["State"]["Status"] != "paused":

@@ -463,7 +463,7 @@ def expect_locked(desk):
 
 
 def list_shows_every_field(desk):
-    assert desk.static_queries == {"/static/app.js": "v=8", "/static/style.css": "v=8"}, desk.static_queries
+    assert desk.static_queries == {"/static/app.js": "v=9", "/static/style.css": "v=9"}, desk.static_queries
     # The list loads when the dialog opens, never with the page.
     assert sorted(desk.requests) == sorted([LIST, CERT]), desk.requests
     expect(desk.button).to_have_text("로그인 기기")

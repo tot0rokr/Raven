@@ -183,7 +183,7 @@ raven kill t
 | `$XDG_RUNTIME_DIR/raven-<uid>/`    | `run --host` 쿠키와 로그, 중계 로그 (`XDG_RUNTIME_DIR`가 없으면 `/tmp`) | `run --host`, 중계 시작                   |
 | `~/Downloads`                      | 없으면 만든다. 그룹 쓰기와 setgid를 켠다(`chmod g+rwxs`)                | 세션 컨테이너를 만들 때                   |
 | Docker 이미지                      | `raven-core:latest`, `raven:latest`(또는 `RAVEN_*_IMAGE`), 빌드 캐시    | `build`                                   |
-| Docker 컨테이너                    | `raven-<user>-<id>`. 홈 이전, 멈춘 세션 복사, 백업·복원에 잠깐 쓰는 `--rm` 도우미(`--network none`) | `new`, `recreate`, 세션을 다룰 때         |
+| Docker 컨테이너                    | `raven-<user>-<id>`(메모리·CPU 상한은 `raven limit`이 `docker update`로 바꾼다). 홈 이전, 멈춘 세션 복사, 백업·복원에 잠깐 쓰는 `--rm` 도우미(`--network none`) | `new`, `recreate`, 세션을 다룰 때         |
 | Docker volume                      | `raven-<user>-home-<id>`                                                | `new`                                     |
 | 호스트 프로세스                    | `raven-hostd` (같은 사용자로 실행, `raven hostd stop`으로 끝낸다)       | 세션을 다룰 때                            |
 | 소켓, 포트                         | 중계 `@raven-host-<uid>`, 세션의 X 화면과 `127.0.0.1:159xx` VNC 포트    | 실행 중                                   |

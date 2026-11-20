@@ -7,8 +7,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>워크스페이스 · Raven</title>
-  <link rel="stylesheet" href="{% static 'style.css' %}?v=8">
-  <script type="module" src="{% static 'app.js' %}?v=8"></script>
+  <link rel="stylesheet" href="{% static 'style.css' %}?v=9">
+  <script type="module" src="{% static 'app.js' %}?v=9"></script>
 </head>
 <body class="workspace-page">
   <header class="app-header">
@@ -111,6 +111,7 @@
         <button class="button-primary session-resume" type="button" hidden>이어하기</button>
         <button class="button-secondary session-pause" type="button" hidden>일시정지</button>
         <button class="button-secondary" type="button" data-action="run">명령 실행</button>
+        <button class="button-quiet" type="button" data-action="limits" aria-haspopup="dialog">자원</button>
         <button class="button-quiet" type="button" data-action="rename">이름 변경</button>
         <button class="button-quiet danger-text" type="button" data-action="delete">삭제</button>
       </div>
@@ -233,7 +234,7 @@
     </li>
   </template>
   <dialog id="create-dialog" aria-labelledby="create-title">
-    <form id="create-form" class="stack-form dialog-form">
+    <form id="create-form" class="stack-form dialog-form" novalidate>
       <div class="dialog-heading"><h2 id="create-title">새 세션</h2></div>
       <p id="create-error" class="notice notice-error" role="alert" hidden></p>
       <label for="session-name">이름</label>
@@ -245,6 +246,28 @@
       </div>
       <label for="session-command">시작 명령</label>
       <input id="session-command" name="command" class="command-input" autocomplete="off" spellcheck="false" value="xterm" maxlength="4096" required>
+      <details id="create-resources" class="resource-details">
+        <summary><span class="resource-summary-title">자원</span><span id="create-resources-summary" class="resource-summary-value">메모리 2 GiB · CPU 2코어</span></summary>
+        <div class="resource-body">
+          <div class="resource-field">
+            <label for="create-memory">메모리 상한</label>
+            <div class="resource-control">
+              <div class="unit-input"><input id="create-memory" data-kind="memory" type="number" min="0.5" step="0.5" value="2" inputmode="decimal" aria-describedby="create-memory-help" required><span class="unit" aria-hidden="true">GiB</span></div>
+              <div class="resource-choices" role="group" aria-label="메모리 크기로 고르기"><button class="choice" type="button" data-choice="1">1 GiB</button><button class="choice" type="button" data-choice="2">2 GiB</button><button class="choice" type="button" data-choice="4">4 GiB</button><button class="choice" type="button" data-choice="8">8 GiB</button></div><div class="resource-choices" role="group" aria-label="서버 메모리의 비율로 고르기"><button class="choice" type="button" data-choice="25%">25%</button><button class="choice" type="button" data-choice="50%">50%</button><button class="choice" type="button" data-choice="75%">75%</button><button class="choice" type="button" data-choice="max">최대</button></div>
+            </div>
+            <p id="create-memory-help" class="field-help"><span class="step-help">0.5 GiB 단위로 정합니다.</span><span class="share-help"></span></p>
+          </div>
+          <div class="resource-field">
+            <label for="create-cpus">CPU 상한</label>
+            <div class="resource-control">
+              <div class="unit-input"><input id="create-cpus" data-kind="cpus" type="number" min="0.5" step="0.5" value="2" inputmode="decimal" aria-describedby="create-cpus-help" required><span class="unit" aria-hidden="true">코어</span></div>
+              <div class="resource-choices" role="group" aria-label="서버 코어의 비율로 고르기"><button class="choice" type="button" data-choice="25%">25%</button><button class="choice" type="button" data-choice="50%">50%</button><button class="choice" type="button" data-choice="75%">75%</button><button class="choice" type="button" data-choice="max">최대</button></div>
+            </div>
+            <p id="create-cpus-help" class="field-help"><span class="step-help">0.5코어 단위로 정합니다. 1코어는 CPU 100%입니다.</span><span class="share-help"></span></p>
+          </div>
+          <p class="field-help">바꾸지 않으면 기본값으로 만듭니다. 만든 뒤에도 카드의 자원에서 실행 중에 바꿀 수 있습니다.</p>
+        </div>
+      </details>
       <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">만들고 연결</button></div>
     </form>
   </dialog>
@@ -266,6 +289,32 @@
       <label for="run-command">명령</label>
       <input id="run-command" name="command" class="command-input" autocomplete="off" spellcheck="false" placeholder="xterm" maxlength="4096" required autofocus>
       <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">실행</button></div>
+    </form>
+  </dialog>
+  <dialog id="limits-dialog" class="limits-dialog" aria-labelledby="limits-title" aria-describedby="limits-note">
+    <form id="limits-form" class="stack-form dialog-form" novalidate>
+      <h2 id="limits-title">자원 상한</h2>
+      <p class="muted"><span id="limits-session-name"></span> 세션의 메모리와 CPU 상한을 바꿉니다.</p>
+      <p id="limits-note" class="limits-note">실행 중인 세션에 바로 적용되며 앱은 그대로입니다. 메모리를 사용량보다 줄일 수는 없습니다.</p>
+      <p id="limits-paused" class="notice notice-paused" hidden>일시정지한 세션은 상한을 늘리기만 할 수 있습니다. 줄이려면 이어하기를 누른 뒤 바꾸세요.</p>
+      <p id="limits-error" class="notice notice-error" role="alert" hidden></p>
+      <div class="resource-field">
+        <div class="resource-label"><label for="limits-memory">메모리</label><span id="limits-memory-current" class="resource-current"></span></div>
+        <div class="resource-control">
+          <div class="unit-input"><input id="limits-memory" data-kind="memory" type="number" min="0.5" step="0.5" inputmode="decimal" aria-describedby="limits-memory-help" autofocus><span class="unit" aria-hidden="true">GiB</span></div>
+          <div class="resource-choices" role="group" aria-label="메모리 크기로 고르기"><button class="choice" type="button" data-choice="1">1 GiB</button><button class="choice" type="button" data-choice="2">2 GiB</button><button class="choice" type="button" data-choice="4">4 GiB</button><button class="choice" type="button" data-choice="8">8 GiB</button></div><div class="resource-choices" role="group" aria-label="서버 메모리의 비율로 고르기"><button class="choice" type="button" data-choice="25%">25%</button><button class="choice" type="button" data-choice="50%">50%</button><button class="choice" type="button" data-choice="75%">75%</button><button class="choice" type="button" data-choice="max">최대</button></div>
+        </div>
+        <p id="limits-memory-help" class="field-help"><span id="limits-memory-usage" class="resource-usage"></span><span class="resource-separator" aria-hidden="true"> · </span><span class="step-help">0.5 GiB 단위로 정합니다.</span><span class="share-help"></span></p>
+      </div>
+      <div class="resource-field">
+        <div class="resource-label"><label for="limits-cpus">CPU</label><span id="limits-cpus-current" class="resource-current"></span></div>
+        <div class="resource-control">
+          <div class="unit-input"><input id="limits-cpus" data-kind="cpus" type="number" min="0.5" step="0.5" inputmode="decimal" aria-describedby="limits-cpus-help"><span class="unit" aria-hidden="true">코어</span></div>
+          <div class="resource-choices" role="group" aria-label="서버 코어의 비율로 고르기"><button class="choice" type="button" data-choice="25%">25%</button><button class="choice" type="button" data-choice="50%">50%</button><button class="choice" type="button" data-choice="75%">75%</button><button class="choice" type="button" data-choice="max">최대</button></div>
+        </div>
+        <p id="limits-cpus-help" class="field-help"><span id="limits-cpus-usage" class="resource-usage"></span><span class="resource-separator" aria-hidden="true"> · </span><span class="step-help">0.5코어 단위로 정합니다. 1코어는 CPU 100%입니다.</span><span class="share-help"></span></p>
+      </div>
+      <div class="dialog-actions"><button type="button" class="button-secondary" data-close-dialog>취소</button><button type="submit" class="button-primary">저장</button></div>
     </form>
   </dialog>
   <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">

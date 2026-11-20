@@ -13,6 +13,7 @@ Remote Access to Virtual Environment Nodes. tmux처럼 쓰는 지속형 X 데스
 - 한글 입력: `kime` addon으로 세션 안에서 한글을 입력한다 (Edge, xterm). 기본은 두벌식이고, VcXsrv가 한/영 키를 왼쪽 Alt로 보내므로 Shift+Space나 작업표시줄의 `한/A` 버튼으로 전환한다. 개인 설정으로 다른 자판과 키를 쓴다.
 - 개인 설정: `~/.config/raven/home/`에 둔 파일(dotfiles symlink 포함)을 모든 세션 홈에 복사한다.
 - 다운로드: 세션의 `~/Downloads`가 호스트 `~/Downloads`다. 웹 화면의 `파일`로 PC와 이 폴더 사이에 파일을 올리고 내려받는다.
+- 자원 상한: 세션마다 메모리·CPU 상한을 정하고 `raven limit`(웹은 `자원`)으로 실행 중에 바꾼다. 크기·코어 수 대신 서버 대비 비율(`25%`)이나 `max`도 된다.
 - 백업: `raven backup`으로 세션 홈과 설정을 파일 하나에 담고, `raven restore`로 새 세션에 복원한다.
 - 일시정지: `raven pause`/`resume`(웹은 `일시정지`/`이어하기`)으로 앱을 메모리에 둔 채 멈췄다가 그 자리에서 이어간다. RAM은 계속 차지하고 서버 재부팅에는 남지 않는다.
 - 파일 관리자: `files` addon(PCManFM)으로 세션 안에서 홈과 `~/Downloads`의 파일을 찾아 열고 관리한다.

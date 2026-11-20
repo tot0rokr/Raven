@@ -101,6 +101,35 @@ input:not([type="checkbox"]) { display: block; width: 100%; height: 44px; paddin
 .pause-help p { line-height: 1.6; }
 .pause-help code { font: 12px ui-monospace, "Cascadia Code", monospace; color: #f1e6c8; white-space: nowrap; }
 .pause-help button { min-height: 32px; padding: 6px 11px; font-size: 12px; flex-shrink: 0; color: #e3d6b3; }
+.resource-details { margin-top: 14px; border: 1px solid var(--border); border-radius: 8px; background: #15191c; }
+.resource-details > summary { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 14px; border-radius: 8px; cursor: pointer; list-style: none; font-size: 13px; font-weight: 600; }
+.resource-details > summary::-webkit-details-marker { display: none; }
+.resource-details > summary::before { content: ""; flex-shrink: 0; width: 6px; height: 6px; margin-inline: 2px 1px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform 120ms; }
+.resource-details[open] > summary::before { transform: rotate(45deg); }
+.resource-details > summary:hover { background: #1b2023; }
+.resource-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.resource-summary-value { margin-left: auto; min-width: 0; color: var(--muted); font-size: 12px; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+.resource-body { display: grid; gap: 16px; padding: 14px; border-top: 1px solid #252b30; }
+.resource-field { display: grid; gap: 8px; min-width: 0; }
+.resource-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.unit-input { position: relative; flex: 0 0 132px; }
+.unit-input input:not([type="checkbox"]) { padding-right: 50px; font-variant-numeric: tabular-nums; }
+.unit-input .unit { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 13px; pointer-events: none; }
+.resource-field.is-share .unit { visibility: hidden; }
+.resource-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice { min-height: 36px; padding: 6px 11px; border-color: #3a434b; background: transparent; color: #c4cbd3; font-size: 12px; font-variant-numeric: tabular-nums; }
+.choice:hover:not(:disabled) { background: #242a2f; border-color: #56616b; color: #eef0f3; }
+/* A tap leaves :hover on touch screens; the chosen value must still read as chosen. */
+.choice[aria-pressed="true"], .choice[aria-pressed="true"]:hover:not(:disabled) { background: #203025; border-color: #385b43; color: #b6d8bc; }
+.resource-field .field-help { line-height: 1.5; }
+.resource-usage { color: #c4cbd3; }
+.resource-usage:empty + .resource-separator { display: none; }
+.resource-field.is-share .step-help, .resource-field:not(.is-share) .share-help { display: none; }
+.resource-label { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
+.resource-current { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.resource-current:empty { display: none; }
+.limits-note { padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; background: #15191c; color: #c4cbd3; line-height: 1.55; }
+.limits-dialog .resource-field { margin-top: 4px; }
 .session-command { color: #8f9aa5; font: 12px/1.6 ui-monospace, "Cascadia Code", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 700px; margin-top: 7px; }
 .empty-state { text-align: center; padding: 65px 20px 80px; border: 1px dashed #3a434a; border-radius: 9px; background: #161a1d; }
 .empty-screen { margin: 0 auto 28px; height: 42px; width: 58px; border: 1px solid #718e79; border-radius: 5px; display: grid; place-items: center; background: #223229; box-shadow: 0 10px 0 -9px #a6c3ad; }
@@ -279,6 +308,7 @@ a.file-name:hover { text-decoration: underline; text-underline-offset: 3px; }
   .pause-help { flex-direction: column; align-items: start; padding: 10px 12px; font-size: 12px; }
   dialog { padding: 22px; }
   .session-name-line { align-items: start; flex-direction: column; gap: 7px; }
+  .resource-body { padding: 12px; }
   .login-card { padding: 30px 26px; }
   .login-heading { margin-top: 36px; }
   .viewer-toolbar { gap: 8px; padding: 8px; }

@@ -38,7 +38,9 @@ def expand(template, sid, s):
               "raven.wm": "xmonad", "raven.geometry": "800x600", "raven.features": "wallpaper"}
     template = re.sub(r'\{\{index \.Config\.Labels "([^"]+)"\}\}', lambda m: labels.get(m[1], ""), template)
     return (template.replace("{{.State.Running}}", "true" if s["state"] in ("running", "paused") else "false")
-            .replace("{{.State.Pid}}", "0").replace("{{.Image}}", "sha256:fake").replace("{{.Id}}", "f" * 64))
+            .replace("{{.State.Pid}}", "0").replace("{{.Image}}", "sha256:fake").replace("{{.Id}}", "f" * 64)
+            .replace("{{.HostConfig.Memory}}", "2147483648").replace("{{.HostConfig.MemorySwap}}", "2147483648")
+            .replace("{{.HostConfig.NanoCpus}}", "2000000000").replace("{{.HostConfig.PidsLimit}}", "512"))
 
 if args[:2] == ["ps", "-a"] and "--format" in args:
     if any(a.startswith("label=raven.user=") for a in args):
@@ -174,6 +176,10 @@ class PausedSessionCliTests(unittest.TestCase):
         result = self.raven("recreate", "-t", "1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["stop", f"raven-{USER}-1"], self.changes("1"))
+        create, = [call for call in self.changes("1") if call[0] == "create"]
+        self.assertEqual([create[create.index(flag) + 1] for flag in ("--memory", "--memory-swap", "--cpus",
+                                                                       "--pids-limit")],
+                         ["2147483648", "2147483648", "2", "512"])
         self.sessions({"1": "paused"})
         result = self.raven("kill", "1")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -209,8 +215,9 @@ class PausedSessionCliTests(unittest.TestCase):
         rows = {line.split()[0]: line.split() for line in result.stdout.splitlines()[1:] if line[:1].isdigit()}
         self.assertEqual(result.stdout.splitlines()[0].split(),
                          ["ID", "NAME", "STATE", "WM", "DISPLAY", "PORT", "X11", "WEB", "CPU", "MEM", "CMD"])
-        self.assertEqual(rows["0"][2:3] + rows["0"][6:9], ["paused", "-", "-", "0%"])
-        self.assertEqual(rows["2"][6:10], ["-", "-", "-", "-"])
+        # No cgroup in the fake, so the paused session's memory use is unknown
+        self.assertEqual(rows["0"][2:3] + rows["0"][6:10], ["paused", "-", "-", "0%/2", "?/2GiB"])
+        self.assertEqual(rows["2"][6:10], ["-", "-", "-/2", "-/2GiB"])
         self.assertEqual(result.stdout.splitlines()[-1],
                          "paused sessions keep their memory until resumed; a server reboot loses them")
         self.log.write_text("")

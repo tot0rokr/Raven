@@ -20,8 +20,8 @@ from .consumers import connection_counts, revoke_session
 from .service_config import certificate_info, public_certificate
 from .throttle import login_retry_after
 from .validation import (
-    CHUNK_SIZE, SESSION_ID, UPLOAD_TOKEN, FileRequestError, file_name, file_path, overwrite_flag, session_command,
-    session_generation, session_name, session_options, upload_offset, upload_size,
+    CHUNK_SIZE, SESSION_ID, UPLOAD_TOKEN, FileRequestError, LimitRequestError, file_name, file_path, overwrite_flag,
+    session_command, session_generation, session_limits, session_name, session_options, upload_offset, upload_size,
 )
 
 # Django formats the rejected Origin or Referer into these reasons, so match only the fixed prefix.
@@ -37,9 +37,11 @@ FILE_ERROR_STATUS = {
     "file_exists": 409, "offset_mismatch": 409, "too_large": 413, "no_space": 507, "permission_denied": 403,
     "busy": 429, "downloads_missing": 409, "staging_invalid": 409, "cross_device": 409,
 }
-# A session in the wrong state for the action (paused, not paused, not running) is a 409 as well.
+# A session in the wrong state for the action (paused, not paused, not running) is a 409 as well, and so is a
+# memory limit below what the session uses; a limit out of range is a 400.
 BROKER_ERROR_STATUS = {
     **FILE_ERROR_STATUS, "session_paused": 409, "session_not_paused": 409, "session_not_running": 409,
+    "limit_invalid": 400, "limit_below_usage": 409,
 }
 CONTENT_LENGTH = re.compile(r"[0-9]{1,10}\Z")
 
@@ -137,6 +139,8 @@ def api_view(methods):
                 return view(request, *args, **kwargs)
             except FileRequestError as error:
                 return error_response(error.code, str(error), FILE_ERROR_STATUS.get(error.code, 400))
+            except LimitRequestError as error:
+                return error_response(error.code, str(error), 400)
             except (ValueError, UnicodeDecodeError, RequestDataTooBig) as error:
                 return error_response("invalid_request", str(error), 400)
             except broker.BrokerError as error:
@@ -161,7 +165,7 @@ def json_object(request, allowed):
 def sessions(request):
     if request.method == "GET":
         return JsonResponse({"sessions": broker.request("list")})
-    options = session_options(json_object(request, {"name", "wm", "geometry", "command"}))
+    options = session_options(json_object(request, {"name", "wm", "geometry", "command", "memory", "cpus"}))
     return JsonResponse({"session": broker.request("create", **options)}, status=201)
 
 
@@ -202,6 +206,16 @@ def pause_session(request, session_id):
 def resume_session(request, session_id):
     generation = session_generation(json_object(request, {"generation"}).get("generation"))
     return JsonResponse({"session": broker.request("resume", id=session_id, generation=generation)})
+
+
+@api_view(["POST"])
+def limit_session(request, session_id):
+    data = json_object(request, {"generation", "memory", "cpus"})
+    generation = session_generation(data.get("generation"))
+    limits = session_limits(data)
+    if not limits:
+        raise ValueError("Give memory, cpus or both")
+    return JsonResponse({"session": broker.request("limits", id=session_id, generation=generation, **limits)})
 
 
 @api_view(["DELETE"])
